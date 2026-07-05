@@ -47,8 +47,10 @@ export function generateShop(state: GameState): void {
   const price = (min: number, max: number): number =>
     Math.max(1, Math.floor(nextRange(state.rng, min, max) * discount));
 
+  // 信使：商店多进 1 张牌与 1 瓶药水。
+  const courier = hasRelic(state, "the_courier") ? 1 : 0;
   const cardPool = rewardCardPoolOf(getCharacterConfig(state.character).color);
-  for (const defId of sampleUnique(state.rng, cardPool, SHOP_CARD_COUNT)) {
+  for (const defId of sampleUnique(state.rng, cardPool, SHOP_CARD_COUNT + courier)) {
     items.push({
       kind: "card",
       defId,
@@ -77,7 +79,11 @@ export function generateShop(state: GameState): void {
     });
   }
 
-  for (const id of sampleUnique(state.rng, shopPotionPool(state.character), SHOP_POTION_COUNT)) {
+  for (const id of sampleUnique(
+    state.rng,
+    shopPotionPool(state.character),
+    SHOP_POTION_COUNT + courier,
+  )) {
     items.push({
       kind: "potion",
       id,

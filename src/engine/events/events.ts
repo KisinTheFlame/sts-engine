@@ -20,6 +20,10 @@ export type EventOutcome =
   | { kind: "start_combat"; encounterId: string; elite?: boolean }
   // 随机结果：从 options 里等概率选一组结算（命运之轮）。
   | { kind: "random"; options: EventOutcome[][] }
+  // 图书馆：打开选牌屏，从 count 张随机牌里挑 1 张加入牌组。
+  | { kind: "library"; count: number }
+  // 复制器：打开选牌屏，复制牌组中的一张牌。
+  | { kind: "duplicator" }
   | { kind: "nothing" };
 
 type EventChoice = {
@@ -972,6 +976,39 @@ const EVENT_LIST: EventDef[] = [
       {
         label: "不信这套，转身就走",
         resultText: "你冷哼一声，把命运抛在身后。",
+        outcomes: [{ kind: "nothing" }],
+      },
+    ],
+  },
+  // —— 补全批次：选牌事件（event→card_select）——
+  {
+    id: "library",
+    description: "一座落满尘埃的私人书库，架上层层叠叠尽是手稿与秘卷。你只来得及挑走一本。",
+    choices: [
+      {
+        label: "在书海中挑一张带走",
+        resultText: "你在浩繁卷帙间翻找，最终抽出了心仪的一张。",
+        outcomes: [{ kind: "library", count: 5 }],
+      },
+      {
+        label: "就地歇脚，读书养神",
+        resultText: "你靠着书架小憩，字句间的宁静抚平了伤口。",
+        outcomes: [{ kind: "heal", amount: 20 }],
+      },
+    ],
+  },
+  {
+    id: "duplicator",
+    description: "石台上悬着一面泛着幽光的镜子，凡置于其前之物，皆会浮现出一个一模一样的倒影。",
+    choices: [
+      {
+        label: "复制牌组里的一张牌",
+        resultText: "镜面荡起涟漪，你的一张牌凭空多出了一份。",
+        outcomes: [{ kind: "duplicator" }],
+      },
+      {
+        label: "不去打扰这面镜子",
+        resultText: "你绕过石台，镜中的自己也转身离去。",
         outcomes: [{ kind: "nothing" }],
       },
     ],

@@ -66,6 +66,7 @@ export type PowerId =
   | "buffer" // 缓冲：抵消下一次会让你失去生命的伤害（每抵消一次 -1 层）
   | "battle_hymn" // 战歌：每个玩家回合开始，将 = 层数的痛斩加入手牌（观者）
   | "strength_temp" // 临时力量：回合结束时失去 = 层数的力量（屈伸），随后本 power 清零
+  | "dexterity_temp" // 临时敏捷：本回合按此加成格挡，回合结束时清零（对偶手镯）
   | "rage" // 暴怒：本回合每打出一张攻击牌，获得 = 层数的格挡（回合末清零）
   | "double_tap" // 连击：接下来的 = 层数张攻击牌各额外结算一次（每消耗一次 -1 层）
   | "berserk" // 狂暴：每个玩家回合开始，获得 = 层数的能量（代价是自身易伤，狂暴）
@@ -514,6 +515,8 @@ export type CombatState = {
   isBoss: boolean;
   /** 本场是否精英战（勇气投索 +力量 / 密封昆虫 减敌血按此判定）。 */
   isElite: boolean;
+  /** 本回合开始时玩家生命（情绪芯片判「上回合是否掉血」用）。 */
+  hpAtTurnStart: number;
   /** 时间吞噬者：本回合触发了时间扭曲，需在当前出牌结算收尾后立即结束玩家回合。 */
   timeWarpEndTurnPending: boolean;
 };
@@ -545,7 +548,21 @@ export type MapGraph = {
   bossNodeId: string;
 };
 
-type Screen = "map" | "combat" | "reward" | "rest" | "event" | "shop" | "gameover" | "victory";
+type Screen =
+  "map" | "combat" | "reward" | "rest" | "event" | "shop" | "card_select" | "gameover" | "victory";
+
+/**
+ * 选牌子界面（图书馆选一张新牌 / 复制器复制一张牌 / 和平烟斗去一张牌）。
+ * add：choices 为可加入的新牌；duplicate/remove：choices.uid 指向牌组中的实例。
+ */
+export type CardSelectState = {
+  mode: "add" | "duplicate" | "remove";
+  /** 情境标题（渲染用）。 */
+  title: string;
+  choices: { defId: string; upgraded: boolean; uid?: number }[];
+  /** 是否允许跳过（不选）。 */
+  canSkip: boolean;
+};
 
 /** 当前进行中的事件（? 节点）。 */
 type EventState = { id: string };
@@ -600,6 +617,8 @@ export type GameState = {
   event: EventState | null;
   /** 当前商店库存；null = 不在商店屏。 */
   shop: ShopState | null;
+  /** 当前选牌子界面（图书馆/复制器/和平烟斗）；null = 不在选牌屏。 */
+  cardSelect: CardSelectState | null;
   /** 已进入过的普通战斗数（决定抽 weak / strong encounter 池，复刻 StS Act1 节奏）。 */
   combatsEntered: number;
   /** 本场战斗胜利后是否发一个遗物（精英战为 true；下次 generateReward 消费后清零）。 */

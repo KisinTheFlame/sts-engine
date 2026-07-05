@@ -70,7 +70,8 @@ export function decayDebuffs(powers: PowerInstance[]): void {
  * 作用于「获得格挡的一方」的 powers（敏捷可负）。
  */
 export function computeBlockGain(amount: number, gainerPowers: readonly PowerInstance[]): number {
-  let value = amount + getPower(gainerPowers, "dexterity");
+  let value =
+    amount + getPower(gainerPowers, "dexterity") + getPower(gainerPowers, "dexterity_temp");
   if (value < 0) {
     value = 0;
   }
