@@ -505,6 +505,8 @@ export type CombatState = {
   /** 本场战斗奖励的敌人组标识（用于 reward 生成）。 */
   encounterId: string;
   isBoss: boolean;
+  /** 本场是否精英战（勇气投索 +力量 / 密封昆虫 减敌血按此判定）。 */
+  isElite: boolean;
   /** 时间吞噬者：本回合触发了时间扭曲，需在当前出牌结算收尾后立即结束玩家回合。 */
   timeWarpEndTurnPending: boolean;
 };

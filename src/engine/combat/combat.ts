@@ -212,7 +212,7 @@ function createEnemyState(state: GameState, defId: string, hpOverride?: number):
   } satisfies EnemyState;
 }
 
-export function startCombat(state: GameState, encounterId: string): void {
+export function startCombat(state: GameState, encounterId: string, isElite = false): void {
   const encounter = getEncounterDef(encounterId);
   const enemies: EnemyState[] = encounter.enemies.map((defId) => createEnemyState(state, defId));
 
@@ -256,6 +256,7 @@ export function startCombat(state: GameState, encounterId: string): void {
     lastCardType: null,
     encounterId,
     isBoss: encounter.isBoss,
+    isElite,
     timeWarpEndTurnPending: false,
   };
   state.combat = combat;
@@ -350,6 +351,9 @@ function triggerRelicCardPlayed(state: GameState, cardType: CardType): void {
   fireRelicsCollectingEmits(state, (hooks, self, emit) =>
     hooks.onCardPlayed?.(state, self, cardType, emit),
   );
+}
+function triggerRelicDiscard(state: GameState): void {
+  fireRelicsCollectingEmits(state, (hooks, self, emit) => hooks.onDiscard?.(state, self, emit));
 }
 
 /** 消耗一张牌进消耗堆，并触发消耗型玩家能力（无痛加格挡 / 暗黑拥抱抽牌）。 */
@@ -500,6 +504,8 @@ function discardFromHand(state: GameState, card: CardInstance): void {
   if (onDiscard && onDiscard.length > 0) {
     applyEffects(state, onDiscard, { side: "player" }, null);
   }
+  // 弃牌型遗物（韧带绷带 +格挡、叮沙发伤、悬浮风筝首弃回能量）。
+  triggerRelicDiscard(state);
 }
 
 // —— 效果解释器 ——
@@ -2488,7 +2494,8 @@ function enterStance(state: GameState, stance: PlayerStance): void {
     return;
   }
   if (combat.playerStance === "calm" && stance !== "calm") {
-    combat.energy += CALM_EXIT_ENERGY;
+    // 紫莲：离开平静姿态时额外 +1 能量。
+    combat.energy += CALM_EXIT_ENERGY + (hasRelic(state, "violet_lotus") ? 1 : 0);
   }
   combat.playerStance = stance;
   // 心之堡垒：每次姿态改变获得 = 层数的格挡。
@@ -2527,10 +2534,11 @@ function gainMantra(state: GameState, amount: number): void {
  * 预知（观者）：看抽牌堆顶 amount 张（drawPile 末端为顶），自动弃掉其中的状态牌、
  * 其余保持原序留在顶端（自动解算，不开交互选牌子界面）。发生一次预知触发涅槃格挡。
  */
-function doScry(state: GameState, amount: number): void {
+function doScry(state: GameState, amount: number, triggerRelics = true): void {
   const combat = state.combat!;
   const n = Math.min(amount, combat.drawPile.length);
   if (n <= 0) {
+    // 即便无牌可看，金色之眼在 StS 也不额外触发；这里 n<=0 直接返回。
     return;
   }
   const topStart = combat.drawPile.length - n;
@@ -2555,7 +2563,13 @@ function doScry(state: GameState, amount: number): void {
       combat.hand.push(combat.discardPile.splice(i, 1)[0]);
     }
   }
+  // 金色之眼：每次预知额外预知 2 张（triggerRelics=false 时为其追加预知本身，不再递归）。
+  if (triggerRelics && hasRelic(state, "golden_eye")) {
+    doScry(state, GOLDEN_EYE_SCRY, false);
+  }
 }
+
+const GOLDEN_EYE_SCRY = 2;
 
 // —— 充能球（机器人）——
 
@@ -2851,6 +2865,10 @@ export function playCard(
   triggerRelicCardPlayed(state, def.type);
   // 打牌触发型玩家能力（千刃对全体、残影加格挡）。
   triggerPlayerCardPlayed(state, def.type);
+  // 不停转陀螺：本回合内手牌被打空时抽 1 张。
+  if (combat.hand.length === 0 && hasRelic(state, "unceasing_top")) {
+    drawCards(state, 1);
+  }
   // 华彩：本回合每打出满 5 张牌，对所有敌人造成 = 层数的伤害。
   const panache = getPower(combat.playerPowers, "panache");
   if (panache > 0 && combat.cardsPlayedThisTurn % 5 === 0) {

@@ -42,7 +42,8 @@ function transformCardInstance(state: GameState, card: CardInstance): void {
 // 直接状态改动（力量/敏捷/格挡/能量/回血）在钩子里做；需要走伤害结算的用 emit 发 Effect。
 // hooks 第二参 self 是该遗物自己的 RelicState，计数型遗物读写 self.counter。
 
-type RelicRarity = "starter" | "common" | "uncommon" | "rare" | "boss";
+// "shop"：商店专属遗物（只在商店出现，不进宝箱/精英/事件掉落池）。
+type RelicRarity = "starter" | "common" | "uncommon" | "rare" | "boss" | "shop";
 
 /** emit：以玩家为行动者发射一个战斗 Effect（发伤 / AoE / 加牌走 add_card）。 */
 type Emit = (effect: Effect) => void;
@@ -67,6 +68,8 @@ type RelicHooks = {
   onShuffle?: (state: GameState, self: RelicState, emit: Emit) => void;
   /** 每当一张牌被加入牌组（奖励/商店/事件）后结算（陶瓷鱼 +金币、各色蛋升级加入的牌）。局外，无 emit；card 为刚加入的实例。 */
   onAddCard?: (state: GameState, self: RelicState, card: CardInstance) => void;
+  /** 每当一张牌被牌效果从手牌弃掉后结算（韧带绷带加格挡、叮沙发伤、悬浮风筝首弃回能量）。 */
+  onDiscard?: (state: GameState, self: RelicState, emit: Emit) => void;
 };
 
 /** 计数型遗物：自增 self.counter，达到 every 则归零并返回 true（触发效果）。 */
@@ -1355,6 +1358,249 @@ const RELIC_LIST: RelicDef[] = [
     description: "呃……闻起来可不太妙。它似乎没有任何实际效果。",
     hooks: {},
   },
+  // === 补全批次 A：战斗时点遗物（onCombatStart / onTurn* / onDiscard 等）===
+  {
+    id: "black_blood",
+    name: "黑血",
+    rarity: "boss",
+    characterLock: "ironclad",
+    description: "燃烧之血的进化：每场战斗结束后，回复 12 点生命。",
+    hooks: {
+      onCombatEnd: (state) => healPlayer(state, 12),
+    },
+  },
+  {
+    id: "brimstone",
+    name: "硫磺石",
+    rarity: "shop",
+    characterLock: "ironclad",
+    description: "每个玩家回合开始，获得 2 点力量，且所有敌人获得 1 点力量。",
+    hooks: {
+      onTurnStart: (state) => {
+        const combat = state.combat;
+        if (!combat) {
+          return;
+        }
+        addPower(combat.playerPowers, "strength", 2);
+        for (const enemy of combat.enemies) {
+          if (enemy.hp > 0) {
+            addPower(enemy.powers, "strength", 1);
+          }
+        }
+      },
+    },
+  },
+  {
+    id: "damaru",
+    name: "手鼓",
+    rarity: "common",
+    characterLock: "watcher",
+    description: "每个玩家回合开始，获得 1 点法力。",
+    hooks: {
+      onTurnStart: (_state, _self, emit) => emit({ kind: "gain_mantra", amount: 1 }),
+    },
+  },
+  {
+    id: "clockwork_souvenir",
+    name: "发条纪念品",
+    rarity: "shop",
+    description: "每场战斗开始时，获得 1 层神器（抵消下一个施加到你身上的减益）。",
+    hooks: {
+      onCombatStart: (state) => {
+        if (state.combat) {
+          addPower(state.combat.playerPowers, "artifact", 1);
+        }
+      },
+    },
+  },
+  {
+    id: "teardrop_locket",
+    name: "泪滴坠饰",
+    rarity: "uncommon",
+    characterLock: "watcher",
+    description: "每场战斗以平静姿态开始。",
+    hooks: {
+      onCombatStart: (_state, _self, emit) => emit({ kind: "enter_stance", stance: "calm" }),
+    },
+  },
+  {
+    id: "nuclear_battery",
+    name: "核电池",
+    rarity: "boss",
+    characterLock: "defect",
+    description: "每场战斗开始时，充能 1 颗等离子球。",
+    hooks: {
+      onCombatStart: (_state, _self, emit) => emit({ kind: "channel_orb", orbType: "plasma" }),
+    },
+  },
+  {
+    id: "symbiotic_virus",
+    name: "共生病毒",
+    rarity: "uncommon",
+    characterLock: "defect",
+    description: "每场战斗开始时，充能 1 颗暗球。",
+    hooks: {
+      onCombatStart: (_state, _self, emit) => emit({ kind: "channel_orb", orbType: "dark" }),
+    },
+  },
+  {
+    id: "cloak_clasp",
+    name: "斗篷别扣",
+    rarity: "rare",
+    characterLock: "watcher",
+    description: "每个玩家回合结束时，每有 1 张手牌就获得 1 点格挡。",
+    hooks: {
+      onTurnEnd: (state) => {
+        if (state.combat) {
+          state.combat.playerBlock += state.combat.hand.length;
+        }
+      },
+    },
+  },
+  {
+    id: "melange",
+    name: "香料混合",
+    rarity: "shop",
+    characterLock: "watcher",
+    description: "每当你洗牌时，预知 3 张。",
+    hooks: {
+      onShuffle: (_state, _self, emit) => emit({ kind: "scry", amount: 3 }),
+    },
+  },
+  {
+    id: "golden_eye",
+    name: "金色之眼",
+    rarity: "rare",
+    characterLock: "watcher",
+    // 效果在 combat.ts 的 doScry 里按 hasRelic 处理（每次预知额外预知 2 张）。
+    description: "每当你预知时，额外预知 2 张。",
+    hooks: {},
+  },
+  {
+    id: "sling_of_courage",
+    name: "勇气投索",
+    rarity: "shop",
+    description: "每场精英战斗开始时，获得 2 点力量。",
+    hooks: {
+      onCombatStart: (state) => {
+        if (state.combat?.isElite) {
+          addPower(state.combat.playerPowers, "strength", 2);
+        }
+      },
+    },
+  },
+  {
+    id: "preserved_insect",
+    name: "密封昆虫",
+    rarity: "common",
+    description: "精英战斗中，敌人以最大生命 75% 的生命开始战斗。",
+    hooks: {
+      onCombatStart: (state) => {
+        const combat = state.combat;
+        if (!combat || !combat.isElite) {
+          return;
+        }
+        for (const enemy of combat.enemies) {
+          enemy.hp = Math.floor(enemy.maxHp * 0.75);
+        }
+      },
+    },
+  },
+  {
+    id: "frozen_core",
+    name: "冰冻核心",
+    rarity: "boss",
+    characterLock: "defect",
+    description: "每个玩家回合结束时，若有空的充能球槽，则充能 1 颗冰霜球。",
+    hooks: {
+      onTurnEnd: (state, _self, emit) => {
+        const combat = state.combat;
+        if (combat && combat.orbs.length < combat.orbSlots) {
+          emit({ kind: "channel_orb", orbType: "frost" });
+        }
+      },
+    },
+  },
+  {
+    id: "inserter",
+    name: "插入器",
+    rarity: "rare",
+    characterLock: "defect",
+    description: "每 2 个回合，获得 1 个充能球槽。",
+    hooks: {
+      onTurnStart: (_state, self, emit) => {
+        if (tickEvery(self, 2)) {
+          emit({ kind: "change_orb_slots", delta: 1 });
+        }
+      },
+    },
+  },
+  {
+    id: "runic_capacitor",
+    name: "符文电容",
+    rarity: "shop",
+    characterLock: "defect",
+    description: "每场战斗开始时，额外获得 3 个充能球槽。",
+    hooks: {
+      onCombatStart: (_state, _self, emit) => emit({ kind: "change_orb_slots", delta: 3 }),
+    },
+  },
+  {
+    id: "violet_lotus",
+    name: "紫莲",
+    rarity: "boss",
+    characterLock: "watcher",
+    // 效果在 combat.ts 的 enterStance 里按 hasRelic 处理（离开平静额外 +1 能量）。
+    description: "每当你离开平静姿态，额外获得 1 点能量。",
+    hooks: {},
+  },
+  {
+    id: "tough_bandages",
+    name: "坚韧绷带",
+    rarity: "uncommon",
+    characterLock: "silent",
+    description: "每当你弃掉一张牌，获得 3 点格挡。",
+    hooks: {
+      onDiscard: (_state, _self, emit) => emit({ kind: "gain_block", amount: 3 }),
+    },
+  },
+  {
+    id: "tingsha",
+    name: "叮沙",
+    rarity: "rare",
+    characterLock: "silent",
+    description: "每当你弃掉一张牌，对一名随机敌人造成 3 点伤害。",
+    hooks: {
+      onDiscard: (_state, _self, emit) => emit({ kind: "deal_damage_random", amount: 3, times: 1 }),
+    },
+  },
+  {
+    id: "hovering_kite",
+    name: "悬浮风筝",
+    rarity: "boss",
+    characterLock: "silent",
+    description: "每个玩家回合，你第一次弃牌时获得 1 点能量。",
+    hooks: {
+      // counter 作「本回合是否已弃过牌」标记：回合开始归零，首弃回能量后置 1。
+      onTurnStart: (_state, self) => {
+        self.counter = 0;
+      },
+      onDiscard: (_state, self, emit) => {
+        if (self.counter === 0) {
+          self.counter = 1;
+          emit({ kind: "gain_energy", amount: 1 });
+        }
+      },
+    },
+  },
+  {
+    id: "unceasing_top",
+    name: "不停转陀螺",
+    rarity: "rare",
+    // 效果在 combat.ts 的 playCard 里按 hasRelic 处理（回合内手牌被打空则抽 1）。
+    description: "在你的回合，每当手牌被清空，抽 1 张牌。",
+    hooks: {},
+  },
   {
     id: "circlet",
     name: "头环",
@@ -1426,15 +1672,23 @@ function relicIdsForCharacter(
 /** 通用宝箱 / 精英 / 事件掉落的遗物池（common + uncommon，不含角色专属）。 */
 export const REWARD_RELIC_POOL: readonly string[] = relicIdsOfRarity("common", "uncommon");
 
-/** 通用商店遗物池（含稀有，不含角色专属）。 */
-export const SHOP_RELIC_POOL: readonly string[] = relicIdsOfRarity("common", "uncommon", "rare");
+/** 通用商店遗物池（含稀有 + 商店专属，不含角色专属）。 */
+export const SHOP_RELIC_POOL: readonly string[] = relicIdsOfRarity(
+  "common",
+  "uncommon",
+  "rare",
+  "shop",
+);
 
 /** 某角色实际可得的掉落遗物池 = 通用 + 该角色专属（common + uncommon）。 */
 export function rewardRelicPool(character: CharacterId): readonly string[] {
   return [...REWARD_RELIC_POOL, ...relicIdsForCharacter(character, "common", "uncommon")];
 }
 
-/** 某角色实际可得的商店遗物池 = 通用 + 该角色专属（含稀有）。 */
+/** 某角色实际可得的商店遗物池 = 通用 + 该角色专属（含稀有 + 商店专属）。 */
 export function shopRelicPool(character: CharacterId): readonly string[] {
-  return [...SHOP_RELIC_POOL, ...relicIdsForCharacter(character, "common", "uncommon", "rare")];
+  return [
+    ...SHOP_RELIC_POOL,
+    ...relicIdsForCharacter(character, "common", "uncommon", "rare", "shop"),
+  ];
 }
