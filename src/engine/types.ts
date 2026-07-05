@@ -359,6 +359,8 @@ export type CardInstance = {
   costReduction?: number;
   /** 本回合费用上限（顿悟：把手牌费用压到不超过此值；回合结束清除）。 */
   costCapThisTurn?: number;
+  /** 蛇眼混乱：抽到时掷定的随机费用（0~3，覆盖原费用；X 费/废牌不受影响）。本场有效。 */
+  randomCost?: number;
 };
 
 export type PowerInstance = { id: PowerId; amount: number };
