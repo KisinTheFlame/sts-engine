@@ -35,6 +35,7 @@ export function migrateLoadedState(raw: unknown): GameState {
   backfill(state, "potionDropBonus", 0);
   backfill(state, "combatsEntered", 0);
   backfill(state, "pendingRelicReward", false);
+  backfill(state, "cardSelect", null); // 选牌子界面（图书馆/复制器/和平烟斗）——老档没有。
 
   const combat = asRecord(state["combat"]);
   if (combat) {
@@ -62,6 +63,7 @@ export function migrateLoadedState(raw: unknown): GameState {
     backfill(combat, "timesLostHpThisCombat", 0); // 血债血偿——老档没有。
     backfill(combat, "lastCardType", null);
     backfill(combat, "isElite", false); // 精英战标记——老档没有。
+    backfill(combat, "hpAtTurnStart", state["hp"] ?? 0); // 情绪芯片——老档没有。
     const enemies = Array.isArray(combat["enemies"]) ? combat["enemies"] : [];
     for (const entry of enemies) {
       const enemy = asRecord(entry);

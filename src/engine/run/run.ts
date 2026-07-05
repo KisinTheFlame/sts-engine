@@ -256,6 +256,28 @@ function generateRestCardReward(state: GameState): void {
   state.log.push("篝火的余烬中，你窥见了一张新的牌。");
 }
 
+/** 复制器：打开选牌屏，复制牌组中的一张牌。 */
+function openDuplicator(state: GameState): void {
+  state.cardSelect = {
+    mode: "duplicate",
+    title: "选择一张牌进行复制",
+    choices: state.deck.map((c) => ({ defId: c.defId, upgraded: c.upgraded, uid: c.uid })),
+    canSkip: false,
+  };
+  state.screen = "card_select";
+}
+
+/** 和平烟斗：打开选牌屏，从牌组抽去一张牌。 */
+function openCardRemoval(state: GameState): void {
+  state.cardSelect = {
+    mode: "remove",
+    title: "选择一张牌抽去",
+    choices: state.deck.map((c) => ({ defId: c.defId, upgraded: c.upgraded, uid: c.uid })),
+    canSkip: false,
+  };
+  state.screen = "card_select";
+}
+
 /** 掷一张奖励卡：先掷稀有度（稀有 4% / 罕见 36% / 普通 60%），再从本角色该档池里挑未重复的。 */
 function rollRewardCard(state: GameState, exclude: ReadonlySet<string>): string | null {
   const color = getCharacterConfig(state.character).color;
@@ -312,6 +334,8 @@ export function currentOptions(state: GameState): string[] {
           return "举重：永久获得 1 点力量";
         case "dig":
           return "挖掘：挖出一个遗物";
+        case "toke":
+          return "抽烟：从牌组抽去一张牌";
       }
     });
   }
@@ -341,6 +365,17 @@ export function currentOptions(state: GameState): string[] {
       : `移除一张牌 — ${state.shop.purgeCost} 金${state.gold >= state.shop.purgeCost ? "" : "（金币不足）"}`;
     options.push(purge, "离开商店");
     return options;
+  }
+  if (state.screen === "card_select" && state.cardSelect) {
+    const cs = state.cardSelect;
+    const opts = cs.choices.map((c) => {
+      const def = getCardDef(c.defId);
+      return `${def.name}${c.upgraded ? "+" : ""}`;
+    });
+    if (cs.canSkip) {
+      opts.push("跳过");
+    }
+    return opts;
   }
   return [];
 }
@@ -432,6 +467,33 @@ function applyEventOutcome(state: GameState, outcome: EventOutcome): void {
       }
       break;
     }
+    case "library": {
+      // 图书馆：随机取 count 张不重复的牌，打开选牌屏挑 1 张加入。
+      const color = getCharacterConfig(state.character).color;
+      const pool = [
+        ...cardPoolOf(color, "common"),
+        ...cardPoolOf(color, "uncommon"),
+        ...cardPoolOf(color, "rare"),
+      ];
+      const choices: { defId: string; upgraded: boolean }[] = [];
+      const picked = new Set<string>();
+      for (let i = 0; i < outcome.count && picked.size < pool.length; i += 1) {
+        let defId = pool[nextInt(state.rng, pool.length)];
+        while (picked.has(defId)) {
+          defId = pool[nextInt(state.rng, pool.length)];
+        }
+        picked.add(defId);
+        choices.push({ defId, upgraded: false });
+      }
+      state.cardSelect = { mode: "add", title: "从藏书中挑选一张带走", choices, canSkip: true };
+      state.screen = "card_select";
+      break;
+    }
+    case "duplicator": {
+      // 复制器：打开选牌屏，复制牌组里的一张牌。
+      openDuplicator(state);
+      break;
+    }
     case "nothing":
       break;
     default: {
@@ -452,7 +514,8 @@ type RestAction =
   | { kind: "rest" }
   | { kind: "smith"; uid: number }
   | { kind: "lift" } // 举重（举铁）：girya，+1 永久力量，全程至多 3 次
-  | { kind: "dig" }; // 挖掘：shovel，挖一个遗物
+  | { kind: "dig" } // 挖掘：shovel，挖一个遗物
+  | { kind: "toke" }; // 抽烟：peace_pipe，抽去一张牌
 
 /** 按当前遗物构造篝火菜单：休息永远在首位，之后依次是打铁项、可用的篝火遗物动作。 */
 function restActions(state: GameState): RestAction[] {
@@ -466,6 +529,9 @@ function restActions(state: GameState): RestAction[] {
   }
   if (hasRelic(state, "shovel")) {
     actions.push({ kind: "dig" });
+  }
+  if (hasRelic(state, "peace_pipe") && state.deck.length > 0) {
+    actions.push({ kind: "toke" });
   }
   return actions;
 }
@@ -591,10 +657,42 @@ export function applyChoose(state: GameState, optionIndex: number): ChooseResult
     }
     state.log.push(choice.resultText);
     state.event = null;
-    // 事件触发了战斗：交给战斗屏（胜利后走正常奖励流程再回地图），不立即回地图。
-    if (state.combat !== null) {
+    // 事件触发了战斗或选牌屏：交给对应界面接管，不立即回地图。
+    if (state.combat !== null || state.cardSelect !== null) {
       return { ok: true };
     }
+    backToMap(state);
+    return { ok: true };
+  }
+
+  if (state.screen === "card_select" && state.cardSelect) {
+    const cs = state.cardSelect;
+    if (cs.canSkip && optionIndex === cs.choices.length) {
+      state.cardSelect = null;
+      backToMap(state);
+      return { ok: true };
+    }
+    const choice = cs.choices[optionIndex];
+    if (!choice) {
+      return { ok: false, reason: `选项 ${optionIndex} 无效。` };
+    }
+    if (cs.mode === "add") {
+      addCardToDeck(state, choice.defId, choice.upgraded);
+      state.log.push(`你获得了「${getCardDef(choice.defId).name}」。`);
+    } else if (cs.mode === "duplicate") {
+      const src = state.deck.find((c) => c.uid === choice.uid);
+      if (src) {
+        addCardToDeck(state, src.defId, src.upgraded);
+        state.log.push(`「${getCardDef(src.defId).name}」被复制了。`);
+      }
+    } else {
+      const idx = state.deck.findIndex((c) => c.uid === choice.uid);
+      if (idx >= 0) {
+        state.log.push(`你抽去了「${getCardDef(state.deck[idx].defId).name}」。`);
+        state.deck.splice(idx, 1);
+      }
+    }
+    state.cardSelect = null;
     backToMap(state);
     return { ok: true };
   }
@@ -647,6 +745,11 @@ export function applyChoose(state: GameState, optionIndex: number): ChooseResult
         // 挖掘（shovel）：挖出一个遗物。
         grantRandomRelic(state);
         break;
+      }
+      case "toke": {
+        // 抽烟（peace_pipe）：打开选牌屏抽去一张牌（选完由 card_select 分支回地图）。
+        openCardRemoval(state);
+        return { ok: true };
       }
     }
     backToMap(state);

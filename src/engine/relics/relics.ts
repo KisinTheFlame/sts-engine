@@ -4,9 +4,10 @@ import type {
   CharacterId,
   Effect,
   GameState,
+  PowerId,
   RelicState,
 } from "../types.js";
-import { addPower } from "../powers/powers.js";
+import { addPower, removePower } from "../powers/powers.js";
 import { getCardDef, rewardCardPoolOf } from "../cards/cards.js";
 import { POTION_DROP_POOL } from "../potions/potions.js";
 import { nextInt } from "../rng.js";
@@ -1858,6 +1859,105 @@ const RELIC_LIST: RelicDef[] = [
         state.deck.push({ uid: state.nextUid++, defId: "clumsy", upgraded: false });
       },
     },
+  },
+  // === 补全批次 E：姿态/球/弃牌/消耗联动 + 选牌篝火 ===
+  {
+    id: "duality",
+    name: "对偶手镯",
+    rarity: "uncommon",
+    characterLock: "watcher",
+    description: "每当你打出一张攻击牌，本回合获得 1 点敏捷（回合结束时失去）。",
+    hooks: {
+      onCardPlayed: (state, _self, cardType) => {
+        if (cardType === "attack" && state.combat) {
+          addPower(state.combat.playerPowers, "dexterity_temp", 1);
+        }
+      },
+    },
+  },
+  {
+    id: "orange_pellets",
+    name: "橙色药丸",
+    rarity: "shop",
+    // counter 作本回合已打出牌型的位掩码（攻/技/能）；集齐则清除全部减益。
+    description: "在同一回合内打出攻击、技能和能力牌各一张后，移除你身上所有减益。",
+    hooks: {
+      onTurnStart: (_state, self) => {
+        self.counter = 0;
+      },
+      onCardPlayed: (state, self, cardType) => {
+        const bit =
+          cardType === "attack" ? 1 : cardType === "skill" ? 2 : cardType === "power" ? 4 : 0;
+        self.counter |= bit;
+        if ((self.counter & 7) === 7 && state.combat) {
+          const debuffs: PowerId[] = ["weak", "vulnerable", "frail", "entangled"];
+          for (const id of debuffs) {
+            removePower(state.combat.playerPowers, id);
+          }
+          self.counter = 0;
+        }
+      },
+    },
+  },
+  {
+    id: "emotion_chip",
+    name: "情绪芯片",
+    rarity: "rare",
+    characterLock: "defect",
+    // 效果在 combat.ts 的回合开始处理（上回合掉血则触发所有球被动）。
+    description: "若上一回合你失去了生命，则本回合开始时触发所有充能球的被动效果。",
+    hooks: {},
+  },
+  {
+    id: "gold_plated_cables",
+    name: "镀金电缆",
+    rarity: "uncommon",
+    characterLock: "defect",
+    // 效果在 combat.ts 的回合结束处理（最右侧球额外触发一次被动）。
+    description: "每个玩家回合结束时，最右侧的充能球额外触发一次被动效果。",
+    hooks: {},
+  },
+  {
+    id: "strange_spoon",
+    name: "奇怪的勺子",
+    rarity: "shop",
+    // 效果在 combat.ts 的 playCard 入堆处理（自带消耗的牌 50% 改为弃牌）。
+    description: "本应被消耗的牌有 50% 的概率改为进入弃牌堆。",
+    hooks: {},
+  },
+  {
+    id: "orrery",
+    name: "浑天仪",
+    rarity: "shop",
+    description: "获得时，将 5 张随机牌加入你的牌组。",
+    hooks: {
+      onEquip: (state) => {
+        const pool = rewardCardPoolOf(CHARACTER_COLOR[state.character]);
+        for (let n = 0; n < 5; n += 1) {
+          state.deck.push({
+            uid: state.nextUid++,
+            defId: pool[nextInt(state.rng, pool.length)],
+            upgraded: false,
+          });
+        }
+      },
+    },
+  },
+  {
+    id: "the_courier",
+    name: "信使",
+    rarity: "shop",
+    // 效果在 shop.ts 的 generateShop 里按 hasRelic 处理（商店额外多进 1 张牌 + 1 瓶药水）。
+    description: "商店会多进货：额外多 1 张牌与 1 瓶药水可供选购。",
+    hooks: {},
+  },
+  {
+    id: "peace_pipe",
+    name: "和平烟斗",
+    rarity: "rare",
+    // 效果在 run.ts 的篝火菜单里：可在篝火抽去一张牌（openCardRemoval）。
+    description: "你可以在篝火抽去牌组中的一张牌。",
+    hooks: {},
   },
   {
     id: "circlet",

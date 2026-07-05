@@ -257,6 +257,7 @@ export function startCombat(state: GameState, encounterId: string, isElite = fal
     encounterId,
     isBoss: encounter.isBoss,
     isElite,
+    hpAtTurnStart: state.hp,
     timeWarpEndTurnPending: false,
   };
   state.combat = combat;
@@ -2998,10 +2999,17 @@ export function playCard(
   if (blueCandlePlay) {
     applyEffects(state, [{ kind: "lose_hp", amount: 1 }], { side: "player" }, null);
   }
+  // 奇怪的勺子：本会消耗（自带消耗关键字）的牌有 50% 概率改为进弃牌堆。
+  const spoonSaves =
+    def.exhausts &&
+    !corrupted &&
+    !forcedPlay &&
+    hasRelic(state, "strange_spoon") &&
+    nextInt(state.rng, 2) === 0;
   if (def.type === "power") {
     // 能力牌打出后离场（效果转为常驻 power），不入任何牌堆，本场不再抽到。
     combat.powersPlayedThisCombat += 1; // 力场按本场打出的能力牌数降费。
-  } else if (def.exhausts || corrupted || forcedPlay) {
+  } else if ((def.exhausts || corrupted || forcedPlay) && !spoonSaves) {
     // 腐化下技能牌也消耗；医疗包/蓝烛打出的状态/诅咒牌也消耗。
     exhaustCard(state, instance);
   } else {
@@ -3260,6 +3268,10 @@ export function endTurn(state: GameState): void {
   }
   // 充能球被动（机器人）：回合结束时每颗球触发（闪电随机伤害 / 冰霜格挡）。
   triggerOrbPassives(state);
+  // 镀金电缆：回合结束时最右侧的球额外触发一次被动。
+  if (hasRelic(state, "gold_plated_cables") && combat.orbs.length > 0) {
+    triggerOneOrbPassive(state, combat.orbs[combat.orbs.length - 1]);
+  }
   // 回合结束遗物（山铜：若无格挡则补格挡）——在金属化之后判定。
   triggerRelicTurnEnd(state);
   decayDebuffs(combat.playerPowers);
@@ -3272,6 +3284,10 @@ export function endTurn(state: GameState): void {
   if (strengthTemp > 0) {
     addPower(combat.playerPowers, "strength", -strengthTemp);
     removePower(combat.playerPowers, "strength_temp");
+  }
+  // 临时敏捷（对偶手镯）：回合结束清零。
+  if (getPower(combat.playerPowers, "dexterity_temp") > 0) {
+    removePower(combat.playerPowers, "dexterity_temp");
   }
   // 暴怒 / 挥手：只在打出它的回合生效，回合结束清除。
   if (getPower(combat.playerPowers, "rage") > 0) {
@@ -3361,6 +3377,15 @@ export function endTurn(state: GameState): void {
 
   // 下个玩家回合开始。
   combat.turn += 1;
+  // 情绪芯片：若上一回合（含敌人行动）净掉了血，本回合开始触发所有充能球的被动。
+  if (
+    hasRelic(state, "emotion_chip") &&
+    state.hp < combat.hpAtTurnStart &&
+    combat.orbs.length > 0
+  ) {
+    triggerOrbPassives(state);
+  }
+  combat.hpAtTurnStart = state.hp;
   combat.lastCardType = null;
   combat.attacksThisTurn = 0;
   combat.cardsDiscardedThisTurn = 0;
