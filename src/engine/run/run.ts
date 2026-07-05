@@ -92,8 +92,8 @@ function resolveNode(state: GameState, node: MapNode): void {
       return;
     }
     case "elite": {
-      // 精英战：独立精英池；胜利后必发 1 个遗物。
-      startCombat(state, pickEliteEncounter(state.rng, state.act));
+      // 精英战：独立精英池；胜利后必发 1 个遗物。isElite=true 供勇气投索 / 密封昆虫判定。
+      startCombat(state, pickEliteEncounter(state.rng, state.act), true);
       state.pendingRelicReward = true;
       return;
     }
