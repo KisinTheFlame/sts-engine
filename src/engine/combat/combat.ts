@@ -283,7 +283,8 @@ export function startCombat(state: GameState, encounterId: string, isElite = fal
   // 固有牌（背刺等）：开局必在起手，先从抽牌堆抽到手牌。
   const innate = drawPile.filter((card) => {
     const cardDef = getCardDef(card.defId);
-    return cardDef.innate || (card.upgraded && cardDef.upgradedInnate);
+    // card.innate：瓶装遗物封入的实例级固有（瓶装火焰/闪电/龙卷）。
+    return card.innate || cardDef.innate || (card.upgraded && cardDef.upgradedInnate);
   });
   for (const card of innate) {
     const idx = combat.drawPile.indexOf(card);
@@ -531,9 +532,10 @@ function applyEffects(
   targetEnemyIndex: number | null,
   xValue = 0,
   sourceCard?: CardInstance,
+  attackMult = 1,
 ): void {
   for (const effect of effects) {
-    applyEffect(state, effect, actor, targetEnemyIndex, xValue, sourceCard);
+    applyEffect(state, effect, actor, targetEnemyIndex, xValue, sourceCard, attackMult);
   }
 }
 
@@ -544,6 +546,8 @@ function applyEffect(
   targetEnemyIndex: number | null,
   xValue = 0,
   sourceCard?: CardInstance,
+  // 钢笔尖：本次攻击伤害倍率（第 10 次攻击 ×2）；仅作用于直接单体 deal_damage。
+  attackMult = 1,
 ): void {
   const combat = state.combat!;
   const powers = actorPowers(state, actor);
@@ -578,7 +582,8 @@ function applyEffect(
             state,
             targetEnemyIndex,
             (effect.amount + vigor + accuracyBonus + strikeBonus + wristBladeBonus) *
-              phantasmalMult,
+              phantasmalMult *
+              attackMult,
             powers,
             effect.strengthMultiplier,
           );
@@ -1456,6 +1461,54 @@ function applyEffect(
       // 悔恨：失去 = 手牌张数的生命（无视格挡）。
       if (actor.side === "player") {
         state.hp = Math.max(0, state.hp - combat.hand.length);
+      }
+      break;
+    }
+    case "play_top_n": {
+      // 蒸馏混沌：依次打出抽牌堆顶的 count 张牌（各自结算效果后按其规则入堆/消耗）。
+      if (actor.side === "player") {
+        for (let n = 0; n < effect.count && combat.drawPile.length > 0; n += 1) {
+          const top = combat.drawPile.pop()!;
+          const topDef = getCardDef(top.defId);
+          let topTarget: number | null = null;
+          if (topDef.targeted) {
+            const living = combat.enemies
+              .map((enemy, index) => ({ enemy, index }))
+              .filter((entry) => entry.enemy.hp > 0);
+            if (living.length === 0) {
+              combat.discardPile.push(top); // 需目标但无敌人：跳过，进弃牌堆。
+              continue;
+            }
+            topTarget = living[nextInt(state.rng, living.length)].index;
+          }
+          applyEffects(
+            state,
+            effectsOf(topDef, top.upgraded),
+            { side: "player" },
+            topTarget,
+            0,
+            top,
+          );
+          if (topDef.type === "power") {
+            // 能力牌离场（效果已转常驻）。
+          } else if (topDef.exhausts) {
+            exhaustCard(state, top);
+          } else {
+            combat.discardPile.push(top);
+          }
+        }
+      }
+      break;
+    }
+    case "randomize_hand_costs": {
+      // 蛇油药水：将手牌中可打出的非 X 费牌费用随机改为 0~3（本场有效）。
+      if (actor.side === "player") {
+        for (const c of combat.hand) {
+          const cDef = getCardDef(c.defId);
+          if (cDef.cost !== null && !cDef.xCost) {
+            c.randomCost = nextInt(state.rng, 4);
+          }
+        }
       }
       break;
     }
@@ -2382,6 +2435,14 @@ function dealDamageToEnemy(
   // 亡语：此击致死则结算敌人的死亡效果（真菌兽孢子云给玩家易伤）。
   if (wasAlive && enemy.hp === 0) {
     spreadCorpseBomb(state, enemyIndex, getPower(enemy.powers, "poison")); // 尸爆：被打死时扩散毒。
+    // 样本瓶：敌人死亡时，把它身上的中毒转移给一名随机存活敌人。
+    const dyingPoison = getPower(enemy.powers, "poison");
+    if (dyingPoison > 0 && hasRelic(state, "the_specimen")) {
+      const living = state.combat!.enemies.filter((e, i) => i !== enemyIndex && e.hp > 0);
+      if (living.length > 0) {
+        applyPowerToEnemy(living[nextInt(state.rng, living.length)], "poison", dyingPoison);
+      }
+    }
     const dyingDef = getEnemyDef(enemy.defId);
     if (dyingDef.deathEffects) {
       applyEffects(state, dyingDef.deathEffects, { side: "enemy", index: enemyIndex }, null);
@@ -2826,6 +2887,18 @@ export function playCard(
   combat.hand.splice(handIndex, 1);
   // 出牌计数（超光速见「本张已计入」故先增；华彩每 5 张触发靠它）。回合始清零。
   combat.cardsPlayedThisTurn += 1;
+  // 钢笔尖：每打出 10 张攻击牌，第 10 张造成双倍伤害（本张按 attackMult=2 结算）。
+  let penNibMult = 1;
+  if (def.type === "attack") {
+    const penNib = state.relics.find((relic) => relic.id === "pen_nib");
+    if (penNib) {
+      penNib.counter += 1;
+      if (penNib.counter >= 10) {
+        penNib.counter = 0;
+        penNibMult = 2;
+      }
+    }
+  }
   // 爆发/增幅/回响：记下结算前的层数，避免施加这些效果的牌把自己也翻倍。
   const burstBefore = getPower(combat.playerPowers, "burst");
   const amplifyBefore = getPower(combat.playerPowers, "amplify");
@@ -2837,6 +2910,7 @@ export function playCard(
     resolvedTarget,
     xValue,
     instance,
+    penNibMult,
   );
   // 爆发：接下来的技能各额外结算一次（消耗 1 层）；不作用于施加爆发的这张牌本身。
   if (def.type === "skill" && burstBefore > 0) {
@@ -2853,6 +2927,19 @@ export function playCard(
   // 增幅：接下来的能力牌各额外结算一次（消耗 1 层）；不作用于施加增幅的这张牌本身。
   if (def.type === "power" && amplifyBefore > 0) {
     addPower(combat.playerPowers, "amplify", -1);
+    applyEffects(
+      state,
+      effectsOf(def, instance.upgraded),
+      { side: "player" },
+      resolvedTarget,
+      xValue,
+      instance,
+    );
+  }
+  // 复制（复制药水）：接下来的牌各额外结算一次（消耗 1 层）；作用于任意牌型。
+  const duplicationBefore = getPower(combat.playerPowers, "duplication");
+  if (duplicationBefore > 0) {
+    addPower(combat.playerPowers, "duplication", -1);
     applyEffects(
       state,
       effectsOf(def, instance.upgraded),

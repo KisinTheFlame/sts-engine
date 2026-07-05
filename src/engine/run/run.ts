@@ -261,9 +261,14 @@ function rollRewardCard(state: GameState, exclude: ReadonlySet<string>): string 
   const color = getCharacterConfig(state.character).color;
   const roll = nextInt(state.rng, 100);
   const rarity = roll < 4 ? "rare" : roll < 40 ? "uncommon" : "common";
+  // 棱镜碎片：奖励卡池并入无色牌（该档）。
+  const prismatic = hasRelic(state, "prismatic_shard");
   // 依次尝试目标档 → 降级兜底，保证总能给出一张不重复的卡。
   for (const tier of [rarity, "uncommon", "common"] as const) {
-    const candidates = cardPoolOf(color, tier).filter((id) => !exclude.has(id));
+    const pool = prismatic
+      ? [...cardPoolOf(color, tier), ...cardPoolOf("colorless", tier)]
+      : cardPoolOf(color, tier);
+    const candidates = pool.filter((id) => !exclude.has(id));
     if (candidates.length > 0) {
       return candidates[nextInt(state.rng, candidates.length)];
     }
@@ -408,6 +413,22 @@ function applyEventOutcome(state: GameState, outcome: EventOutcome): void {
         const idx = nextInt(state.rng, candidates.length);
         candidates[idx].upgraded = true;
         candidates.splice(idx, 1);
+      }
+      break;
+    }
+    case "start_combat": {
+      // 事件触发战斗：进入指定遭遇；elite 则胜利后发遗物（斗兽场/神秘球等）。
+      startCombat(state, outcome.encounterId, outcome.elite ?? false);
+      if (outcome.elite) {
+        state.pendingRelicReward = true;
+      }
+      break;
+    }
+    case "random": {
+      // 命运之轮：等概率选一组子结果结算。
+      const chosen = outcome.options[nextInt(state.rng, outcome.options.length)];
+      for (const sub of chosen) {
+        applyEventOutcome(state, sub);
       }
       break;
     }
@@ -570,6 +591,10 @@ export function applyChoose(state: GameState, optionIndex: number): ChooseResult
     }
     state.log.push(choice.resultText);
     state.event = null;
+    // 事件触发了战斗：交给战斗屏（胜利后走正常奖励流程再回地图），不立即回地图。
+    if (state.combat !== null) {
+      return { ok: true };
+    }
     backToMap(state);
     return { ok: true };
   }

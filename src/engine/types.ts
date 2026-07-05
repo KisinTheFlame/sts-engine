@@ -107,7 +107,8 @@ export type PowerId =
   | "no_card_block" // 无法格挡：牌产生的格挡被抑制（层数即剩余生效回合数，回合末 -1，应急按钮）
   | "electrodynamics" // 电动力学：闪电球伤害命中所有敌人（机器人）
   | "time_warp" // 时间扭曲：玩家每打出 timeWarpEvery 张牌，此敌人 +2 力量并立即结束玩家回合（时间吞噬者，敌人身上·计数）
-  | "draw_reduction"; // 抽牌削减：下个玩家回合少抽 = 层数张（时间吞噬者头槌，玩家身上·一次性）
+  | "draw_reduction" // 抽牌削减：下个玩家回合少抽 = 层数张（时间吞噬者头槌，玩家身上·一次性）
+  | "duplication"; // 复制：接下来 = 层数张打出的牌各额外结算一次（复制药水；每张 -1 层）
 
 /** 玩家出牌 / 敌人出招共用的效果原语。target 相对「行动者」解析。 */
 export type Effect =
@@ -293,7 +294,9 @@ export type Effect =
   | { kind: "retain_hand" } // 本回合结束时保留全部手牌（平衡）
   | { kind: "boss_haste" } // 敌人自身：回复生命到最大值的一半、清除自身减益（时间吞噬者加速）
   | { kind: "fill_potion_slots" } // 玩家：把所有空药水槽填满随机药水（熵酿）
-  | { kind: "channel_orb_per_slot"; orbType: OrbType }; // 玩家：每个球槽充能 1 颗指定球（暗影精华）
+  | { kind: "channel_orb_per_slot"; orbType: OrbType } // 玩家：每个球槽充能 1 颗指定球（暗影精华）
+  | { kind: "randomize_hand_costs" } // 玩家：将手牌费用随机改为 0~3（本场有效，蛇油药水）
+  | { kind: "play_top_n"; count: number }; // 玩家：打出抽牌堆顶 count 张（蒸馏混沌）
 
 /** 卡定义（静态数据表）。cost=null 表示不可打出（status/废牌）。 */
 export type CardDef = {
@@ -361,6 +364,8 @@ export type CardInstance = {
   costCapThisTurn?: number;
   /** 蛇眼混乱：抽到时掷定的随机费用（0~3，覆盖原费用；X 费/废牌不受影响）。本场有效。 */
   randomCost?: number;
+  /** 瓶装遗物：此实例被封入瓶中，战斗开局必在起手牌（覆盖 def.innate 的实例级固有）。 */
+  innate?: boolean;
 };
 
 export type PowerInstance = { id: PowerId; amount: number };
