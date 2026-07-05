@@ -1601,6 +1601,173 @@ const RELIC_LIST: RelicDef[] = [
     description: "在你的回合，每当手牌被清空，抽 1 张牌。",
     hooks: {},
   },
+  // === 补全批次 B：奖励 / 篝火 / 宝箱时点遗物（多数逻辑在 run.ts / combat.ts 按 hasRelic 处理）===
+  {
+    id: "question_card",
+    name: "问号卡",
+    rarity: "uncommon",
+    description: "每次卡牌奖励多显示 1 张可选卡。",
+    hooks: {},
+  },
+  {
+    id: "prayer_wheel",
+    name: "祈祷之轮",
+    rarity: "rare",
+    description: "普通战斗的卡牌奖励额外多显示 1 张可选卡。",
+    hooks: {},
+  },
+  {
+    id: "singing_bowl",
+    name: "唱钵",
+    rarity: "uncommon",
+    description: "获得卡牌奖励时，可改为放弃卡牌、获得 2 点最大生命。",
+    hooks: {},
+  },
+  {
+    id: "white_beast_statue",
+    name: "白兽雕像",
+    rarity: "uncommon",
+    description: "每次战斗后必定掉落一瓶药水。",
+    hooks: {},
+  },
+  {
+    id: "black_star",
+    name: "黑洞之星",
+    rarity: "boss",
+    description: "精英敌人掉落 2 个遗物。",
+    hooks: {},
+  },
+  {
+    id: "girya",
+    name: "壮力手环",
+    rarity: "rare",
+    // counter 记本局举重次数（篝火「举重」每次 +1，至多 3）；每场战斗开始施加等量力量。
+    description: "可在篝火举重，永久获得 1 点力量（至多 3 次）。每场战斗开始时获得已积累的力量。",
+    hooks: {
+      onCombatStart: (state, self) => {
+        if (state.combat && self.counter > 0) {
+          addPower(state.combat.playerPowers, "strength", self.counter);
+        }
+      },
+    },
+  },
+  {
+    id: "shovel",
+    name: "铁铲",
+    rarity: "rare",
+    description: "可在篝火挖掘，挖出一个遗物。",
+    hooks: {},
+  },
+  {
+    id: "dream_catcher",
+    name: "织梦者",
+    rarity: "common",
+    description: "每当你在篝火休息时，可以额外获得一次卡牌奖励。",
+    hooks: {},
+  },
+  {
+    id: "ancient_tea_set",
+    name: "古董茶具",
+    rarity: "common",
+    // counter=1 表示「刚在篝火休息过」；下场战斗第一回合 +2 能量后清零（combat.ts 处理）。
+    description: "每当你在篝火休息后，下一场战斗的第一回合额外获得 2 点能量。",
+    hooks: {},
+  },
+  {
+    id: "matryoshka",
+    name: "俄罗斯套娃",
+    rarity: "uncommon",
+    // counter 记剩余生效次数；获得时为 2，接下来 2 个宝箱各额外给 1 个遗物。
+    description: "接下来打开的 2 个宝箱各额外包含 1 个遗物。",
+    hooks: {
+      onEquip: (_state, self) => {
+        self.counter = 2;
+      },
+    },
+  },
+  // === 补全批次 C：商店 / 状态牌可打 / X 费 / 破甲发伤 ===
+  {
+    id: "membership_card",
+    name: "会员卡",
+    rarity: "shop",
+    // 效果在 shop.ts 的 generateShop 里按 hasRelic 处理（全场商品与去牌 5 折）。
+    description: "商店中所有商品和去牌服务的价格降低 50%。",
+    hooks: {},
+  },
+  {
+    id: "smiling_mask",
+    name: "微笑面具",
+    rarity: "common",
+    // 效果在 shop.ts 的 generateShop 里按 hasRelic 处理（去牌固定 50 金）。
+    description: "商店的去牌服务价格永远为 50 金。",
+    hooks: {},
+  },
+  {
+    id: "medical_kit",
+    name: "医疗包",
+    rarity: "shop",
+    // 效果在 combat.ts 的 playCard 里按 hasRelic 处理（状态牌 0 费可打、打出即消耗）。
+    description: "你可以打出状态牌。打出状态牌时费用为 0，并将其消耗。",
+    hooks: {},
+  },
+  {
+    id: "blue_candle",
+    name: "蓝烛",
+    rarity: "uncommon",
+    // 效果在 combat.ts 的 playCard 里按 hasRelic 处理（诅咒牌 0 费可打、失 1 血、消耗）。
+    description: "你可以打出诅咒牌。打出诅咒牌会失去 1 点生命，并将其消耗。",
+    hooks: {},
+  },
+  {
+    id: "chemical_x",
+    name: "化学 X",
+    rarity: "shop",
+    // 效果在 combat.ts 的 playCard 里按 hasRelic 处理（X 费牌 X 额外 +2）。
+    description: "每当你打出一张 X 费牌，其 X 视为额外 +2。",
+    hooks: {},
+  },
+  {
+    id: "snecko_eye",
+    name: "蛇之眼",
+    rarity: "boss",
+    // 效果在 combat.ts 处理：每回合多抽 2 张；抽到的可打出牌费用随机 0~3（混乱）。
+    description: "每回合多抽 2 张牌。战斗中，抽到的牌费用随机变为 0~3（X 费牌与废牌除外）。",
+    hooks: {},
+  },
+  {
+    id: "hand_drill",
+    name: "手钻",
+    rarity: "shop",
+    // 效果在 combat.ts 的 dealDamageToEnemy 里按 hasRelic 处理（打破格挡 → 2 易伤）。
+    description: "每当你用攻击打破一名敌人的格挡，令其获得 2 层易伤。",
+    hooks: {},
+  },
+  {
+    id: "strike_dummy",
+    name: "打桩人偶",
+    rarity: "uncommon",
+    // 效果在 combat.ts 的 deal_damage 里按 hasRelic 处理（名字含「打击」的牌 +3 伤害）。
+    description: "打出名字中带有「打击」的牌时，额外造成 3 点伤害。",
+    hooks: {},
+  },
+  {
+    id: "wrist_blade",
+    name: "腕刃",
+    rarity: "rare",
+    characterLock: "silent",
+    // 效果在 combat.ts 的 deal_damage 里按 hasRelic 处理（0 费攻击牌 +4 伤害）。
+    description: "你打出的 0 费攻击牌，额外造成 4 点伤害。",
+    hooks: {},
+  },
+  {
+    id: "snecko_skull",
+    name: "蛇之头骨",
+    rarity: "common",
+    characterLock: "silent",
+    // 效果在 combat.ts 的 apply_power 里按 hasRelic 处理（施加中毒 +1）。
+    description: "每当你对敌人施加中毒，额外施加 1 层。",
+    hooks: {},
+  },
   {
     id: "circlet",
     name: "头环",

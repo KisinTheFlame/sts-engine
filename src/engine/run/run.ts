@@ -123,7 +123,7 @@ function resolveNode(state: GameState, node: MapNode): void {
       return;
     }
     case "treasure": {
-      grantTreasure(state);
+      openTreasureChest(state);
       backToMap(state);
       return;
     }
@@ -131,6 +131,16 @@ function resolveNode(state: GameState, node: MapNode): void {
       // 所有节点类型已启用；保守回地图兜底。
       backToMap(state);
     }
+  }
+}
+
+/** 打开一个宝箱：给宝箱遗物；俄罗斯套娃前 2 次各额外掉 1 个遗物。 */
+export function openTreasureChest(state: GameState): void {
+  grantTreasure(state);
+  const matryoshka = state.relics.find((relic) => relic.id === "matryoshka");
+  if (matryoshka && matryoshka.counter > 0) {
+    grantRandomRelic(state);
+    matryoshka.counter -= 1;
   }
 }
 
@@ -173,7 +183,10 @@ function rollPotionDrop(state: GameState): void {
   if (emptySlot < 0) {
     return; // 槽满，不掉。
   }
-  const chance = Math.max(0, Math.min(100, BASE_POTION_DROP_CHANCE + state.potionDropBonus));
+  // 白兽雕像：药水必掉（概率视为 100）。
+  const chance = hasRelic(state, "white_beast_statue")
+    ? 100
+    : Math.max(0, Math.min(100, BASE_POTION_DROP_CHANCE + state.potionDropBonus));
   if (nextInt(state.rng, 100) < chance) {
     // 掷稀有度（稀有 5% / 罕见 30% / 普通 65%），再从该档抽一瓶。
     const roll = nextInt(state.rng, 100);
@@ -193,6 +206,10 @@ export function generateReward(state: GameState): void {
   const isElite = state.pendingRelicReward;
   if (state.pendingRelicReward) {
     grantRandomRelic(state);
+    // 黑洞之星：精英额外掉 1 个遗物。
+    if (hasRelic(state, "black_star")) {
+      grantRandomRelic(state);
+    }
     state.pendingRelicReward = false;
   }
   // 战斗胜利掉金币（普通 10-20 / 精英 25-35，对齐 StS）。
@@ -204,7 +221,12 @@ export function generateReward(state: GameState): void {
   rollPotionDrop(state);
   const choices: { defId: string; upgraded: boolean }[] = [];
   const picked = new Set<string>();
-  for (let i = 0; i < REWARD_CARD_COUNT; i += 1) {
+  // 问号卡：+1 卡奖励选项；祈祷之轮：普通战斗额外 +1 卡奖励选项。
+  const cardCount =
+    REWARD_CARD_COUNT +
+    (hasRelic(state, "question_card") ? 1 : 0) +
+    (!isElite && hasRelic(state, "prayer_wheel") ? 1 : 0);
+  for (let i = 0; i < cardCount; i += 1) {
     const defId = rollRewardCard(state, picked);
     if (defId === null) {
       break;
@@ -214,6 +236,24 @@ export function generateReward(state: GameState): void {
   }
   state.reward = { cardChoices: choices };
   state.screen = "reward";
+}
+
+/** 织梦者：休息附带的纯卡奖励（无金币/药水），复用奖励屏。选完由 reward 分支回地图。 */
+function generateRestCardReward(state: GameState): void {
+  const choices: { defId: string; upgraded: boolean }[] = [];
+  const picked = new Set<string>();
+  const cardCount = REWARD_CARD_COUNT + (hasRelic(state, "question_card") ? 1 : 0);
+  for (let i = 0; i < cardCount; i += 1) {
+    const defId = rollRewardCard(state, picked);
+    if (defId === null) {
+      break;
+    }
+    picked.add(defId);
+    choices.push({ defId, upgraded: false });
+  }
+  state.reward = { cardChoices: choices };
+  state.screen = "reward";
+  state.log.push("篝火的余烬中，你窥见了一张新的牌。");
 }
 
 /** 掷一张奖励卡：先掷稀有度（稀有 4% / 罕见 36% / 普通 60%），再从本角色该档池里挑未重复的。 */
@@ -247,15 +287,28 @@ export function currentOptions(state: GameState): string[] {
       const rarity = RARITY_LABELS[def.rarity] ?? "";
       return `[${rarity}] ${def.name}${choice.upgraded ? "+" : ""} 费${cost ?? "-"} · ${desc}`;
     });
-    return [...cards, "跳过（不拿卡）"];
+    const extra = ["跳过（不拿卡）"];
+    // 唱钵：可放弃卡奖励，改为 +2 最大生命。
+    if (hasRelic(state, "singing_bowl")) {
+      extra.push("唱钵：放弃卡牌，最大生命 +2");
+    }
+    return [...cards, ...extra];
   }
   if (state.screen === "rest") {
-    const options = [`休息：回复 ${Math.floor(state.maxHp * REST_HEAL_RATIO)} 点生命`];
-    for (const card of upgradableCards(state)) {
-      const def = getCardDef(card.defId);
-      options.push(`打铁：升级「${def.name}」`);
-    }
-    return options;
+    return restActions(state).map((action) => {
+      switch (action.kind) {
+        case "rest":
+          return `休息：回复 ${Math.floor(state.maxHp * REST_HEAL_RATIO)} 点生命`;
+        case "smith": {
+          const card = state.deck.find((c) => c.uid === action.uid)!;
+          return `打铁：升级「${getCardDef(card.defId).name}」`;
+        }
+        case "lift":
+          return "举重：永久获得 1 点力量";
+        case "dig":
+          return "挖掘：挖出一个遗物";
+      }
+    });
   }
   if (state.screen === "event" && state.event) {
     return getEventDef(state.event.id).choices.map((choice) => choice.label);
@@ -371,6 +424,31 @@ function upgradableCards(state: GameState): GameState["deck"] {
   return state.deck.filter((card) => !card.upgraded && getCardDef(card.defId).cost !== null);
 }
 
+const GIRYA_MAX_LIFTS = 3;
+
+/** 篝火菜单动作（休息 / 打铁 / 举铁 / 挖掘）。选项渲染与 choose 分发共用，避免下标错位。 */
+type RestAction =
+  | { kind: "rest" }
+  | { kind: "smith"; uid: number }
+  | { kind: "lift" } // 举重（举铁）：girya，+1 永久力量，全程至多 3 次
+  | { kind: "dig" }; // 挖掘：shovel，挖一个遗物
+
+/** 按当前遗物构造篝火菜单：休息永远在首位，之后依次是打铁项、可用的篝火遗物动作。 */
+function restActions(state: GameState): RestAction[] {
+  const actions: RestAction[] = [{ kind: "rest" }];
+  for (const card of upgradableCards(state)) {
+    actions.push({ kind: "smith", uid: card.uid });
+  }
+  const girya = state.relics.find((relic) => relic.id === "girya");
+  if (girya && girya.counter < GIRYA_MAX_LIFTS) {
+    actions.push({ kind: "lift" });
+  }
+  if (hasRelic(state, "shovel")) {
+    actions.push({ kind: "dig" });
+  }
+  return actions;
+}
+
 export type ChooseResult = { ok: true } | { ok: false; reason: string };
 
 /** 购买一件商店商品：校验售罄/金币/药水槽 → 扣金币、入库、标记售罄，留在商店屏。 */
@@ -416,7 +494,13 @@ export function applyChoose(state: GameState, optionIndex: number): ChooseResult
 
   if (state.screen === "reward" && state.reward) {
     const choices = state.reward.cardChoices;
-    if (optionIndex === choices.length) {
+    const bowlIndex = hasRelic(state, "singing_bowl") ? choices.length + 1 : -1;
+    if (optionIndex === bowlIndex) {
+      // 唱钵：放弃卡牌换 +2 最大生命。
+      state.maxHp += 2;
+      state.hp += 2;
+      state.log.push("你对着唱钵冥想，最大生命 +2。");
+    } else if (optionIndex === choices.length) {
       state.log.push("你跳过了卡奖励。");
     } else if (optionIndex >= 0 && optionIndex < choices.length) {
       const pick = choices[optionIndex];
@@ -491,22 +575,54 @@ export function applyChoose(state: GameState, optionIndex: number): ChooseResult
   }
 
   if (state.screen === "rest") {
-    if (optionIndex === 0) {
-      // 富贵枕头：休息时额外回复 15 点生命；永恒羽毛：每 5 张牌额外回 3。
-      const heal =
-        Math.floor(state.maxHp * REST_HEAL_RATIO) +
-        (hasRelic(state, "regal_pillow") ? 15 : 0) +
-        (hasRelic(state, "eternal_feather") ? Math.floor(state.deck.length / 5) * 3 : 0);
-      state.hp = Math.min(state.maxHp, state.hp + heal);
-      state.log.push(`你休息了一会儿，回复了 ${heal} 点生命。`);
-    } else {
-      const upgradable = upgradableCards(state);
-      const target = upgradable[optionIndex - 1];
-      if (!target) {
-        return { ok: false, reason: `选项 ${optionIndex} 无效。` };
+    const action = restActions(state)[optionIndex];
+    if (!action) {
+      return { ok: false, reason: `选项 ${optionIndex} 无效。` };
+    }
+    switch (action.kind) {
+      case "rest": {
+        // 富贵枕头：休息时额外回复 15 点生命；永恒羽毛：每 5 张牌额外回 3。
+        const heal =
+          Math.floor(state.maxHp * REST_HEAL_RATIO) +
+          (hasRelic(state, "regal_pillow") ? 15 : 0) +
+          (hasRelic(state, "eternal_feather") ? Math.floor(state.deck.length / 5) * 3 : 0);
+        state.hp = Math.min(state.maxHp, state.hp + heal);
+        state.log.push(`你休息了一会儿，回复了 ${heal} 点生命。`);
+        // 古董茶具：休息后下场战斗第一回合 +2 能量（counter 作待生效标记）。
+        const teaSet = state.relics.find((relic) => relic.id === "ancient_tea_set");
+        if (teaSet) {
+          teaSet.counter = 1;
+        }
+        // 织梦者：休息时额外获得一次卡奖励（复用奖励屏；选完自动回地图）。
+        if (hasRelic(state, "dream_catcher")) {
+          generateRestCardReward(state);
+          return { ok: true };
+        }
+        break;
       }
-      target.upgraded = true;
-      state.log.push(`你升级了「${getCardDef(target.defId).name}」。`);
+      case "smith": {
+        const target = state.deck.find((c) => c.uid === action.uid);
+        if (!target) {
+          return { ok: false, reason: `选项 ${optionIndex} 无效。` };
+        }
+        target.upgraded = true;
+        state.log.push(`你升级了「${getCardDef(target.defId).name}」。`);
+        break;
+      }
+      case "lift": {
+        // 举重（girya）：counter 记本局已举次数，每次 +1 永久力量（战斗开始由钩子施加）。
+        const girya = state.relics.find((relic) => relic.id === "girya");
+        if (girya) {
+          girya.counter += 1;
+          state.log.push("你举起了铁球，force +1。");
+        }
+        break;
+      }
+      case "dig": {
+        // 挖掘（shovel）：挖出一个遗物。
+        grantRandomRelic(state);
+        break;
+      }
     }
     backToMap(state);
     return { ok: true };
