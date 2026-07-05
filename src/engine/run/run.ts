@@ -102,6 +102,18 @@ function resolveNode(state: GameState, node: MapNode): void {
       return;
     }
     case "event": {
+      // 迷你宝箱：每进入第 4 个 ? 房间，该房间变为宝箱房。
+      const tinyChest = state.relics.find((relic) => relic.id === "tiny_chest");
+      if (tinyChest) {
+        tinyChest.counter += 1;
+        if (tinyChest.counter >= 4) {
+          tinyChest.counter = 0;
+          openTreasureChest(state);
+          backToMap(state);
+          state.log.push("这处未知房间里，竟藏着一个宝箱。");
+          return;
+        }
+      }
       const eventId = EVENT_POOL[nextInt(state.rng, EVENT_POOL.length)];
       state.event = { id: eventId };
       state.screen = "event";
@@ -166,6 +178,26 @@ export function grantRandomRelic(state: GameState): void {
 /** 结算完一个节点后回到地图选路屏。 */
 function backToMap(state: GameState): void {
   state.screen = "map";
+}
+
+const WING_BOOTS_CHARGES = 3;
+
+/**
+ * 地图上可选择进入的下一个节点：正常受路径约束（availableNext）；
+ * 但持有仍有余量的仙女靴（wing_boots）时，可无视路径直达下一层的任意节点。
+ */
+function mapNextChoices(state: GameState): string[] {
+  const normal = availableNext(state.map, state.currentNodeId);
+  const wingBoots = state.relics.find((relic) => relic.id === "wing_boots");
+  if (!wingBoots || wingBoots.counter >= WING_BOOTS_CHARGES || state.currentNodeId === null) {
+    return normal;
+  }
+  const current = state.map.nodes[state.currentNodeId];
+  const rowNodes = Object.values(state.map.nodes)
+    .filter((node) => node.row === current.row + 1)
+    .map((node) => node.id);
+  // 下一层就是 Boss（同层无其它节点）时退回普通可达。
+  return rowNodes.length > 0 ? rowNodes : normal;
 }
 
 /** 把一张牌加入大牌组，并触发遗物 onAddCard（陶瓷鱼给金币、各色蛋升级加入的牌）。 */
@@ -301,7 +333,7 @@ function rollRewardCard(state: GameState, exclude: ReadonlySet<string>): string 
 /** 当前屏幕可选项（渲染 + 校验 choose 用）。 */
 export function currentOptions(state: GameState): string[] {
   if (state.screen === "map") {
-    return availableNext(state.map, state.currentNodeId).map((id) => {
+    return mapNextChoices(state).map((id) => {
       const node = state.map.nodes[id];
       return `第${node.row + 1}层 ${NODE_TYPE_LABELS[node.type]}`;
     });
@@ -570,10 +602,18 @@ function buyShopItem(
 
 export function applyChoose(state: GameState, optionIndex: number): ChooseResult {
   if (state.screen === "map") {
-    const options = availableNext(state.map, state.currentNodeId);
+    const options = mapNextChoices(state);
     const nodeId = options[optionIndex];
     if (nodeId === undefined) {
       return { ok: false, reason: `选项 ${optionIndex} 无效。` };
+    }
+    // 仙女靴：若走了正常路径之外的节点，消耗一次靴子余量。
+    if (!availableNext(state.map, state.currentNodeId).includes(nodeId)) {
+      const wingBoots = state.relics.find((relic) => relic.id === "wing_boots");
+      if (wingBoots) {
+        wingBoots.counter += 1;
+        state.log.push("你踩着仙女靴，抄近道越过了岔口。");
+      }
     }
     resolveNode(state, state.map.nodes[nodeId]);
     return { ok: true };
