@@ -127,6 +127,16 @@ function removeRandomCards(state: GameState, count: number): void {
   }
 }
 
+/** 瓶装遗物：把牌组里一张随机指定类型的牌封入瓶中（实例级固有，战斗开局必在起手）。 */
+function bottleRandomCardOfType(state: GameState, type: CardType): void {
+  const candidates = state.deck.filter(
+    (card) => getCardDef(card.defId).type === type && !card.innate,
+  );
+  if (candidates.length > 0) {
+    candidates[nextInt(state.rng, candidates.length)].innate = true;
+  }
+}
+
 const RELIC_LIST: RelicDef[] = [
   {
     id: "burning_blood",
@@ -1767,6 +1777,87 @@ const RELIC_LIST: RelicDef[] = [
     // 效果在 combat.ts 的 apply_power 里按 hasRelic 处理（施加中毒 +1）。
     description: "每当你对敌人施加中毒，额外施加 1 层。",
     hooks: {},
+  },
+  // === 补全批次 D：瓶装固有 / 死亡传毒 / 无色奖励 / 攻击计数 / 局外一次性 ===
+  {
+    id: "bottled_flame",
+    name: "火焰之瓶",
+    rarity: "uncommon",
+    description: "获得时，将牌组中一张攻击牌封入瓶中；它此后每场战斗开局必在起手牌。",
+    hooks: {
+      onEquip: (state) => bottleRandomCardOfType(state, "attack"),
+    },
+  },
+  {
+    id: "bottled_lightning",
+    name: "闪电之瓶",
+    rarity: "uncommon",
+    description: "获得时，将牌组中一张技能牌封入瓶中；它此后每场战斗开局必在起手牌。",
+    hooks: {
+      onEquip: (state) => bottleRandomCardOfType(state, "skill"),
+    },
+  },
+  {
+    id: "bottled_tornado",
+    name: "旋风之瓶",
+    rarity: "uncommon",
+    description: "获得时，将牌组中一张能力牌封入瓶中；它此后每场战斗开局必在起手牌。",
+    hooks: {
+      onEquip: (state) => bottleRandomCardOfType(state, "power"),
+    },
+  },
+  {
+    id: "the_specimen",
+    name: "样本瓶",
+    rarity: "rare",
+    characterLock: "silent",
+    // 效果在 combat.ts 的 dealDamageToEnemy 死亡分支按 hasRelic 处理（传毒给随机敌人）。
+    description: "每当一名敌人死亡，将它身上的中毒转移给一名随机敌人。",
+    hooks: {},
+  },
+  {
+    id: "prismatic_shard",
+    name: "棱镜碎片",
+    rarity: "shop",
+    // 效果在 run.ts 的 rollRewardCard 里按 hasRelic 处理（奖励池并入无色牌）。
+    description: "战斗的卡牌奖励中会出现所有职业的无色牌。",
+    hooks: {},
+  },
+  {
+    id: "pen_nib",
+    name: "钢笔尖",
+    rarity: "common",
+    characterLock: "ironclad",
+    // counter 记本局已打出的攻击牌数；每第 10 张造成双倍伤害（combat.ts 处理）。
+    description: "每打出 10 张攻击牌，下一张攻击牌造成双倍伤害。",
+    hooks: {},
+  },
+  {
+    id: "frozen_eye",
+    name: "冰冻之眼",
+    rarity: "shop",
+    // 纯观察类（可查看抽牌堆顺序）；对计算引擎无机制影响，仅作收藏。
+    description: "战斗中你可以随时查看抽牌堆的顺序。",
+    hooks: {},
+  },
+  {
+    id: "calling_bell",
+    name: "唤魔铃",
+    rarity: "boss",
+    description: "获得时，得到 3 个遗物，但牌组中会混入一张诅咒牌。",
+    hooks: {
+      onEquip: (state) => {
+        // 获得 3 个未持有的遗物（掉落池：普通/罕见/稀有）。
+        const pool = shopRelicPool(state.character).filter((id) => !hasRelic(state, id));
+        for (let n = 0; n < 3 && pool.length > 0; n += 1) {
+          const idx = nextInt(state.rng, pool.length);
+          grantRelic(state, pool[idx]);
+          pool.splice(idx, 1);
+        }
+        // 混入一张诅咒（唤魔铃的代价）。
+        state.deck.push({ uid: state.nextUid++, defId: "clumsy", upgraded: false });
+      },
+    },
   },
   {
     id: "circlet",

@@ -1968,6 +1968,17 @@ const ENCOUNTERS: Record<string, EncounterDef> = {
   },
   // 奴隶主小队：工头 + 蓝/红奴隶主。
   slavers: { id: "slavers", enemies: ["taskmaster", "blue_slaver", "red_slaver"], isBoss: false },
+  // —— 事件触发的战斗遭遇 ——
+  // 斗兽场：工头 + 地精头目，事件触发的硬仗（胜利发遗物）。
+  colosseum: { id: "colosseum", enemies: ["taskmaster", "gremlin_nob"], isBoss: false },
+  // 蒙面强盗：3 名劫掠者（会偷金币、烟雾弹逃跑）。
+  masked_bandits: { id: "masked_bandits", enemies: ["mugger", "mugger", "looter"], isBoss: false },
+  // 神秘球：2 只暗球游荡者（事件触发，胜利发遗物）。
+  mysterious_sphere: {
+    id: "mysterious_sphere",
+    enemies: ["orb_walker", "orb_walker"],
+    isBoss: false,
+  },
   // —— 第二幕组合遭遇（既有敌人拼装）——
   cultist_and_chosen: {
     id: "cultist_and_chosen",
