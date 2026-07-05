@@ -1959,6 +1959,31 @@ const RELIC_LIST: RelicDef[] = [
     description: "你可以在篝火抽去牌组中的一张牌。",
     hooks: {},
   },
+  // === 补全批次 F：? 房间 / 地图路径 ===
+  {
+    id: "tiny_chest",
+    name: "迷你宝箱",
+    rarity: "common",
+    // counter 记已进入的 ? 房间数；每第 4 个变为宝箱房（run.ts 的 resolveNode 处理）。
+    description: "每进入 4 个未知（?）房间，其中第 4 个必定变为宝箱房。",
+    hooks: {},
+  },
+  {
+    id: "juzu_bracelet",
+    name: "念珠手链",
+    rarity: "common",
+    // 本引擎的 ? 房间恒为事件（从不是怪物遭遇），故本遗物的「? 不出怪」天然满足。
+    description: "未知（?）房间不再出现怪物遭遇。",
+    hooks: {},
+  },
+  {
+    id: "wing_boots",
+    name: "仙女靴",
+    rarity: "rare",
+    // counter 记已用次数（至多 3）；有余量时可无视路径直达下一层任意节点（run.ts 处理）。
+    description: "可以 3 次无视路径限制，在地图上前往下一层的任意节点。",
+    hooks: {},
+  },
   {
     id: "circlet",
     name: "头环",
