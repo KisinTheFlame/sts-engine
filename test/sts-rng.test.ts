@@ -21,6 +21,10 @@ type PrimEntry = {
   replayMatch: boolean;
   javaShuffle20FromFirstLong: number[];
   javaSeedLong: string;
+  javaNextIntLargeBound: number[];
+  randomFloatRange09Bits: number[];
+  randomFloatBetweenBits: number[];
+  randomLongSigned: string[];
 };
 
 const goldenPath = fileURLToPath(new URL("./golden/primitives.json", import.meta.url));
@@ -103,6 +107,30 @@ describe("sts-rng 原语对拍 C++ 黄金向量", () => {
         const arr = Array.from({ length: 20 }, (_v, i) => i);
         javaShuffle(arr, new JavaRandom(jsLong));
         expect(arr).toEqual(g.javaShuffle20FromFirstLong);
+      });
+
+      it("java.Random nextInt(大 bound) x30（int32 溢出拒绝采样）", () => {
+        const jr = new JavaRandom(BigInt(g.seedLong));
+        const out = Array.from({ length: 30 }, () => jr.nextInt(1073741825));
+        expect(out).toEqual(g.javaNextIntLargeBound);
+      });
+
+      it("randomFloatRange(0.9) x20 逐位相等（float32）", () => {
+        const r = new StsRandom(BigInt(g.seedLong));
+        const out = Array.from({ length: 20 }, () => floatToBits(r.randomFloatRange(0.9)));
+        expect(out).toEqual(g.randomFloatRange09Bits);
+      });
+
+      it("randomFloatBetween(0.9, 1.1) x20 逐位相等（float32）", () => {
+        const r = new StsRandom(BigInt(g.seedLong));
+        const out = Array.from({ length: 20 }, () => floatToBits(r.randomFloatBetween(0.9, 1.1)));
+        expect(out).toEqual(g.randomFloatBetweenBits);
+      });
+
+      it("randomLong() 有符号 int64 x20", () => {
+        const r = new StsRandom(BigInt(g.seedLong));
+        const out = Array.from({ length: 20 }, () => r.randomLong().toString());
+        expect(out).toEqual(g.randomLongSigned);
       });
     });
   }

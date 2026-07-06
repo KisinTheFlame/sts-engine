@@ -61,7 +61,15 @@ int main() {
         // Random(seed, counter) replay: build to counter=37, compare vs 37 sequential random(99) then next value
         { sts::Random a(sl); for(int i=0;i<37;i++) a.random(99); sts::Random b(sl,37); std::cout<<"\"replayMatch\":"<<((a.seed0==b.seed0&&a.seed1==b.seed1&&a.counter==b.counter)?"true":"false")<<","; }
         // java shuffle of 0..19 seeded from a randomLong
-        { sts::Random r(sl); std::int64_t js=r.randomLong(); java::Random jr((std::uint64_t)js); std::vector<int> a(20); for(int i=0;i<20;i++)a[i]=i; java::Collections::shuffle(a.begin(),a.end(),jr); std::vector<long long> v(a.begin(),a.end()); arrI("javaShuffle20FromFirstLong", v); std::cout<<","; std::cout<<"\"javaSeedLong\":\""<<(std::uint64_t)js<<"\""; }
+        { sts::Random r(sl); std::int64_t js=r.randomLong(); java::Random jr((std::uint64_t)js); std::vector<int> a(20); for(int i=0;i<20;i++)a[i]=i; java::Collections::shuffle(a.begin(),a.end(),jr); std::vector<long long> v(a.begin(),a.end()); arrI("javaShuffle20FromFirstLong", v); std::cout<<","; std::cout<<"\"javaSeedLong\":\""<<(std::uint64_t)js<<"\","; }
+        // java nextInt(large non-power-of-2 bound) x30 — exercises int32 overflow rejection
+        { java::Random jr(sl); std::vector<long long> v; for(int i=0;i<30;i++) v.push_back(jr.nextInt(1073741825)); arrI("javaNextIntLargeBound", v); std::cout<<","; }
+        // random(float range) x20 as float bits
+        { sts::Random r(sl); std::vector<long long> v; for(int i=0;i<20;i++){ float f=r.random(0.9f); std::uint32_t b; std::memcpy(&b,&f,4); v.push_back((long long)b);} arrI("randomFloatRange09Bits", v); std::cout<<","; }
+        // random(float start, float end) x20 as float bits
+        { sts::Random r(sl); std::vector<long long> v; for(int i=0;i<20;i++){ float f=r.random(0.9f,1.1f); std::uint32_t b; std::memcpy(&b,&f,4); v.push_back((long long)b);} arrI("randomFloatBetweenBits", v); std::cout<<","; }
+        // randomLong signed int64 x20
+        { sts::Random r(sl); std::vector<std::string> v; for(int i=0;i<20;i++){ std::int64_t x=r.randomLong(); v.push_back(std::to_string(x)); } arrS("randomLongSigned", v); }
         std::cout << "}";
     }
     std::cout << "}}" << std::endl;

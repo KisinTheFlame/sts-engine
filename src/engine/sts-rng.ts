@@ -97,9 +97,12 @@ export class StsRandom {
 
   // --- 公开：自增 counter（对齐游戏 random() 家族）---
 
-  /** [0, range]（含端）。 */
+  /**
+   * 整数域（含端）：`random(range)`→[0,range]；`random(start,end)`→[start,end]。
+   * 对齐 C++ `random(int)` / `random(int,int)`。**浮点区间请用 randomFloatRange /
+   * randomFloatBetween**——本方法只接整数，传浮点会经 BigInt 抛错。
+   */
   random(range: number): number;
-  /** [start, end]（含端）。 */
   random(start: number, end: number): number;
   random(a: number, b?: number): number {
     this.counter += 1;
@@ -115,15 +118,28 @@ export class StsRandom {
     return this.nextFloat();
   }
 
-  /** [0, range) float32。 */
+  /** [0, range) float32（对齐 C++ `float random(float range)`，逐步 float32 收窄）。 */
   randomFloatRange(range: number): number {
     this.counter += 1;
-    return this.nextFloat() * range;
+    return Math.fround(this.nextFloat() * Math.fround(range));
   }
 
+  /**
+   * [start, end) float32（对齐 C++ `float random(float start, float end)`）。
+   * clang -O2 把 `start + nextFloat()*(end-start)` 契约成 FMA（乘加单次舍入），
+   * 故在 double 里算 `nf*(end-start)+start` 再单次 fround，而非逐步舍入。
+   */
+  randomFloatBetween(start: number, end: number): number {
+    this.counter += 1;
+    const s = Math.fround(start);
+    const span = Math.fround(Math.fround(end) - s);
+    return Math.fround(this.nextFloat() * span + s);
+  }
+
+  /** 有符号 int64（对齐 C++ `int64_t randomLong()`）。位型与无符号一致。 */
   randomLong(): bigint {
     this.counter += 1;
-    return this.nextLong();
+    return asI64(this.nextLong());
   }
 
   randomBoolean(): boolean;
@@ -155,12 +171,6 @@ export class StsRandom {
     r.seed1 = BigInt(s.seed1);
     return r;
   }
-
-  /** 供 nextDouble 暴露（部分 random(long) 用双精度路径；当前引擎暂未用到，保留完整性）。 */
-  randomDoubleRange(range: number): number {
-    this.counter += 1;
-    return this.nextDouble() * range;
-  }
 }
 
 // === java.util.Random（48-bit LCG），纯算法移植，仅供洗牌 ===
@@ -188,7 +198,9 @@ export class JavaRandom {
       // bound 是 2 的幂
       return Number((BigInt(bound) * BigInt(r)) >> 31n);
     }
-    for (let u = r; u - (r = u % bound) + m < 0; u = this.next(31));
+    // Java 的拒绝采样靠 `u - r + m` 的 int32 有符号溢出触发；用 `| 0` 精确模拟
+    // 32-bit 回绕，否则 JS 双精度永远为正、永不重 roll，大 bound 洗牌会与游戏分叉。
+    for (let u = r; ((u - (r = u % bound) + m) | 0) < 0; u = this.next(31));
     return r;
   }
 }
