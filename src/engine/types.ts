@@ -66,6 +66,7 @@ export type PowerId =
   | "buffer" // 缓冲：抵消下一次会让你失去生命的伤害（每抵消一次 -1 层）
   | "battle_hymn" // 战歌：每个玩家回合开始，将 = 层数的痛斩加入手牌（观者）
   | "strength_temp" // 临时力量：回合结束时失去 = 层数的力量（屈伸），随后本 power 清零
+  | "dexterity_temp" // 临时敏捷：本回合按此加成格挡，回合结束时清零（对偶手镯）
   | "rage" // 暴怒：本回合每打出一张攻击牌，获得 = 层数的格挡（回合末清零）
   | "double_tap" // 连击：接下来的 = 层数张攻击牌各额外结算一次（每消耗一次 -1 层）
   | "berserk" // 狂暴：每个玩家回合开始，获得 = 层数的能量（代价是自身易伤，狂暴）
@@ -107,7 +108,8 @@ export type PowerId =
   | "no_card_block" // 无法格挡：牌产生的格挡被抑制（层数即剩余生效回合数，回合末 -1，应急按钮）
   | "electrodynamics" // 电动力学：闪电球伤害命中所有敌人（机器人）
   | "time_warp" // 时间扭曲：玩家每打出 timeWarpEvery 张牌，此敌人 +2 力量并立即结束玩家回合（时间吞噬者，敌人身上·计数）
-  | "draw_reduction"; // 抽牌削减：下个玩家回合少抽 = 层数张（时间吞噬者头槌，玩家身上·一次性）
+  | "draw_reduction" // 抽牌削减：下个玩家回合少抽 = 层数张（时间吞噬者头槌，玩家身上·一次性）
+  | "duplication"; // 复制：接下来 = 层数张打出的牌各额外结算一次（复制药水；每张 -1 层）
 
 /** 玩家出牌 / 敌人出招共用的效果原语。target 相对「行动者」解析。 */
 export type Effect =
@@ -293,7 +295,9 @@ export type Effect =
   | { kind: "retain_hand" } // 本回合结束时保留全部手牌（平衡）
   | { kind: "boss_haste" } // 敌人自身：回复生命到最大值的一半、清除自身减益（时间吞噬者加速）
   | { kind: "fill_potion_slots" } // 玩家：把所有空药水槽填满随机药水（熵酿）
-  | { kind: "channel_orb_per_slot"; orbType: OrbType }; // 玩家：每个球槽充能 1 颗指定球（暗影精华）
+  | { kind: "channel_orb_per_slot"; orbType: OrbType } // 玩家：每个球槽充能 1 颗指定球（暗影精华）
+  | { kind: "randomize_hand_costs" } // 玩家：将手牌费用随机改为 0~3（本场有效，蛇油药水）
+  | { kind: "play_top_n"; count: number }; // 玩家：打出抽牌堆顶 count 张（蒸馏混沌）
 
 /** 卡定义（静态数据表）。cost=null 表示不可打出（status/废牌）。 */
 export type CardDef = {
@@ -359,6 +363,10 @@ export type CardInstance = {
   costReduction?: number;
   /** 本回合费用上限（顿悟：把手牌费用压到不超过此值；回合结束清除）。 */
   costCapThisTurn?: number;
+  /** 蛇眼混乱：抽到时掷定的随机费用（0~3，覆盖原费用；X 费/废牌不受影响）。本场有效。 */
+  randomCost?: number;
+  /** 瓶装遗物：此实例被封入瓶中，战斗开局必在起手牌（覆盖 def.innate 的实例级固有）。 */
+  innate?: boolean;
 };
 
 export type PowerInstance = { id: PowerId; amount: number };
@@ -505,6 +513,10 @@ export type CombatState = {
   /** 本场战斗奖励的敌人组标识（用于 reward 生成）。 */
   encounterId: string;
   isBoss: boolean;
+  /** 本场是否精英战（勇气投索 +力量 / 密封昆虫 减敌血按此判定）。 */
+  isElite: boolean;
+  /** 本回合开始时玩家生命（情绪芯片判「上回合是否掉血」用）。 */
+  hpAtTurnStart: number;
   /** 时间吞噬者：本回合触发了时间扭曲，需在当前出牌结算收尾后立即结束玩家回合。 */
   timeWarpEndTurnPending: boolean;
 };
@@ -536,7 +548,21 @@ export type MapGraph = {
   bossNodeId: string;
 };
 
-type Screen = "map" | "combat" | "reward" | "rest" | "event" | "shop" | "gameover" | "victory";
+type Screen =
+  "map" | "combat" | "reward" | "rest" | "event" | "shop" | "card_select" | "gameover" | "victory";
+
+/**
+ * 选牌子界面（图书馆选一张新牌 / 复制器复制一张牌 / 和平烟斗去一张牌）。
+ * add：choices 为可加入的新牌；duplicate/remove：choices.uid 指向牌组中的实例。
+ */
+export type CardSelectState = {
+  mode: "add" | "duplicate" | "remove";
+  /** 情境标题（渲染用）。 */
+  title: string;
+  choices: { defId: string; upgraded: boolean; uid?: number }[];
+  /** 是否允许跳过（不选）。 */
+  canSkip: boolean;
+};
 
 /** 当前进行中的事件（? 节点）。 */
 type EventState = { id: string };
@@ -591,6 +617,8 @@ export type GameState = {
   event: EventState | null;
   /** 当前商店库存；null = 不在商店屏。 */
   shop: ShopState | null;
+  /** 当前选牌子界面（图书馆/复制器/和平烟斗）；null = 不在选牌屏。 */
+  cardSelect: CardSelectState | null;
   /** 已进入过的普通战斗数（决定抽 weak / strong encounter 池，复刻 StS Act1 节奏）。 */
   combatsEntered: number;
   /** 本场战斗胜利后是否发一个遗物（精英战为 true；下次 generateReward 消费后清零）。 */

@@ -16,6 +16,14 @@ export type EventOutcome =
   | { kind: "remove_random_card" }
   // 升级 count 张随机未升级的牌（攻击/技能/能力）。
   | { kind: "upgrade_random_card"; count: number }
+  // 事件触发战斗：进入指定遭遇（斗兽场/蒙面强盗/亡者/蘑菇/神秘球）；elite=精英奖励。
+  | { kind: "start_combat"; encounterId: string; elite?: boolean }
+  // 随机结果：从 options 里等概率选一组结算（命运之轮）。
+  | { kind: "random"; options: EventOutcome[][] }
+  // 图书馆：打开选牌屏，从 count 张随机牌里挑 1 张加入牌组。
+  | { kind: "library"; count: number }
+  // 复制器：打开选牌屏，复制牌组中的一张牌。
+  | { kind: "duplicator" }
   | { kind: "nothing" };
 
 type EventChoice = {
@@ -851,6 +859,156 @@ const EVENT_LIST: EventDef[] = [
       {
         label: "不作供奉，离开",
         resultText: "你向祭坛欠身，转身离去。",
+        outcomes: [{ kind: "nothing" }],
+      },
+    ],
+  },
+  // —— 补全批次：战斗事件（event→combat）+ 随机结果事件 ——
+  {
+    id: "colosseum",
+    description:
+      "锈迹斑斑的铁门后传来野兽般的嘶吼与铁链拖地的声响。墙上血迹未干，看守者狞笑着示意你入场。",
+    choices: [
+      {
+        label: "推开铁门，直面场中之敌",
+        resultText: "铁门轰然合上，砂石之上只剩你与嗜血的对手。",
+        outcomes: [{ kind: "start_combat", encounterId: "colosseum", elite: true }],
+      },
+      {
+        label: "趁看守不备悄悄溜走",
+        resultText: "你贴着阴影退出走廊，嘶吼声渐渐远去。",
+        outcomes: [{ kind: "nothing" }],
+      },
+    ],
+  },
+  {
+    id: "masked_bandits",
+    description: "三个蒙面人从岩缝里窜出，明晃晃的刀尖抵着你的钱袋——「留下买路财，饶你不死。」",
+    choices: [
+      {
+        label: "拔刀相向，夺回属于自己的东西",
+        resultText: "话不投机，刀光已至。",
+        outcomes: [{ kind: "start_combat", encounterId: "masked_bandits" }],
+      },
+      {
+        label: "乖乖交出全部金币换命",
+        resultText: "你咬牙倒空钱袋，蒙面人打了个呼哨，转眼没入岩缝。",
+        outcomes: [{ kind: "lose_gold", amount: 999 }],
+      },
+    ],
+  },
+  {
+    id: "dead_adventurer",
+    description: "一具倒毙的冒险者尸体伏在岔路口，鼓囊的行囊还挂在肩上——只是四周静得有些反常。",
+    choices: [
+      {
+        label: "搜刮尸体上的财物",
+        resultText: "你摸到一袋金币，可尸体骤然被身后扑来的精英一把掀开——是埋伏！",
+        outcomes: [
+          { kind: "gain_gold", amount: 30 },
+          { kind: "start_combat", encounterId: "gremlin_nob", elite: true },
+        ],
+      },
+      {
+        label: "多一事不如少一事，绕开它",
+        resultText: "你压下贪念，绕过尸体快步离开。",
+        outcomes: [{ kind: "nothing" }],
+      },
+    ],
+  },
+  {
+    id: "mushrooms",
+    description: "一片湿润的洞穴里蘑菇密布，个头肥大、随着你的脚步微微起伏——它们似乎在盯着你。",
+    choices: [
+      {
+        label: "踏碎这些蘑菇",
+        resultText: "菌盖爆开，愤怒的孢子兽从腐土里钻了出来。",
+        outcomes: [{ kind: "start_combat", encounterId: "two_fungi_beasts" }],
+      },
+      {
+        label: "摘一朵尝尝（+最大生命，但落下病根）",
+        resultText: "肥美的菌肉令你精神一振，可某种东西也在你体内扎了根。",
+        outcomes: [
+          { kind: "gain_max_hp", amount: 7 },
+          { kind: "add_card", cardId: "parasite" },
+        ],
+      },
+    ],
+  },
+  {
+    id: "mysterious_sphere",
+    description: "空旷石室中央悬浮着一颗缓缓旋转的金属球，表面流转着微弱的电光，似乎封着什么。",
+    choices: [
+      {
+        label: "撬开金属球",
+        resultText: "球体应声裂开，两只游荡者带着电弧扑向你——里头必有值得一战的东西。",
+        outcomes: [{ kind: "start_combat", encounterId: "mysterious_sphere", elite: true }],
+      },
+      {
+        label: "不去招惹，绕行离开",
+        resultText: "你绕着金属球走了半圈，终究没敢伸手。",
+        outcomes: [{ kind: "nothing" }],
+      },
+    ],
+  },
+  {
+    id: "wheel_of_fortune",
+    description:
+      "一座半人高的命运转盘立在路中，盘面刻着金币、宝物、诅咒与骷髅。一个声音低语：「转吧。」",
+    choices: [
+      {
+        label: "转动命运之轮",
+        resultText: "转盘飞旋，指针在一格上缓缓停下——命运给出了它的裁决。",
+        outcomes: [
+          {
+            kind: "random",
+            options: [
+              [{ kind: "gain_gold", amount: 80 }],
+              [{ kind: "gain_relic" }],
+              [{ kind: "gain_potion" }],
+              [{ kind: "upgrade_random_card", count: 2 }],
+              [{ kind: "lose_hp", amount: 10 }],
+              [{ kind: "add_card", cardId: "clumsy" }],
+            ],
+          },
+        ],
+      },
+      {
+        label: "不信这套，转身就走",
+        resultText: "你冷哼一声，把命运抛在身后。",
+        outcomes: [{ kind: "nothing" }],
+      },
+    ],
+  },
+  // —— 补全批次：选牌事件（event→card_select）——
+  {
+    id: "library",
+    description: "一座落满尘埃的私人书库，架上层层叠叠尽是手稿与秘卷。你只来得及挑走一本。",
+    choices: [
+      {
+        label: "在书海中挑一张带走",
+        resultText: "你在浩繁卷帙间翻找，最终抽出了心仪的一张。",
+        outcomes: [{ kind: "library", count: 5 }],
+      },
+      {
+        label: "就地歇脚，读书养神",
+        resultText: "你靠着书架小憩，字句间的宁静抚平了伤口。",
+        outcomes: [{ kind: "heal", amount: 20 }],
+      },
+    ],
+  },
+  {
+    id: "duplicator",
+    description: "石台上悬着一面泛着幽光的镜子，凡置于其前之物，皆会浮现出一个一模一样的倒影。",
+    choices: [
+      {
+        label: "复制牌组里的一张牌",
+        resultText: "镜面荡起涟漪，你的一张牌凭空多出了一份。",
+        outcomes: [{ kind: "duplicator" }],
+      },
+      {
+        label: "不去打扰这面镜子",
+        resultText: "你绕过石台，镜中的自己也转身离去。",
         outcomes: [{ kind: "nothing" }],
       },
     ],

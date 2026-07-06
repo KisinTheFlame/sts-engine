@@ -35,16 +35,26 @@ function sampleUnique(rng: GameState["rng"], pool: readonly string[], count: num
   return out;
 }
 
+// 会员卡：商店所有商品与去牌服务 5 折。
+const MEMBERSHIP_DISCOUNT = 0.5;
+// 微笑面具：去牌服务固定 50 金。
+const SMILING_MASK_PURGE_COST = 50;
+
 /** 生成一间商店的库存（原地写入 state.shop，切到 shop 屏）。 */
 export function generateShop(state: GameState): void {
   const items: ShopItem[] = [];
+  const discount = hasRelic(state, "membership_card") ? MEMBERSHIP_DISCOUNT : 1;
+  const price = (min: number, max: number): number =>
+    Math.max(1, Math.floor(nextRange(state.rng, min, max) * discount));
 
+  // 信使：商店多进 1 张牌与 1 瓶药水。
+  const courier = hasRelic(state, "the_courier") ? 1 : 0;
   const cardPool = rewardCardPoolOf(getCharacterConfig(state.character).color);
-  for (const defId of sampleUnique(state.rng, cardPool, SHOP_CARD_COUNT)) {
+  for (const defId of sampleUnique(state.rng, cardPool, SHOP_CARD_COUNT + courier)) {
     items.push({
       kind: "card",
       defId,
-      cost: nextRange(state.rng, CARD_PRICE_MIN, CARD_PRICE_MAX),
+      cost: price(CARD_PRICE_MIN, CARD_PRICE_MAX),
       sold: false,
     });
   }
@@ -54,7 +64,7 @@ export function generateShop(state: GameState): void {
     items.push({
       kind: "card",
       defId,
-      cost: nextRange(state.rng, COLORLESS_PRICE_MIN, COLORLESS_PRICE_MAX),
+      cost: price(COLORLESS_PRICE_MIN, COLORLESS_PRICE_MAX),
       sold: false,
     });
   }
@@ -64,23 +74,31 @@ export function generateShop(state: GameState): void {
     items.push({
       kind: "relic",
       id,
-      cost: nextRange(state.rng, RELIC_PRICE_MIN, RELIC_PRICE_MAX),
+      cost: price(RELIC_PRICE_MIN, RELIC_PRICE_MAX),
       sold: false,
     });
   }
 
-  for (const id of sampleUnique(state.rng, shopPotionPool(state.character), SHOP_POTION_COUNT)) {
+  for (const id of sampleUnique(
+    state.rng,
+    shopPotionPool(state.character),
+    SHOP_POTION_COUNT + courier,
+  )) {
     items.push({
       kind: "potion",
       id,
-      cost: nextRange(state.rng, POTION_PRICE_MIN, POTION_PRICE_MAX),
+      cost: price(POTION_PRICE_MIN, POTION_PRICE_MAX),
       sold: false,
     });
   }
 
+  // 微笑面具：去牌固定 50 金；会员卡：去牌同样 5 折。
+  const basePurge = hasRelic(state, "smiling_mask") ? SMILING_MASK_PURGE_COST : PURGE_COST;
+  const purgeCost = Math.max(1, Math.floor(basePurge * discount));
+
   state.shop = {
     items,
-    purgeCost: PURGE_COST,
+    purgeCost,
     purgeUsed: false,
     removing: false,
   } satisfies ShopState;

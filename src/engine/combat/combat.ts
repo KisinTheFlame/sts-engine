@@ -212,7 +212,7 @@ function createEnemyState(state: GameState, defId: string, hpOverride?: number):
   } satisfies EnemyState;
 }
 
-export function startCombat(state: GameState, encounterId: string): void {
+export function startCombat(state: GameState, encounterId: string, isElite = false): void {
   const encounter = getEncounterDef(encounterId);
   const enemies: EnemyState[] = encounter.enemies.map((defId) => createEnemyState(state, defId));
 
@@ -256,6 +256,8 @@ export function startCombat(state: GameState, encounterId: string): void {
     lastCardType: null,
     encounterId,
     isBoss: encounter.isBoss,
+    isElite,
+    hpAtTurnStart: state.hp,
     timeWarpEndTurnPending: false,
   };
   state.combat = combat;
@@ -271,12 +273,19 @@ export function startCombat(state: GameState, encounterId: string): void {
   if (hasRelic(state, "cracked_core")) {
     channelOrb(state, "lightning");
   }
+  // 古董茶具：若上一步在篝火休息过（counter=1），本场第一回合 +2 能量，随后清除。
+  const teaSet = state.relics.find((relic) => relic.id === "ancient_tea_set");
+  if (teaSet && teaSet.counter > 0) {
+    combat.energy += 2;
+    teaSet.counter = 0;
+  }
   // 第 1 回合开始遗物（欢乐花能量 / 角锚 / 光滑石在 onCombatStart 已处理）。
   triggerRelicTurnStart(state);
   // 固有牌（背刺等）：开局必在起手，先从抽牌堆抽到手牌。
   const innate = drawPile.filter((card) => {
     const cardDef = getCardDef(card.defId);
-    return cardDef.innate || (card.upgraded && cardDef.upgradedInnate);
+    // card.innate：瓶装遗物封入的实例级固有（瓶装火焰/闪电/龙卷）。
+    return card.innate || cardDef.innate || (card.upgraded && cardDef.upgradedInnate);
   });
   for (const card of innate) {
     const idx = combat.drawPile.indexOf(card);
@@ -285,8 +294,9 @@ export function startCombat(state: GameState, encounterId: string): void {
       combat.hand.push(card);
     }
   }
-  // 蛇之戒指（静默起始遗物）：战斗第一回合额外抽 2 张。
-  const firstTurnDraw = hasRelic(state, "ring_of_the_snake") ? 2 : 0;
+  // 蛇之戒指（静默起始遗物）：战斗第一回合额外抽 2 张。蛇眼：每回合多抽 2 张。
+  const firstTurnDraw =
+    (hasRelic(state, "ring_of_the_snake") ? 2 : 0) + (hasRelic(state, "snecko_eye") ? 2 : 0);
   drawCards(state, Math.max(0, STARTING_HAND_SIZE + firstTurnDraw - innate.length));
   // 净水（观者起始遗物）：战斗开始时手牌加入 1 张奇迹。
   if (hasRelic(state, "pure_water")) {
@@ -350,6 +360,9 @@ function triggerRelicCardPlayed(state: GameState, cardType: CardType): void {
   fireRelicsCollectingEmits(state, (hooks, self, emit) =>
     hooks.onCardPlayed?.(state, self, cardType, emit),
   );
+}
+function triggerRelicDiscard(state: GameState): void {
+  fireRelicsCollectingEmits(state, (hooks, self, emit) => hooks.onDiscard?.(state, self, emit));
 }
 
 /** 消耗一张牌进消耗堆，并触发消耗型玩家能力（无痛加格挡 / 暗黑拥抱抽牌）。 */
@@ -452,6 +465,13 @@ function drawCards(state: GameState, count: number): void {
       triggerRelicShuffle(state); // 洗牌触发型遗物（日晷 +能量、算盘 +格挡）。
     }
     const card = combat.drawPile.pop()!;
+    // 蛇眼混乱：抽到时给可打出的非 X 费牌掷一个 0~3 的随机费用（本场生效）。
+    if (hasRelic(state, "snecko_eye")) {
+      const drawnDef = getCardDef(card.defId);
+      if (drawnDef.cost !== null && !drawnDef.xCost) {
+        card.randomCost = nextInt(state.rng, 4);
+      }
+    }
     // 烈焰吐息：抽到状态牌或诅咒牌时，对所有敌人造成 = 层数的伤害。
     const fireBreathing = getPower(combat.playerPowers, "fire_breathing");
     if (fireBreathing > 0) {
@@ -500,6 +520,8 @@ function discardFromHand(state: GameState, card: CardInstance): void {
   if (onDiscard && onDiscard.length > 0) {
     applyEffects(state, onDiscard, { side: "player" }, null);
   }
+  // 弃牌型遗物（韧带绷带 +格挡、叮沙发伤、悬浮风筝首弃回能量）。
+  triggerRelicDiscard(state);
 }
 
 // —— 效果解释器 ——
@@ -511,9 +533,10 @@ function applyEffects(
   targetEnemyIndex: number | null,
   xValue = 0,
   sourceCard?: CardInstance,
+  attackMult = 1,
 ): void {
   for (const effect of effects) {
-    applyEffect(state, effect, actor, targetEnemyIndex, xValue, sourceCard);
+    applyEffect(state, effect, actor, targetEnemyIndex, xValue, sourceCard, attackMult);
   }
 }
 
@@ -524,6 +547,8 @@ function applyEffect(
   targetEnemyIndex: number | null,
   xValue = 0,
   sourceCard?: CardInstance,
+  // 钢笔尖：本次攻击伤害倍率（第 10 次攻击 ×2）；仅作用于直接单体 deal_damage。
+  attackMult = 1,
 ): void {
   const combat = state.combat!;
   const powers = actorPowers(state, actor);
@@ -539,10 +564,27 @@ function applyEffect(
             sourceCard?.defId === "shiv" ? getPower(combat.playerPowers, "accuracy") : 0;
           // 幻杀：本回合攻击造成双倍伤害。
           const phantasmalMult = getPower(combat.playerPowers, "phantasmal") > 0 ? 2 : 1;
+          // 打桩机：打出名字含「打击」的牌，每次伤害 +3。
+          const strikeBonus =
+            sourceCard &&
+            hasRelic(state, "strike_dummy") &&
+            getCardDef(sourceCard.defId).name.includes("打击")
+              ? 3
+              : 0;
+          // 腕刃：打出原始费用为 0 的攻击牌时，每次伤害 +4。
+          const wristBladeBonus =
+            sourceCard &&
+            hasRelic(state, "wrist_blade") &&
+            getCardDef(sourceCard.defId).type === "attack" &&
+            getCardDef(sourceCard.defId).cost === 0
+              ? 4
+              : 0;
           const unblocked = dealDamageToEnemy(
             state,
             targetEnemyIndex,
-            (effect.amount + vigor + accuracyBonus) * phantasmalMult,
+            (effect.amount + vigor + accuracyBonus + strikeBonus + wristBladeBonus) *
+              phantasmalMult *
+              attackMult,
             powers,
             effect.strengthMultiplier,
           );
@@ -717,7 +759,22 @@ function applyEffect(
       break;
     }
     case "apply_power": {
-      applyPowerEffect(state, effect.power, effect.amount, effect.on, actor, targetEnemyIndex);
+      // 蛇眼骷髅：玩家给敌人施加中毒时，额外 +1 层。
+      const sneckoSkullBonus =
+        actor.side === "player" &&
+        effect.power === "poison" &&
+        effect.on !== "self" &&
+        hasRelic(state, "snecko_skull")
+          ? 1
+          : 0;
+      applyPowerEffect(
+        state,
+        effect.power,
+        effect.amount + sneckoSkullBonus,
+        effect.on,
+        actor,
+        targetEnemyIndex,
+      );
       // 虐念：玩家给敌人施加减益时，对受影响的敌人造成 = 层数的伤害。
       if (actor.side === "player" && effect.on !== "self" && DEBUFF_POWERS.has(effect.power)) {
         const sadistic = getPower(combat.playerPowers, "sadistic_nature");
@@ -1405,6 +1462,54 @@ function applyEffect(
       // 悔恨：失去 = 手牌张数的生命（无视格挡）。
       if (actor.side === "player") {
         state.hp = Math.max(0, state.hp - combat.hand.length);
+      }
+      break;
+    }
+    case "play_top_n": {
+      // 蒸馏混沌：依次打出抽牌堆顶的 count 张牌（各自结算效果后按其规则入堆/消耗）。
+      if (actor.side === "player") {
+        for (let n = 0; n < effect.count && combat.drawPile.length > 0; n += 1) {
+          const top = combat.drawPile.pop()!;
+          const topDef = getCardDef(top.defId);
+          let topTarget: number | null = null;
+          if (topDef.targeted) {
+            const living = combat.enemies
+              .map((enemy, index) => ({ enemy, index }))
+              .filter((entry) => entry.enemy.hp > 0);
+            if (living.length === 0) {
+              combat.discardPile.push(top); // 需目标但无敌人：跳过，进弃牌堆。
+              continue;
+            }
+            topTarget = living[nextInt(state.rng, living.length)].index;
+          }
+          applyEffects(
+            state,
+            effectsOf(topDef, top.upgraded),
+            { side: "player" },
+            topTarget,
+            0,
+            top,
+          );
+          if (topDef.type === "power") {
+            // 能力牌离场（效果已转常驻）。
+          } else if (topDef.exhausts) {
+            exhaustCard(state, top);
+          } else {
+            combat.discardPile.push(top);
+          }
+        }
+      }
+      break;
+    }
+    case "randomize_hand_costs": {
+      // 蛇油药水：将手牌中可打出的非 X 费牌费用随机改为 0~3（本场有效）。
+      if (actor.side === "player") {
+        for (const c of combat.hand) {
+          const cDef = getCardDef(c.defId);
+          if (cDef.cost !== null && !cDef.xCost) {
+            c.randomCost = nextInt(state.rng, 4);
+          }
+        }
       }
       break;
     }
@@ -2319,13 +2424,26 @@ function dealDamageToEnemy(
   if (enemy.stance === "offensive" && enemy.modeShiftThreshold !== null) {
     enemy.modeShiftAccum += dmg;
   }
+  const blockBefore = enemy.block;
   const afterBlock = Math.max(0, dmg - enemy.block);
   enemy.block = Math.max(0, enemy.block - dmg);
+  // 手钻：一次攻击打破敌人的格挡（从 >0 变 0）时，令其获得 2 层易伤。
+  if (blockBefore > 0 && enemy.block === 0 && enemy.hp > 0 && hasRelic(state, "hand_drill")) {
+    addPower(enemy.powers, "vulnerable", 2);
+  }
   const wasAlive = enemy.hp > 0;
   enemy.hp = Math.max(0, enemy.hp - afterBlock);
   // 亡语：此击致死则结算敌人的死亡效果（真菌兽孢子云给玩家易伤）。
   if (wasAlive && enemy.hp === 0) {
     spreadCorpseBomb(state, enemyIndex, getPower(enemy.powers, "poison")); // 尸爆：被打死时扩散毒。
+    // 样本瓶：敌人死亡时，把它身上的中毒转移给一名随机存活敌人。
+    const dyingPoison = getPower(enemy.powers, "poison");
+    if (dyingPoison > 0 && hasRelic(state, "the_specimen")) {
+      const living = state.combat!.enemies.filter((e, i) => i !== enemyIndex && e.hp > 0);
+      if (living.length > 0) {
+        applyPowerToEnemy(living[nextInt(state.rng, living.length)], "poison", dyingPoison);
+      }
+    }
     const dyingDef = getEnemyDef(enemy.defId);
     if (dyingDef.deathEffects) {
       applyEffects(state, dyingDef.deathEffects, { side: "enemy", index: enemyIndex }, null);
@@ -2488,7 +2606,8 @@ function enterStance(state: GameState, stance: PlayerStance): void {
     return;
   }
   if (combat.playerStance === "calm" && stance !== "calm") {
-    combat.energy += CALM_EXIT_ENERGY;
+    // 紫莲：离开平静姿态时额外 +1 能量。
+    combat.energy += CALM_EXIT_ENERGY + (hasRelic(state, "violet_lotus") ? 1 : 0);
   }
   combat.playerStance = stance;
   // 心之堡垒：每次姿态改变获得 = 层数的格挡。
@@ -2527,10 +2646,11 @@ function gainMantra(state: GameState, amount: number): void {
  * 预知（观者）：看抽牌堆顶 amount 张（drawPile 末端为顶），自动弃掉其中的状态牌、
  * 其余保持原序留在顶端（自动解算，不开交互选牌子界面）。发生一次预知触发涅槃格挡。
  */
-function doScry(state: GameState, amount: number): void {
+function doScry(state: GameState, amount: number, triggerRelics = true): void {
   const combat = state.combat!;
   const n = Math.min(amount, combat.drawPile.length);
   if (n <= 0) {
+    // 即便无牌可看，金色之眼在 StS 也不额外触发；这里 n<=0 直接返回。
     return;
   }
   const topStart = combat.drawPile.length - n;
@@ -2555,7 +2675,13 @@ function doScry(state: GameState, amount: number): void {
       combat.hand.push(combat.discardPile.splice(i, 1)[0]);
     }
   }
+  // 金色之眼：每次预知额外预知 2 张（triggerRelics=false 时为其追加预知本身，不再递归）。
+  if (triggerRelics && hasRelic(state, "golden_eye")) {
+    doScry(state, GOLDEN_EYE_SCRY, false);
+  }
 }
+
+const GOLDEN_EYE_SCRY = 2;
 
 // —— 充能球（机器人）——
 
@@ -2695,9 +2821,19 @@ export function playCard(
     return { ok: false, reason: "天鹅绒项圈让你本回合最多只能打出 6 张牌。" };
   }
   const rawCost = costOf(def, instance.upgraded);
-  if (rawCost === null) {
+  // 医疗包：状态牌可打（0 费、消耗）；蓝烛：诅咒牌可打（0 费、失 1 血、消耗）。
+  const medicalKitPlay =
+    rawCost === null && def.type === "status" && hasRelic(state, "medical_kit");
+  const blueCandlePlay = rawCost === null && def.type === "curse" && hasRelic(state, "blue_candle");
+  const forcedPlay = medicalKitPlay || blueCandlePlay;
+  if (rawCost === null && !forcedPlay) {
     return { ok: false, reason: `「${def.name}」无法打出。` };
   }
+  // 蛇眼混乱：抽到时掷定的随机费用覆盖原费用（X 费牌与废牌不受影响）。
+  const effectiveRawCost =
+    instance.randomCost !== undefined && rawCost !== null && !def.xCost
+      ? instance.randomCost
+      : (rawCost ?? 0);
   // 腐化：技能牌费用变 0（打出后消耗，见下方入堆处理）。
   const corrupted = def.type === "skill" && getPower(combat.playerPowers, "corruption") > 0;
   // 动态降费：剖体斩按本回合弃牌数、力场按本场能力牌数、血债血偿按本场失血次数（下限 0）。
@@ -2717,7 +2853,7 @@ export function playCard(
   if (def.costPlusHpLossCountThisCombat) {
     costReduction -= combat.timesLostHpThisCombat;
   }
-  const discountedRawCost = Math.max(0, rawCost - costReduction);
+  const discountedRawCost = Math.max(0, effectiveRawCost - costReduction);
   // 回身步：下一张攻击牌费用视为 0（打出后消耗一层）。
   const freeAttack = def.type === "attack" && getPower(combat.playerPowers, "free_attack") > 0;
   // costZero（疯狂使其免费）或腐化时费用视为 0。
@@ -2745,11 +2881,25 @@ export function playCard(
   }
 
   // X 费牌：X = 当前全部能量，消耗全部能量，effects 里的 *_x 按 X 结算。
-  const xValue = def.xCost ? combat.energy : 0;
+  // 化学 X：打出 X 费牌时 X 额外 +2（能量照常全消耗）。
+  const chemicalXBonus = def.xCost && hasRelic(state, "chemical_x") ? 2 : 0;
+  const xValue = def.xCost ? combat.energy + chemicalXBonus : 0;
   combat.energy -= def.xCost ? combat.energy : cost;
   combat.hand.splice(handIndex, 1);
   // 出牌计数（超光速见「本张已计入」故先增；华彩每 5 张触发靠它）。回合始清零。
   combat.cardsPlayedThisTurn += 1;
+  // 钢笔尖：每打出 10 张攻击牌，第 10 张造成双倍伤害（本张按 attackMult=2 结算）。
+  let penNibMult = 1;
+  if (def.type === "attack") {
+    const penNib = state.relics.find((relic) => relic.id === "pen_nib");
+    if (penNib) {
+      penNib.counter += 1;
+      if (penNib.counter >= 10) {
+        penNib.counter = 0;
+        penNibMult = 2;
+      }
+    }
+  }
   // 爆发/增幅/回响：记下结算前的层数，避免施加这些效果的牌把自己也翻倍。
   const burstBefore = getPower(combat.playerPowers, "burst");
   const amplifyBefore = getPower(combat.playerPowers, "amplify");
@@ -2761,6 +2911,7 @@ export function playCard(
     resolvedTarget,
     xValue,
     instance,
+    penNibMult,
   );
   // 爆发：接下来的技能各额外结算一次（消耗 1 层）；不作用于施加爆发的这张牌本身。
   if (def.type === "skill" && burstBefore > 0) {
@@ -2777,6 +2928,19 @@ export function playCard(
   // 增幅：接下来的能力牌各额外结算一次（消耗 1 层）；不作用于施加增幅的这张牌本身。
   if (def.type === "power" && amplifyBefore > 0) {
     addPower(combat.playerPowers, "amplify", -1);
+    applyEffects(
+      state,
+      effectsOf(def, instance.upgraded),
+      { side: "player" },
+      resolvedTarget,
+      xValue,
+      instance,
+    );
+  }
+  // 复制（复制药水）：接下来的牌各额外结算一次（消耗 1 层）；作用于任意牌型。
+  const duplicationBefore = getPower(combat.playerPowers, "duplication");
+  if (duplicationBefore > 0) {
+    addPower(combat.playerPowers, "duplication", -1);
     applyEffects(
       state,
       effectsOf(def, instance.upgraded),
@@ -2831,11 +2995,22 @@ export function playCard(
       }
     }
   }
+  // 蓝烛：打出诅咒牌失去 1 点生命。
+  if (blueCandlePlay) {
+    applyEffects(state, [{ kind: "lose_hp", amount: 1 }], { side: "player" }, null);
+  }
+  // 奇怪的勺子：本会消耗（自带消耗关键字）的牌有 50% 概率改为进弃牌堆。
+  const spoonSaves =
+    def.exhausts &&
+    !corrupted &&
+    !forcedPlay &&
+    hasRelic(state, "strange_spoon") &&
+    nextInt(state.rng, 2) === 0;
   if (def.type === "power") {
     // 能力牌打出后离场（效果转为常驻 power），不入任何牌堆，本场不再抽到。
     combat.powersPlayedThisCombat += 1; // 力场按本场打出的能力牌数降费。
-  } else if (def.exhausts || corrupted) {
-    // 腐化下技能牌也消耗。
+  } else if ((def.exhausts || corrupted || forcedPlay) && !spoonSaves) {
+    // 腐化下技能牌也消耗；医疗包/蓝烛打出的状态/诅咒牌也消耗。
     exhaustCard(state, instance);
   } else {
     combat.discardPile.push(instance);
@@ -2851,6 +3026,10 @@ export function playCard(
   triggerRelicCardPlayed(state, def.type);
   // 打牌触发型玩家能力（千刃对全体、残影加格挡）。
   triggerPlayerCardPlayed(state, def.type);
+  // 不停转陀螺：本回合内手牌被打空时抽 1 张。
+  if (combat.hand.length === 0 && hasRelic(state, "unceasing_top")) {
+    drawCards(state, 1);
+  }
   // 华彩：本回合每打出满 5 张牌，对所有敌人造成 = 层数的伤害。
   const panache = getPower(combat.playerPowers, "panache");
   if (panache > 0 && combat.cardsPlayedThisTurn % 5 === 0) {
@@ -3089,6 +3268,10 @@ export function endTurn(state: GameState): void {
   }
   // 充能球被动（机器人）：回合结束时每颗球触发（闪电随机伤害 / 冰霜格挡）。
   triggerOrbPassives(state);
+  // 镀金电缆：回合结束时最右侧的球额外触发一次被动。
+  if (hasRelic(state, "gold_plated_cables") && combat.orbs.length > 0) {
+    triggerOneOrbPassive(state, combat.orbs[combat.orbs.length - 1]);
+  }
   // 回合结束遗物（山铜：若无格挡则补格挡）——在金属化之后判定。
   triggerRelicTurnEnd(state);
   decayDebuffs(combat.playerPowers);
@@ -3101,6 +3284,10 @@ export function endTurn(state: GameState): void {
   if (strengthTemp > 0) {
     addPower(combat.playerPowers, "strength", -strengthTemp);
     removePower(combat.playerPowers, "strength_temp");
+  }
+  // 临时敏捷（对偶手镯）：回合结束清零。
+  if (getPower(combat.playerPowers, "dexterity_temp") > 0) {
+    removePower(combat.playerPowers, "dexterity_temp");
   }
   // 暴怒 / 挥手：只在打出它的回合生效，回合结束清除。
   if (getPower(combat.playerPowers, "rage") > 0) {
@@ -3190,6 +3377,15 @@ export function endTurn(state: GameState): void {
 
   // 下个玩家回合开始。
   combat.turn += 1;
+  // 情绪芯片：若上一回合（含敌人行动）净掉了血，本回合开始触发所有充能球的被动。
+  if (
+    hasRelic(state, "emotion_chip") &&
+    state.hp < combat.hpAtTurnStart &&
+    combat.orbs.length > 0
+  ) {
+    triggerOrbPassives(state);
+  }
+  combat.hpAtTurnStart = state.hp;
   combat.lastCardType = null;
   combat.attacksThisTurn = 0;
   combat.cardsDiscardedThisTurn = 0;
@@ -3358,9 +3554,11 @@ export function endTurn(state: GameState): void {
   if (drawReduction > 0) {
     removePower(combat.playerPowers, "draw_reduction");
   }
+  // 蛇眼：每回合多抽 2 张。
+  const sneckoDraw = hasRelic(state, "snecko_eye") ? 2 : 0;
   drawCards(
     state,
-    Math.max(0, STARTING_HAND_SIZE + machineLearning + scheduledDraw - drawReduction),
+    Math.max(0, STARTING_HAND_SIZE + machineLearning + scheduledDraw + sneckoDraw - drawReduction),
   );
   // 磁力：每回合开始将 = 层数张随机无色牌加入手牌。
   const magnetism = getPower(combat.playerPowers, "magnetism");
