@@ -1,6 +1,6 @@
 {
   "name": "@kisinwen/sts-engine",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "杀戮尖塔规则的纯计算引擎（零 IO、可种子化 PRNG）。Fan reimplementation of Slay the Spire rules.",
   "type": "module",
   "license": "MIT",
