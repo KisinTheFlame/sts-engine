@@ -302,6 +302,11 @@ export function startCombat(state: GameState, encounterId: string, isElite = fal
   if (hasRelic(state, "pure_water")) {
     addCards(state, "miracle", "hand", 1);
   }
+  // 赌博芯片：第一回合抽牌后可换手。参考实现是交互式选牌（暂停战斗等外部选下标），
+  // 本纯计算引擎无战斗内多选原语，故采用与赌徒酿药水一致的近似——弃整手、补抽等量。
+  if (hasRelic(state, "gambling_chip")) {
+    applyEffects(state, [{ kind: "discard_hand_draw_same" }], { side: "player" }, null);
+  }
 }
 
 /** 遍历持有遗物，对每个的 hooks + 自身 RelicState 调用 fn（原地改 state）。 */
