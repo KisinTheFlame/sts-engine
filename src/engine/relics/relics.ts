@@ -1985,6 +1985,15 @@ const RELIC_LIST: RelicDef[] = [
     hooks: {},
   },
   {
+    id: "gambling_chip",
+    name: "赌博芯片",
+    rarity: "rare",
+    // 效果在 combat.ts 的 startCombat 里按 hasRelic 处理。参考实现为交互式换手（暂停战斗、
+    // 由外部选择要弃的手牌），纯计算引擎无战斗内多选原语，故按赌徒酿药水的同款近似：弃整手、补抽等量。
+    description: "每场战斗开始、抽出起手牌后，弃掉整手牌并补抽等量的新牌。",
+    hooks: {},
+  },
+  {
     id: "circlet",
     name: "头环",
     rarity: "common",

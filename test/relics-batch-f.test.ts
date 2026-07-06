@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { newRun } from "../src/engine/engine.js";
+import { startCombat } from "../src/engine/combat/combat.js";
 import { grantRelic } from "../src/engine/relics/relics.js";
 import { currentOptions, applyChoose } from "../src/engine/run/run.js";
 import { availableNext } from "../src/engine/map/map.js";
@@ -46,6 +47,23 @@ describe("迷你宝箱：第 4 个 ? 房间变宝箱", () => {
         expect(s.relics.length).toBeGreaterThan(relics0);
       }
     }
+  });
+});
+
+describe("赌博芯片：开局换手（弃整手、补抽等量）", () => {
+  it("起手牌被换成不同的实例，张数不变", () => {
+    const s = run();
+    grantRelic(s, "gambling_chip");
+    startCombat(s, "cultist");
+    // 换手后手牌张数仍为起手数，但都是补抽的新实例（原起手 uid 不再在手）。
+    expect(s.combat!.hand.length).toBe(5);
+    // 被弃的原起手牌进了弃牌堆（换手确实发生过）。
+    expect(s.combat!.discardPile.length).toBe(5);
+  });
+  it("不带芯片时不换手", () => {
+    const s = run();
+    startCombat(s, "cultist");
+    expect(s.combat!.discardPile.length).toBe(0);
   });
 });
 
