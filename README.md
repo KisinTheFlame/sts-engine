@@ -35,6 +35,7 @@ const result = applyAction(state, { type: "choose", optionIndex: 0 });
 | `engine/run/run`         | `currentOptions`                                          |
 | `engine/map/map`         | `availableNext`                                           |
 | `engine/rng`             | `seedRng` / `nextInt`                                     |
+| `engine/sts-rng`         | `StsRandom` / `JavaRandom` / `seedStringToLong`（游戏级 RNG，接受原版种子字符串） |
 | `engine/glossary`        | `GLOSSARY`                                                |
 | `sim/policy`             | `GreedyPolicy`（自动对局策略，测试用）                    |
 | `migrate`                | `migrateLoadedState`（老存档字段回填）                    |
