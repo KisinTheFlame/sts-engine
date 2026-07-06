@@ -142,6 +142,14 @@ export class StsRandom {
     return asI64(this.nextLong());
   }
 
+  /**
+   * 原始 [0, n) 整数（对齐 C++ `sts::Random::nextInt(int)`）——**不自增 counter**。
+   * 游戏地图洗牌用的就是这个（非 random() 家族）。
+   */
+  nextInt(n: number): number {
+    return this.nextIntBounded(n);
+  }
+
   randomBoolean(): boolean;
   randomBoolean(chance: number): boolean;
   randomBoolean(chance?: number): boolean {
