@@ -3,7 +3,13 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { generateEncounters, MonsterEncounter } from "../src/engine/sts-encounters.js";
 
-type GoldenAct = { act: number; monsters: number[]; elites: number[]; boss: number; secondBoss: number };
+type GoldenAct = {
+  act: number;
+  monsters: number[];
+  elites: number[];
+  boss: number;
+  secondBoss: number;
+};
 type GoldenEnc = { seed: string; seedLong: string; acts: GoldenAct[]; counterAfter: number };
 
 const goldenPath = fileURLToPath(new URL("./golden/encounters.json", import.meta.url));
@@ -35,9 +41,11 @@ describe("sts-encounters 遭遇序列对拍 C++ 黄金向量", () => {
 
   it("boss 落在对应幕的 boss 集合内", () => {
     const acts = generateEncounters(golden.encounters[1]!.seed);
-    expect([MonsterEncounter.THE_GUARDIAN, MonsterEncounter.HEXAGHOST, MonsterEncounter.SLIME_BOSS]).toContain(
-      acts[0]!.boss,
-    );
+    expect([
+      MonsterEncounter.THE_GUARDIAN,
+      MonsterEncounter.HEXAGHOST,
+      MonsterEncounter.SLIME_BOSS,
+    ]).toContain(acts[0]!.boss);
   });
 
   it("string 与 bigint 入参一致", () => {

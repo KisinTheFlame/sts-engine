@@ -1,0 +1,74 @@
+name: Release
+
+# 合并到 master 后自动发版：
+# 读取 package.json 的 version，若对应的 v<version> tag 还不存在，
+# 就跑测试 → 发布 npm → 打 tag → 建 GitHub Release。
+# 版本号在功能 PR 里 bump，合并即发布，无需手动打 tag。
+on:
+  push:
+    branches: [master]
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: write # 打 tag、建 Release
+  id-token: write # npm provenance
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read version from package.json
+        id: v
+        run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Check whether tag already exists
+        id: check
+        run: |
+          if git rev-parse "v${{ steps.v.outputs.version }}" >/dev/null 2>&1; then
+            echo "已存在 tag v${{ steps.v.outputs.version }}，跳过发布。"
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "新版本 v${{ steps.v.outputs.version }}，开始发布。"
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: pnpm/action-setup@v4
+        if: steps.check.outputs.exists == 'false'
+
+      - uses: actions/setup-node@v4
+        if: steps.check.outputs.exists == 'false'
+        with:
+          node-version: 20
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+
+      - run: pnpm install --frozen-lockfile
+        if: steps.check.outputs.exists == 'false'
+
+      - run: pnpm test
+        if: steps.check.outputs.exists == 'false'
+
+      # 用 npm trusted publishing（OIDC）：不需要 NPM_TOKEN。
+      # 前提：在 npmjs.com 的包 Settings → Trusted Publishing 里
+      # 绑定仓库 KisinTheFlame/sts-engine + workflow release.yml。
+      - name: Publish to npm
+        if: steps.check.outputs.exists == 'false'
+        run: pnpm publish --no-git-checks --access public --provenance
+
+      - name: Create tag and GitHub Release
+        if: steps.check.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git tag "v${{ steps.v.outputs.version }}"
+          git push origin "v${{ steps.v.outputs.version }}"
+          gh release create "v${{ steps.v.outputs.version }}" \
+            --title "v${{ steps.v.outputs.version }}" \
+            --generate-notes

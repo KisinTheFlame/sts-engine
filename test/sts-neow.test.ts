@@ -17,9 +17,9 @@ describe("sts-neow 选项对拍 C++ 黄金向量", () => {
   for (const g of golden.neow) {
     it(`seed "${g.seed}"`, () => {
       const opts = generateNeowOptions(g.seed);
-      expect(opts.map((o) => ({ bonus: o.bonus as number, drawback: o.drawback as number }))).toEqual(
-        g.options,
-      );
+      expect(
+        opts.map((o) => ({ bonus: o.bonus as number, drawback: o.drawback as number })),
+      ).toEqual(g.options);
     });
   }
 

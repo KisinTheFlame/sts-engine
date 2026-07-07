@@ -22,26 +22,26 @@ const result = applyAction(state, { type: "choose", optionIndex: 0 });
 
 完整 API 走子路径导入（前缀 `@kisinwen/sts-engine/`）：
 
-| 子路径                   | 内容                                                      |
-| ------------------------ | --------------------------------------------------------- |
-| `engine/engine`          | `newRun` / `applyAction` / `GameAction`                   |
-| `engine/types`           | `GameState` / `CharacterId` / `EnemyState` / `RngState` … |
-| `engine/cards/cards`     | `ALL_CARDS` / `getCardDef` / `costOf`                     |
-| `engine/relics/relics`   | `ALL_RELICS` / `getRelicDef`                              |
-| `engine/potions/potions` | `ALL_POTIONS` / `getPotionDef`                            |
-| `engine/enemies/enemies` | `getEnemyDef`                                             |
-| `engine/powers/powers`   | `computeAttackDamage`                                     |
-| `engine/events/events`   | `getEventDef`                                             |
-| `engine/run/run`         | `currentOptions`                                          |
-| `engine/map/map`         | `availableNext`                                           |
-| `engine/rng`             | `seedRng` / `nextInt`                                     |
+| 子路径                   | 内容                                                                              |
+| ------------------------ | --------------------------------------------------------------------------------- |
+| `engine/engine`          | `newRun` / `applyAction` / `GameAction`                                           |
+| `engine/types`           | `GameState` / `CharacterId` / `EnemyState` / `RngState` …                         |
+| `engine/cards/cards`     | `ALL_CARDS` / `getCardDef` / `costOf`                                             |
+| `engine/relics/relics`   | `ALL_RELICS` / `getRelicDef`                                                      |
+| `engine/potions/potions` | `ALL_POTIONS` / `getPotionDef`                                                    |
+| `engine/enemies/enemies` | `getEnemyDef`                                                                     |
+| `engine/powers/powers`   | `computeAttackDamage`                                                             |
+| `engine/events/events`   | `getEventDef`                                                                     |
+| `engine/run/run`         | `currentOptions`                                                                  |
+| `engine/map/map`         | `availableNext`                                                                   |
+| `engine/rng`             | `seedRng` / `nextInt`                                                             |
 | `engine/sts-rng`         | `StsRandom` / `JavaRandom` / `seedStringToLong`（游戏级 RNG，接受原版种子字符串） |
-| `engine/sts-map`         | `generateMap`（游戏级地图生成：同种子复现原版地图，逐位对齐） |
-| `engine/sts-neow`        | `generateNeowOptions`（游戏级 Neow 开局四选项，同种子复现，逐位对齐） |
-| `engine/sts-encounters`  | `generateEncounters`（游戏级三幕怪物遭遇序列：怪物/精英/boss，同种子复现） |
-| `engine/glossary`        | `GLOSSARY`                                                |
-| `sim/policy`             | `GreedyPolicy`（自动对局策略，测试用）                    |
-| `migrate`                | `migrateLoadedState`（老存档字段回填）                    |
+| `engine/sts-map`         | `generateMap`（游戏级地图生成：同种子复现原版地图，逐位对齐）                     |
+| `engine/sts-neow`        | `generateNeowOptions`（游戏级 Neow 开局四选项，同种子复现，逐位对齐）             |
+| `engine/sts-encounters`  | `generateEncounters`（游戏级三幕怪物遭遇序列：怪物/精英/boss，同种子复现）        |
+| `engine/glossary`        | `GLOSSARY`                                                                        |
+| `sim/policy`             | `GreedyPolicy`（自动对局策略，测试用）                                            |
+| `migrate`                | `migrateLoadedState`（老存档字段回填）                                            |
 
 ## 设计约束
 
