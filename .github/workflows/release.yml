@@ -55,12 +55,17 @@ jobs:
       - run: pnpm test
         if: steps.check.outputs.exists == 'false'
 
-      # 用 npm trusted publishing（OIDC）：不需要 NPM_TOKEN。
-      # 前提：在 npmjs.com 的包 Settings → Trusted Publishing 里
-      # 绑定仓库 KisinTheFlame/sts-engine + workflow release.yml。
+      # trusted publishing（OIDC）的 registry 鉴权是 npm CLI（>= 11.5.1）
+      # 的能力，pnpm 自带的 publish 不做这步 token 交换，故改用 npm。
+      # 前提：npmjs.com 的包 Settings → Trusted Publishing 里已绑定
+      # 仓库 KisinTheFlame/sts-engine + workflow release.yml。不需要 NPM_TOKEN。
+      - name: Upgrade npm (OIDC trusted publishing 需要 >= 11.5.1)
+        if: steps.check.outputs.exists == 'false'
+        run: npm install -g npm@latest
+
       - name: Publish to npm
         if: steps.check.outputs.exists == 'false'
-        run: pnpm publish --no-git-checks --access public --provenance
+        run: npm publish --access public --provenance
 
       - name: Create tag and GitHub Release
         if: steps.check.outputs.exists == 'false'
