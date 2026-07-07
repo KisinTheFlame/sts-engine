@@ -5,6 +5,11 @@
   "type": "module",
   "license": "MIT",
   "author": "kisinwen",
+  "packageManager": "pnpm@10.18.3",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/KisinTheFlame/sts-engine.git"
+  },
   "engines": {
     "node": ">=20"
   },

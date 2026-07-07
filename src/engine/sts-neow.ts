@@ -128,10 +128,10 @@ export function generateNeowOptions(seed: string | bigint): NeowOption[] {
 
   options[0].bonus = r.random(0, 5);
   options[0].drawback = NeowDrawback.NONE;
-  options[1].bonus = (6 + r.random(0, 4));
+  options[1].bonus = 6 + r.random(0, 4);
   options[1].drawback = NeowDrawback.NONE;
 
-  options[2].drawback = (2 + r.random(0, 3));
+  options[2].drawback = 2 + r.random(0, 3);
   switch (options[2].drawback) {
     case NeowDrawback.TEN_PERCENT_HP_LOSS:
       options[2].bonus = HP_LOSS_REWARDS[r.random(0, 5)]!;
@@ -143,7 +143,7 @@ export function generateNeowOptions(seed: string | bigint): NeowOption[] {
       options[2].bonus = CURSE_REWARDS[r.random(0, 5)]!;
       break;
     case NeowDrawback.PERCENT_DAMAGE:
-      options[2].bonus = (11 + r.random(0, 6));
+      options[2].bonus = 11 + r.random(0, 6);
       break;
     default:
       break;

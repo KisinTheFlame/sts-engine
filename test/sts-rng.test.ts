@@ -61,7 +61,9 @@ describe("sts-rng 原语对拍 C++ 黄金向量", () => {
 
       it("randomLong() x100（uint64 十进制）", () => {
         const r = new StsRandom(BigInt(g.seedLong));
-        const out = Array.from({ length: 100 }, () => (r.randomLong() & ((1n << 64n) - 1n)).toString());
+        const out = Array.from({ length: 100 }, () =>
+          (r.randomLong() & ((1n << 64n) - 1n)).toString(),
+        );
         expect(out).toEqual(g.randomLong);
       });
 
