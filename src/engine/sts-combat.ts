@@ -1490,9 +1490,27 @@ function dealDamageToPlayer(bc: BattleContext, amount: number): void {
   bc.player.block -= blocked;
   bc.player.hp -= amount - blocked;
   if (bc.player.hp <= 0) {
-    bc.player.hp = 0;
-    bc.outcome = "player_loss";
+    wouldDie(bc);
   }
+}
+
+/**
+ * 濒死结算（对齐 Player::wouldDie）：先归零，再找瓶中仙灵——找到就消耗掉它、
+ * 回复 30% 最大生命（神圣树皮 60%，下限 1）并**存活**；没有才判负。
+ * 蜥蜴尾巴同理，留到遗物迁移。
+ */
+function wouldDie(bc: BattleContext): void {
+  bc.player.hp = 0;
+  for (let i = 0; i < bc.potionCapacity; i += 1) {
+    if (bc.potions[i] === "fairy_in_a_bottle") {
+      discardPotion(bc, i);
+      const healAmount = Math.max(1, Math.trunc(Math.fround(bc.player.maxHp) * 0.3));
+      healPlayer(bc, healAmount);
+      return;
+    }
+  }
+  // TODO(遗物PR): 蜥蜴尾巴（回半血）、绽放印记（禁用复活）。
+  bc.outcome = "player_loss";
 }
 
 function afterMonsterTurns(bc: BattleContext): void {

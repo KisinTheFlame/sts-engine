@@ -1,0 +1,3 @@
+# 机器生成的黄金向量：由参考项目真实 BattleContext 产出，从不手改。
+# 每行一条 trace（JSONL），格式化会破坏行结构、并让体积翻倍。
+test/golden/traces/
