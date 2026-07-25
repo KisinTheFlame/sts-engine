@@ -292,6 +292,8 @@ export type BattleContext = {
   ascension: number;
   /** 角色（决定药水池前 3 项）。 */
   character: CharacterId;
+  /** 持有的遗物 id（按获得顺序）。 */
+  relics: string[];
 
   /** 药水槽（定长 potionCapacity；null = 空）。 */
   potions: (string | null)[];
@@ -608,6 +610,8 @@ export type CombatInitInput = {
   playerMaxHp: number;
   /** 角色（决定药水池前 3 项）；缺省铁甲。 */
   character?: CharacterId;
+  /** 入场时持有的遗物 id。 */
+  relics?: string[];
   /** 入场时的药水槽（null = 空）；缺省三个空槽。 */
   potions?: (string | null)[];
   /** 药水槽容量（点金石 +2 等）；缺省 3。 */
@@ -631,6 +635,7 @@ export function initCombat(input: CombatInitInput): BattleContext {
     floorNum: input.floorNum,
     ascension: input.ascension,
     character: input.character ?? "ironclad",
+    relics: [...(input.relics ?? [])],
     potions: [...(input.potions ?? [null, null, null])],
     potionCount: (input.potions ?? []).filter((p) => p !== null).length,
     potionCapacity: input.potionCapacity ?? 3,
@@ -700,9 +705,11 @@ export function initCombat(input: CombatInitInput): BattleContext {
 
   // —— initRelics ——（骨架层跳过：铁甲燃烧之血等开局遗物不消耗 RNG，效果留后续 PR）
 
-  // —— player 能量 + 抽起手 ——
-  bc.player.energy += bc.player.energyPerTurn;
+  // —— initRelics + 抽起手 ——（顺序对齐 BattleContext::init）
+  initRelics(bc); // 第一遍：立即属性
   addToBot(bc, (c) => drawCards(c, c.player.cardDrawPerTurn));
+  initRelicsAtBattleStart(bc); // 第二遍：排在抽牌之后
+  bc.player.energy += bc.player.energyPerTurn;
   executeActions(bc);
 
   return bc;
@@ -720,7 +727,15 @@ export function executeActions(bc: BattleContext): void {
     if (++guard > LOOP_GUARD) {
       throw new Error("executeActions 循环熔断（可能死循环）");
     }
-    // ① 动作队列永远优先抽干。
+    // ① 玩家阵亡立刻跳出——**排在抽干队列之前**（对齐参考主循环把 PLAYER_LOSS
+    // 判断放在 actionQueue.pop 之前）。放到后面的话，怪物这一击打死玩家后，
+    // 它排在后面的加格挡 / RollMove 还会继续执行。
+    // 注意胜利不在此列：胜利要继续抽干队列，只是 clearPostCombatActions 已经
+    // 把该清的清掉了。
+    if (bc.outcome === "player_loss") {
+      break;
+    }
+    // ② 动作队列优先抽干。
     if (!bc.actionQueue.isEmpty()) {
       const a = bc.actionQueue.popFront();
       a.fn(bc);
@@ -961,6 +976,59 @@ function decrementDebuff(m: CombatMonster, id: string): void {
 // （对齐 `addToBot(Actions::AttackEnemy(t, calculateCardDamage(...)))`）。
 // 故痛击的易伤只影响其后打出的牌，不影响痛击自身那一击。
 // ============================================================================
+
+// ============================================================================
+// 战斗内遗物（对齐 BattleContext::initRelics）
+//
+// initRelics 是**两遍**：第一遍立即改属性；随后把开局抽牌入队；第二遍
+// atBattleStart 的效果也入队——所以它们在开局抽牌**之后**才结算。
+// 顺序错了（比如先上易伤再抽牌）在多数场景下看不出来，但会错。
+// ============================================================================
+
+export function hasRelic(bc: BattleContext, id: string): boolean {
+  return bc.relics.includes(id);
+}
+
+/** 第一遍：立即生效的属性类。 */
+const RELIC_IMMEDIATE: Record<string, (bc: BattleContext) => void> = {
+  vajra: (bc) => addPower(bc.player.powers, "strength", 1),
+  anchor: (bc) => {
+    bc.player.block += 10;
+  },
+  bronze_scales: (bc) => addPower(bc.player.powers, "thorns", 3),
+  oddly_smooth_stone: (bc) => addPower(bc.player.powers, "dexterity", 1),
+  blood_vial: (bc) => healPlayer(bc, 2),
+  lantern: (bc) => {
+    bc.player.energy += 1;
+  },
+};
+
+/** 第二遍：入队执行，落在开局抽牌之后。 */
+const RELIC_AT_BATTLE_START: Record<string, (bc: BattleContext) => void> = {
+  bag_of_marbles: (bc) =>
+    addToBot(bc, (c) => {
+      // 对齐 DebuffAllEnemy 的倒序 addToTop：最终按下标升序落到各怪身上。
+      for (let i = c.monsters.length - 1; i >= 0; i -= 1) {
+        if (c.monsters[i]?.alive === true) {
+          addToTop(c, (c2) => debuffEnemy(c2, i, "vulnerable", 1, false));
+        }
+      }
+    }),
+  bag_of_preparation: (bc) => addToBot(bc, (c) => drawCards(c, 2)),
+};
+
+function initRelics(bc: BattleContext): void {
+  for (const id of bc.relics) {
+    RELIC_IMMEDIATE[id]?.(bc);
+  }
+  // 开局抽牌（由调用方在此之后入队），再挂 atBattleStart。
+}
+
+function initRelicsAtBattleStart(bc: BattleContext): void {
+  for (const id of bc.relics) {
+    RELIC_AT_BATTLE_START[id]?.(bc);
+  }
+}
 
 type CardRule = (bc: BattleContext, item: CardQueueItem, upgraded: boolean) => void;
 
@@ -1348,7 +1416,10 @@ function doMonsterTurn(bc: BattleContext, idx: number): void {
   if (bc.outcome !== "undecided") {
     return;
   }
-  rollMove(bc, m); // ★ 行动后滚下一意图（消耗 aiRng）
+  // ★ 滚下一意图必须**入队**（对齐 takeTurn 末尾的 addToBot(Actions::RollMove)）。
+  // 同步调用会抢在荆棘之前：荆棘伤害走 addToTop 会插到 RollMove 前面，若它打死了
+  // 最后一只怪，这次 RollMove 就该被 clearPostCombatActions 清掉、不消耗 aiRng。
+  addToBot(bc, (c) => rollMove(c, m));
 }
 
 /** 执行怪物当前意图效果（骨架层：Cultist 咏唱=自身 ritual；attack=对玩家造成伤害）。 */
@@ -1363,6 +1434,10 @@ function takeTurn(bc: BattleContext, m: CombatMonster): void {
     if (bc.outcome !== "undecided") {
       return;
     }
+    // ⚠ 入队与否要逐项对齐参考的 takeTurn：力量类 buff 是**立即**执行
+    //（`buff<MS::STRENGTH>(...)`），而加格挡、造成伤害、给玩家上减益都是
+    // `addToBot(Actions::...)`。差别看得见——荆棘伤害走 addToTop 会插到排队的
+    // 加格挡之前，若格挡改成同步就会把荆棘吃掉。
     if (eff.kind === "apply_power" && eff.on === "self") {
       addPower(m.powers, eff.power, eff.amount);
       if (eff.power === "ritual") {
@@ -1372,19 +1447,21 @@ function takeTurn(bc: BattleContext, m: CombatMonster): void {
           ritual.justApplied = true;
         }
       }
-    } else if (eff.kind === "deal_damage") {
-      const dmg = calculateDamageToPlayer(bc, m, eff.amount);
-      dealDamageToPlayer(bc, dmg);
-    } else if (eff.kind === "deal_damage_rolled") {
-      // 伤害取出生时掷定的固定值（虱子咬击）。
-      const dmg = calculateDamageToPlayer(bc, m, m.rolledDamage);
-      dealDamageToPlayer(bc, dmg);
+    } else if (eff.kind === "deal_damage" || eff.kind === "deal_damage_rolled") {
+      // 伤害在**入队时**按当下状态算好（attackPlayerHelper 先 calculateDamageToPlayer
+      // 再 addToBot(AttackPlayer)）；deal_damage_rolled 取出生时掷定的固定值。
+      const base = eff.kind === "deal_damage_rolled" ? m.rolledDamage : eff.amount;
+      const dmg = calculateDamageToPlayer(bc, m, base);
+      const idx = bc.monsters.indexOf(m);
+      addToBot(bc, (c) => dealDamageToPlayer(c, dmg, idx));
     } else if (eff.kind === "apply_power" && eff.on === "target") {
       // 怪物给玩家上减益：isSourceMonster=true，故虚弱/易伤**跳过**首次递减。
-      debuffPlayer(bc, eff.power, eff.amount);
+      addToBot(bc, (c) => debuffPlayer(c, eff.power, eff.amount));
     } else if (eff.kind === "gain_block") {
-      // 怪物自身获得格挡（对齐 Actions::MonsterGainBlock）。
-      m.block += eff.amount;
+      // 对齐 addToBot(Actions::MonsterGainBlock)——排队，不能当场加。
+      addToBot(bc, () => {
+        m.block += eff.amount;
+      });
     }
     // 其余效果留后续 PR。
   }
@@ -1485,7 +1562,13 @@ function addPower(powers: PowerInstance[], id: string, amount: number): void {
   }
 }
 
-function dealDamageToPlayer(bc: BattleContext, amount: number): void {
+function dealDamageToPlayer(bc: BattleContext, amount: number, attackerIdx = -1): void {
+  // 荆棘：对齐 Player::damage 的 addToTop(DamageEnemy(...))——排在队首，
+  // 且走非攻击伤害路径（不触发蜷缩）。
+  const thorns = getPower(bc.player.powers, "thorns");
+  if (thorns > 0 && attackerIdx >= 0) {
+    addToTop(bc, (c) => damageEnemyNonAttack(c, attackerIdx, thorns));
+  }
   const blocked = Math.min(bc.player.block, amount);
   bc.player.block -= blocked;
   bc.player.hp -= amount - blocked;

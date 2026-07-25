@@ -57,6 +57,7 @@ type Step = { action: { type: string; idx?: number; target?: number }; after: Sn
 
 type Trace = {
   seed: string;
+  relics: string[];
   potionRngSeed: string;
   seedLong: string;
   floor: number;
@@ -159,6 +160,8 @@ const POWER: Record<string, string> = {
   STRENGTH: "strength",
   DEXTERITY: "dexterity",
   ARTIFACT: "artifact",
+  THORNS: "thorns",
+  VIGOR: "vigor",
 };
 
 const mapPotion = (p: string): string | null => (p in POTION ? POTION[p]! : p);
@@ -260,6 +263,7 @@ const start = (t: Trace): BattleContext =>
     playerHp: t.initial.player.hp,
     playerMaxHp: t.initial.player.maxHp,
     character: "ironclad",
+    relics: t.relics,
     potions: t.initial.potions.map(mapPotion),
     // potionRng 是 run 级持久流，harness 明确把它钉在 Random(seed)。
     potionRng: new StsRandom(BigInt(t.potionRngSeed)),
