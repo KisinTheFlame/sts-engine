@@ -11,54 +11,35 @@ import type { RngState } from "../engine/types.js";
 // 纯引擎层：只读 GameState、产出合法 GameAction。用于平衡验证（跑几千局看胜率/回合数）
 // 与黄金种子回归（确定性）。策略自带 RNG（与游戏 RNG 分离，不污染对局种子）。
 
-/**
- * 战斗屏的统一视图。两套战斗实现（近似的 state.combat 与游戏级的 state.stsCombat）
- * 字段名不同，而策略只需要这几项，折一层就都能驱动。
- */
+/** 策略需要的战斗视图（从 BattleContext 快照里取那么几项）。 */
 type CombatView = {
   hand: { defId: string; upgraded: boolean }[];
   energy: number;
-  /** 贪心的攻击目标：血最低的存活敌人。 */
+  /** 贪心的攻击目标：血最低的存活怪。 */
   target: number;
   /** 缠绕：本回合打不出攻击牌。 */
   entangled: boolean;
 };
 
-function lowestHpIndex(units: { hp: number; alive: boolean }[]): number {
-  let best = -1;
-  let bestHp = Infinity;
-  units.forEach((unit, index) => {
-    if (unit.alive && unit.hp < bestHp) {
-      bestHp = unit.hp;
-      best = index;
-    }
-  });
-  return best < 0 ? 0 : best;
-}
-
 function combatView(state: GameState): CombatView | null {
-  if (state.screen !== "combat") {
+  if (state.screen !== "combat" || state.combat === null) {
     return null;
   }
-  if (state.combat) {
-    const combat = state.combat;
-    return {
-      hand: combat.hand.map((c) => ({ defId: c.defId, upgraded: c.upgraded })),
-      energy: combat.energy,
-      target: lowestHpIndex(combat.enemies.map((e) => ({ hp: e.hp, alive: e.hp > 0 }))),
-      entangled: combat.playerPowers.some((p) => p.id === "entangled" && p.amount > 0),
-    };
-  }
-  if (state.stsCombat) {
-    const combat = state.stsCombat;
-    return {
-      hand: combat.hand.map((c) => ({ defId: c.defId, upgraded: c.upgraded })),
-      energy: combat.player.energy,
-      target: lowestHpIndex(combat.monsters.map((m) => ({ hp: m.hp, alive: m.alive }))),
-      entangled: combat.player.powers.some((p) => p.id === "entangled" && p.amount > 0),
-    };
-  }
-  return null;
+  const combat = state.combat;
+  let target = 0;
+  let bestHp = Infinity;
+  combat.monsters.forEach((monster, index) => {
+    if (monster.alive && monster.hp < bestHp) {
+      bestHp = monster.hp;
+      target = index;
+    }
+  });
+  return {
+    hand: combat.hand.map((card) => ({ defId: card.defId, upgraded: card.upgraded })),
+    energy: combat.player.energy,
+    target,
+    entangled: combat.player.powers.some((p) => p.id === "entangled" && p.amount > 0),
+  };
 }
 
 /** 枚举当前态下的合法动作。 */

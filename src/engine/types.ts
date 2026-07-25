@@ -12,15 +12,6 @@ import type { RandomState } from "./sts-rng.js";
 
 export type CharacterId = "ironclad" | "silent" | "defect" | "watcher";
 
-/**
- * 战斗实现的选择（见 combat-bridge.ts）。
- *
- * - `legacy`：`combat/combat.ts`。近似实现（单条玩具 RNG、无动作队列），但覆盖几乎全部内容。
- * - `sts`：`sts-combat.ts`。与原版逐位一致，但覆盖面还窄；未覆盖的战斗会自动回退到 legacy
- *   并在 log 里说明，不会静默换实现。
- */
-export type CombatEngine = "legacy" | "sts";
-
 export type CardType = "attack" | "skill" | "power" | "status" | "curse";
 
 /** 卡牌颜色：决定属于哪个角色的卡池；status/curse = 塞进牌组的废牌（不进任何奖励池）。 */
@@ -427,37 +418,6 @@ export type EnemyDef = {
   timeWarpEvery?: number;
 };
 
-export type EnemyState = {
-  defId: string;
-  name: string;
-  hp: number;
-  maxHp: number;
-  block: number;
-  powers: PowerInstance[];
-  /** 最近若干次出招 id（判 maxInARow）。 */
-  moveHistory: string[];
-  /** 循环型出招（Boss 姿态轮转）的进度指针。 */
-  rotationIndex: number;
-  /** 本回合已 telegraph 的出招 id。 */
-  currentMove: string;
-  /** 蜷缩是否已消耗。 */
-  curlUpConsumed: boolean;
-  /** 出生时掷定、整场固定的攻击基础值（红虱咬击 5~7）。0 表示该敌人不用此机制。 */
-  rolledDamage: number;
-  /** 是否沉睡（拉加维林开局睡眠；受伤或睡满自然醒时置 false）。 */
-  asleep: boolean;
-  /** 是否已分裂过（半血分裂只触发一次）。 */
-  hasSplit: boolean;
-  /** 是否已复活过（觉醒者二阶段只触发一次）。 */
-  hasRevived: boolean;
-  /** 是否已逃离战斗（拾荒者烟雾弹后逃跑；逃跑后不再算作战斗目标）。 */
-  escaped: boolean;
-  /** 守卫者：进攻姿态下累计受到的伤害（达阈值切姿态后清零，非每回合重置——复刻 StS 累计语义）。 */
-  modeShiftAccum: number;
-  modeShiftThreshold: number | null;
-  stance: "offensive" | "defensive" | null;
-};
-
 /** 充能球类型（机器人专属）：闪电/冰霜/暗/等离子。 */
 export type OrbType = "lightning" | "frost" | "dark" | "plasma";
 
@@ -466,74 +426,6 @@ export type Orb = { type: OrbType; value?: number };
 
 /** 玩家姿态（观者专属）：平静 / 愤怒 / 神性 / 无。神性下攻击 ×3，回合结束退出。 */
 export type PlayerStance = "none" | "calm" | "wrath" | "divinity";
-
-export type CombatState = {
-  turn: number;
-  energy: number;
-  maxEnergy: number;
-  playerBlock: number;
-  playerPowers: PowerInstance[];
-  enemies: EnemyState[];
-  hand: CardInstance[];
-  drawPile: CardInstance[];
-  discardPile: CardInstance[];
-  exhaustPile: CardInstance[];
-  /** 机器人充能球（左→右按槽位排列）；非机器人对局恒为空。 */
-  orbs: Orb[];
-  /** 球槽数量（机器人默认 3；其他角色 0）。 */
-  orbSlots: number;
-  /** 玩家姿态（观者）：愤怒下攻击/受击双倍；离开平静 +2 能量。默认 none。 */
-  playerStance: PlayerStance;
-  /** 观者法力：累积到 10 自动进入神性姿态并清空。默认 0（非观者恒为 0）。 */
-  mantra: number;
-  /** 预约到下个玩家回合开始的格挡 / 能量 / 抽牌（闪转腾挪/飞膝/掠食者等）。用完清零。 */
-  nextTurnBlock: number;
-  nextTurnEnergy: number;
-  nextTurnDraw: number;
-  /** 预约到下个回合开始进入的姿态（烈怒渐起）；null=不预约。 */
-  nextTurnStance: PlayerStance | null;
-  /** 噩梦：预约下个回合开始加入手牌的牌副本；null=不预约。 */
-  nightmarePending: { cardId: string; count: number } | null;
-  /** 炸弹：预约在若干回合后对所有敌人造成伤害；null=无。 */
-  pendingBomb: { turns: number; damage: number } | null;
-  /** 宝库：为真则本次结束回合后不让敌人行动，直接再获得一个玩家回合。默认 false。 */
-  extraTurnPending: boolean;
-  /** 亵渎：为真则下个回合开始时角色死亡。默认 false。 */
-  doomedNextTurn: boolean;
-  /** 幻杀：为真则下个回合开始时获得「幻杀」（当回合攻击双倍）。默认 false。 */
-  nextTurnPhantasmal: boolean;
-  /** 本回合已打出的攻击牌数（终结技按此结算；每回合开始清零）。 */
-  attacksThisTurn: number;
-  /** 本回合已（由牌效果）弃掉的手牌数（剖体斩降费 / 声东击西给能量按此；回合开始清零）。 */
-  cardsDiscardedThisTurn: number;
-  /** 本回合已打出的牌数（含当前正在结算的这张）（超光速判据 / 华彩每 5 张触发；回合开始清零）。 */
-  cardsPlayedThisTurn: number;
-  /** 本场战斗累计获得的法力（璀璨光辉按此结算；整场不清零）。 */
-  mantraGainedThisCombat: number;
-  /** 本场战斗累计充能的冰霜球数（暴风雪按此结算；整场不清零）。 */
-  frostChanneledThisCombat: number;
-  /** 本场战斗累计充能的闪电球数（雷霆一击按此结算；整场不清零）。 */
-  lightningChanneledThisCombat: number;
-  /** 本场战斗累计打出的能力牌数（力场按此降费；整场不清零）。 */
-  powersPlayedThisCombat: number;
-  /** 本场战斗玩家失血的次数（血债血偿按此降费；整场不清零）。 */
-  timesLostHpThisCombat: number;
-  /** 本场战斗「爪击」累计伤害加成：每打出一张爪击 +2，作用于本场后续所有爪击（整场不清零）。 */
-  clawDamageThisCombat: number;
-  /** 本回合结束时保留全部手牌（平衡）；回合结束结算后清零。 */
-  retainHandThisTurn: boolean;
-  /** 上一张打出的牌的类型（神圣「若上一张是技能」判据）；null=本回合还没打过。 */
-  lastCardType: CardType | null;
-  /** 本场战斗奖励的敌人组标识（用于 reward 生成）。 */
-  encounterId: string;
-  isBoss: boolean;
-  /** 本场是否精英战（勇气投索 +力量 / 密封昆虫 减敌血按此判定）。 */
-  isElite: boolean;
-  /** 本回合开始时玩家生命（情绪芯片判「上回合是否掉血」用）。 */
-  hpAtTurnStart: number;
-  /** 时间吞噬者：本回合触发了时间扭曲，需在当前出牌结算收尾后立即结束玩家回合。 */
-  timeWarpEndTurnPending: boolean;
-};
 
 type RewardState = {
   /** 三选一（或跳过）的卡奖励，存 defId + 是否升级。 */
@@ -638,18 +530,10 @@ export type GameState = {
   map: MapGraph;
   /** 当前所在地图节点 id；null = 还没进入地图（在底层选入口）。 */
   currentNodeId: string | null;
-  /** 本局用哪套战斗实现（默认 legacy）。逐场生效：sts 覆盖不到的战斗照旧走 legacy。 */
-  combatEngine: CombatEngine;
-  /** 近似战斗（`combat/combat.ts`）的状态；null = 当前不在近似战斗中。 */
-  combat: CombatState | null;
+  /** 战斗状态（`sts-combat.ts` 的 `BattleContext` 纯数据投影）；null = 不在战斗中。 */
+  combat: StsCombatState | null;
   /**
-   * 游戏级战斗（`sts-combat.ts`）的状态；null = 当前不在游戏级战斗中。
-   *
-   * 与 `combat` 互斥：同一时刻至多一个非 null。迁移完成后 `combat` 退役，本字段接位。
-   */
-  stsCombat: StsCombatState | null;
-  /**
-   * 游戏级战斗的 run 级持久 potionRng 状态（熵酿在战斗内消耗它）。
+   * run 级持久 potionRng 状态（熵酿在战斗内消耗它）。
    *
    * 与逐层重播种的四条战斗流不同，它的 counter 必须跨房间续算，所以存在 run 上而不是
    * 战斗里。null = 本局还没用过，按 `Random(seed)` 起头。

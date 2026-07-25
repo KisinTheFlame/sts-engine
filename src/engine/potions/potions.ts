@@ -409,7 +409,7 @@ const POTION_LIST: PotionDef[] = [
   {
     id: "fairy_in_a_bottle",
     name: "瓶中仙灵",
-    // 濒死时自动消耗、回 30% 生命（在 combat.ts 的 reviveIfPossible 处理）；手动使用无效果。
+    // 濒死时自动消耗、回 30% 生命（见 sts-combat.ts 的 wouldDie）；手动使用无效果。
     description: "当你在战斗中濒死时，自动消耗它并回复 30% 最大生命。",
     rarity: "rare",
     targeted: false,
