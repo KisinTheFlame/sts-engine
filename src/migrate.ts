@@ -35,6 +35,12 @@ export function migrateLoadedState(raw: unknown): GameState {
   backfill(state, "potionDropBonus", 0);
   backfill(state, "combatsEntered", 0);
   backfill(state, "pendingRelicReward", false);
+  backfill(state, "floorNum", 0); // 楼层号——老档没有。
+  // 种子从 number 升为 int64 十进制字符串：老档存的是 number，原样转字符串即可
+  //（老档的种子本就在 2^53 内，不存在精度损失）。
+  if (typeof state["seed"] === "number") {
+    state["seed"] = String(state["seed"]);
+  }
   backfill(state, "cardSelect", null); // 选牌子界面（图书馆/复制器/和平烟斗）——老档没有。
 
   const combat = asRecord(state["combat"]);

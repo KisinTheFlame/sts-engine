@@ -79,6 +79,9 @@ export function advanceToNextAct(state: GameState): void {
 /** 进入一个地图节点：按类型路由。战斗/Boss 起战斗；篝火切 rest 屏；宝箱即时给金币后回地图。 */
 function resolveNode(state: GameState, node: MapNode): void {
   state.currentNodeId = node.id;
+  // 对齐 GameContext::transitionToMapNode 的 ++floorNum：每进入一个节点算一层。
+  // 游戏级 RNG 按 Random(seed + floorNum) 逐层重播种，这个计数是复现的必需输入。
+  state.floorNum += 1;
   // 巨口银行：进入非商店房间时 +12 金币。
   if (node.type !== "shop" && hasRelic(state, "maw_bank")) {
     state.gold += 12;

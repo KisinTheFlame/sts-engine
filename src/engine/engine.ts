@@ -1,6 +1,7 @@
 import type { CardInstance, CharacterId, GameState } from "./types.js";
 import { getCharacterConfig } from "./characters/characters.js";
 import { seedRng } from "./rng.js";
+import { seedStringToLong } from "./sts-rng.js";
 import { endTurn, playCard, usePotion } from "./combat/combat.js";
 import { TOTAL_ACTS, advanceToNextAct, applyChoose, buildMap, generateReward } from "./run/run.js";
 import { POTION_SLOTS } from "./potions/potions.js";
@@ -20,13 +21,20 @@ export type ActionResult = { ok: true } | { ok: false; reason: string };
 
 export function newRun(input: {
   runId: string;
-  seed: number;
+  /**
+   * 种子。传 number / bigint 视作数值种子；传 string 视作**游戏内显示的种子串**
+   * （base-35，如 "1RGBGHNF7L"），会按原版规则换算成 int64。
+   */
+  seed: number | bigint | string;
   character?: CharacterId;
   ascension?: number;
 }): GameState {
   const character: CharacterId = input.character ?? "ironclad";
   const config = getCharacterConfig(character);
-  const rng = seedRng(input.seed);
+  const seedLong =
+    typeof input.seed === "string" ? seedStringToLong(input.seed) : BigInt(input.seed);
+  // 旧的玩具 RNG 仍按低位数值播种，维持现有近似栈的行为不变。
+  const rng = seedRng(Number(BigInt.asIntN(53, seedLong)));
   let nextUid = 1;
   const deck: CardInstance[] = config.starterDeck.map((defId) => ({
     uid: nextUid++,
@@ -36,7 +44,8 @@ export function newRun(input: {
   const state: GameState = {
     version: 0,
     runId: input.runId,
-    seed: input.seed,
+    seed: seedLong.toString(),
+    floorNum: 0,
     character,
     ascension: input.ascension ?? 0,
     act: 1,

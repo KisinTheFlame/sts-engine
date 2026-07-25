@@ -15,8 +15,9 @@ npm install @kisinwen/sts-engine
 ```ts
 import { newRun, applyAction } from "@kisinwen/sts-engine";
 
-const state = newRun({ runId: "run-1", seed: 42, character: "ironclad", ascension: 0 });
+const state = newRun({ runId: "run-1", seed: "1RGBGHNF7L", character: "ironclad", ascension: 0 });
 const result = applyAction(state, { type: "choose", optionIndex: 0 });
+// seed 可传游戏内显示的种子串（base-35），也可传 number / bigint
 // state 被原地推进；result.ok 表示动作是否合法
 ```
 
