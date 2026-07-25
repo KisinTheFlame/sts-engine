@@ -270,7 +270,7 @@ const start = (t: Trace): BattleContext =>
     floorNum: t.floor,
     ascension: 0,
     encounterId: ENCOUNTER[t.encounter]!,
-    deckCardIds: t.deck.map((c) => CARD[c] ?? c),
+    deck: t.deck.map((c) => ({ defId: CARD[c] ?? c, upgraded: false })),
     playerHp: t.initial.player.hp,
     playerMaxHp: t.initial.player.maxHp,
     character: "ironclad",

@@ -5,7 +5,21 @@
 //
 // 设计依据：本仓库根 AGENTS.md「KV 缓存优先」+ office-hours 设计文档 + issue #234。
 
+// 只取类型（编译后擦除），故与 sts-combat.ts 互相 import type 不产生运行时循环依赖。
+import type { StsCombatState } from "./sts-combat.js";
+// 游戏级 RNG 单条流的可序列化状态（{counter, seed0, seed1}），区别于下方玩具 RNG 的 RngState。
+import type { RandomState } from "./sts-rng.js";
+
 export type CharacterId = "ironclad" | "silent" | "defect" | "watcher";
+
+/**
+ * 战斗实现的选择（见 combat-bridge.ts）。
+ *
+ * - `legacy`：`combat/combat.ts`。近似实现（单条玩具 RNG、无动作队列），但覆盖几乎全部内容。
+ * - `sts`：`sts-combat.ts`。与原版逐位一致，但覆盖面还窄；未覆盖的战斗会自动回退到 legacy
+ *   并在 log 里说明，不会静默换实现。
+ */
+export type CombatEngine = "legacy" | "sts";
 
 export type CardType = "attack" | "skill" | "power" | "status" | "curse";
 
@@ -624,7 +638,23 @@ export type GameState = {
   map: MapGraph;
   /** 当前所在地图节点 id；null = 还没进入地图（在底层选入口）。 */
   currentNodeId: string | null;
+  /** 本局用哪套战斗实现（默认 legacy）。逐场生效：sts 覆盖不到的战斗照旧走 legacy。 */
+  combatEngine: CombatEngine;
+  /** 近似战斗（`combat/combat.ts`）的状态；null = 当前不在近似战斗中。 */
   combat: CombatState | null;
+  /**
+   * 游戏级战斗（`sts-combat.ts`）的状态；null = 当前不在游戏级战斗中。
+   *
+   * 与 `combat` 互斥：同一时刻至多一个非 null。迁移完成后 `combat` 退役，本字段接位。
+   */
+  stsCombat: StsCombatState | null;
+  /**
+   * 游戏级战斗的 run 级持久 potionRng 状态（熵酿在战斗内消耗它）。
+   *
+   * 与逐层重播种的四条战斗流不同，它的 counter 必须跨房间续算，所以存在 run 上而不是
+   * 战斗里。null = 本局还没用过，按 `Random(seed)` 起头。
+   */
+  stsPotionRng: RandomState | null;
   reward: RewardState | null;
   /** 当前进行中的事件（? 节点）；null = 不在事件屏。 */
   event: EventState | null;

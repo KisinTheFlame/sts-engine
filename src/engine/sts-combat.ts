@@ -14,13 +14,16 @@
 //   ③ 多怪：逐怪 rollMove（含分支内追加 aiRng 的非常数消耗）、编队开局特例
 //   ④ 变体编队：miscRng 选怪与 monsterHpRng **交错**、construct 额外 roll、preBattleAction
 //   ⑤ 药水：drinkPotion 路径、药水池与 returnRandomPotion 拒绝采样（potionRng）
-// 尚未迁移：遗物、姿态与球、其余怪种/卡牌/药水。
+//   ⑥ 接线：可序列化快照（exportState/importState）+ 覆盖面登记（SUPPORTED_ENCOUNTERS 等），
+//      供 combat-bridge.ts 把本文件挂到 GameState 上
+// 尚未迁移：姿态与球、其余怪种/卡牌/药水/遗物。
 //
 // 登记式扩展点（新增怪/编队/卡/药水时往这些表里加，未登记会显式抛错而非静默错配 RNG）：
 //   MOVE_RULES / ENCOUNTER_BUILDERS / ENCOUNTER_SETUP / PRE_BATTLE_ACTION
 //   CARD_RULES / POTION_RULES
 
 import { StsRandom, JavaRandom, javaShuffle } from "./sts-rng.js";
+import type { RandomState } from "./sts-rng.js";
 import { getEnemyDef, getEncounterDef } from "./enemies/enemies.js";
 import { getCardDef } from "./cards/cards.js";
 import { getPotionDef } from "./potions/potions.js";
@@ -290,6 +293,8 @@ export type BattleContext = {
   seedLong: bigint;
   floorNum: number;
   ascension: number;
+  /** 本场编队 id（对齐 BattleContext::encounter）。战斗后的 Boss 判定要读它。 */
+  encounterId: string;
   /** 角色（决定药水池前 3 项）。 */
   character: CharacterId;
   /** 持有的遗物 id（按获得顺序）。 */
@@ -598,13 +603,16 @@ function drawCards(bc: BattleContext, count: number): void {
 //   monsters.init(HP→rollMove) → cards.init(建库+洗牌) → initRelics → 抽起手
 // ============================================================================
 
+/** 入场牌组的一张牌（master deck 的投影：只有 defId 与升级态影响战斗）。 */
+export type CombatDeckCard = { defId: string; upgraded: boolean };
+
 export type CombatInitInput = {
   seedLong: bigint;
   floorNum: number;
   ascension: number;
   encounterId: string;
-  /** 大牌组（master deck）卡定义 id，按获得顺序。 */
-  deckCardIds: string[];
+  /** 大牌组（master deck），按获得顺序——顺序即洗牌输入，不可排序。 */
+  deck: CombatDeckCard[];
   /** 玩家当前生命/上限。 */
   playerHp: number;
   playerMaxHp: number;
@@ -634,6 +642,7 @@ export function initCombat(input: CombatInitInput): BattleContext {
     seedLong: input.seedLong,
     floorNum: input.floorNum,
     ascension: input.ascension,
+    encounterId: input.encounterId,
     character: input.character ?? "ironclad",
     relics: [...(input.relics ?? [])],
     potions: [...(input.potions ?? [null, null, null])],
@@ -694,11 +703,12 @@ export function initCombat(input: CombatInitInput): BattleContext {
 
   // —— cards.init ——
   // 建实例（按 master deck 顺序）→ 一次 shuffleRng 洗牌 → Innate 归位（铁甲基础组无 Innate）。
-  // TODO(后续PR): 升级态应随 master deck 传入；骨架期起始牌组均未升级。
-  const drawPile: CombatCard[] = input.deckCardIds.map((defId) => ({
+  // TODO(后续PR): Innate 归位（背刺 / 瓶装遗物）；目前登记的牌里没有固有牌，
+  // combat-bridge 的覆盖面检查也会把带固有的牌组挡在门外。
+  const drawPile: CombatCard[] = input.deck.map((card) => ({
     uid: bc.nextUid++,
-    defId,
-    upgraded: false,
+    defId: card.defId,
+    upgraded: card.upgraded,
   }));
   shuffleCards(bc, drawPile); // ★ 消耗一次 shuffleRng
   bc.drawPile = drawPile;
@@ -1715,6 +1725,175 @@ function afterMonsterTurns(bc: BattleContext): void {
   if (livingMonsters(bc).length === 0) {
     bc.outcome = "player_victory";
   }
+}
+
+// ============================================================================
+// 可序列化快照（供 GameState 存档；接线用）
+//
+// BattleContext 里只有两处不是纯数据：6 条 StsRandom（有 toState/fromState）与
+// 两条队列（存的是闭包）。队列**只在 executeActions 抽干后才被观察**——那时玩家
+// 重获控制权（inputState=player_normal）、两队列必空，故快照不需要它们。
+// 结局已定的战斗不入档（战斗当场结算掉），所以 player_loss 时残留的动作队列也不用管。
+// ============================================================================
+
+export type CombatRngState = Record<keyof CombatRng, RandomState>;
+
+/** BattleContext 的纯数据投影：JSON 可往返，用作 GameState.stsCombat。 */
+export type StsCombatState = {
+  /** run 级 int64 种子的十进制字符串（与 GameState.seed 同形）。 */
+  seedLong: string;
+  floorNum: number;
+  ascension: number;
+  encounterId: string;
+  character: CharacterId;
+  relics: string[];
+  potions: (string | null)[];
+  potionCount: number;
+  potionCapacity: number;
+  outcome: Outcome;
+  turn: number;
+  player: CombatPlayer;
+  monsters: CombatMonster[];
+  hand: CombatCard[];
+  drawPile: CombatCard[];
+  discardPile: CombatCard[];
+  exhaustPile: CombatCard[];
+  monsterTurnIdx: number;
+  endTurnQueued: boolean;
+  turnHasEnded: boolean;
+  nextUid: number;
+  rng: CombatRngState;
+};
+
+const copyPowers = (powers: PowerInstance[]): PowerInstance[] => powers.map((p) => ({ ...p }));
+const copyCards = (cards: CombatCard[]): CombatCard[] => cards.map((c) => ({ ...c }));
+
+/**
+ * 导出快照。要求两条队列已抽干——非空说明调用方在动作执行中途取档，那样的档
+ * 复原后会丢掉排队动作，宁可当场炸掉也不留一个静默错的存档。
+ */
+export function exportState(bc: BattleContext): StsCombatState {
+  if (!bc.actionQueue.isEmpty() || !bc.cardQueue.isEmpty()) {
+    throw new Error("exportState: 队列未抽干（只能在玩家可操作时取档）");
+  }
+  return {
+    seedLong: bc.seedLong.toString(),
+    floorNum: bc.floorNum,
+    ascension: bc.ascension,
+    encounterId: bc.encounterId,
+    character: bc.character,
+    relics: [...bc.relics],
+    potions: [...bc.potions],
+    potionCount: bc.potionCount,
+    potionCapacity: bc.potionCapacity,
+    outcome: bc.outcome,
+    turn: bc.turn,
+    player: { ...bc.player, powers: copyPowers(bc.player.powers) },
+    monsters: bc.monsters.map((m) => ({
+      ...m,
+      moveHistory: [...m.moveHistory],
+      powers: copyPowers(m.powers),
+    })),
+    hand: copyCards(bc.hand),
+    drawPile: copyCards(bc.drawPile),
+    discardPile: copyCards(bc.discardPile),
+    exhaustPile: copyCards(bc.exhaustPile),
+    monsterTurnIdx: bc.monsterTurnIdx,
+    endTurnQueued: bc.endTurnQueued,
+    turnHasEnded: bc.turnHasEnded,
+    nextUid: bc.nextUid,
+    rng: {
+      aiRng: bc.rng.aiRng.toState(),
+      monsterHpRng: bc.rng.monsterHpRng.toState(),
+      shuffleRng: bc.rng.shuffleRng.toState(),
+      cardRandomRng: bc.rng.cardRandomRng.toState(),
+      miscRng: bc.rng.miscRng.toState(),
+      potionRng: bc.rng.potionRng.toState(),
+    },
+  };
+}
+
+/** 从快照复原。RNG 走 fromState（O(1) 直接装回 seed0/seed1 与 counter，不重放）。 */
+export function importState(s: StsCombatState): BattleContext {
+  return {
+    rng: {
+      aiRng: StsRandom.fromState(s.rng.aiRng),
+      monsterHpRng: StsRandom.fromState(s.rng.monsterHpRng),
+      shuffleRng: StsRandom.fromState(s.rng.shuffleRng),
+      cardRandomRng: StsRandom.fromState(s.rng.cardRandomRng),
+      miscRng: StsRandom.fromState(s.rng.miscRng),
+      potionRng: StsRandom.fromState(s.rng.potionRng),
+    },
+    seedLong: BigInt(s.seedLong),
+    floorNum: s.floorNum,
+    ascension: s.ascension,
+    encounterId: s.encounterId,
+    character: s.character,
+    relics: [...s.relics],
+    potions: [...s.potions],
+    potionCount: s.potionCount,
+    potionCapacity: s.potionCapacity,
+    outcome: s.outcome,
+    // 存档点必然是玩家可操作态（见上方注释）。
+    inputState: "player_normal",
+    turn: s.turn,
+    actionQueue: new ActionQueue(),
+    cardQueue: new CardQueue(),
+    player: { ...s.player, powers: copyPowers(s.player.powers) },
+    monsters: s.monsters.map((m) => ({
+      ...m,
+      moveHistory: [...m.moveHistory],
+      powers: copyPowers(m.powers),
+    })),
+    // 由存活位重算，不入档：与 monsters 冗余的字段存两份只会有对不上的风险。
+    monstersAlive: s.monsters.filter((m) => m.alive).length,
+    hand: copyCards(s.hand),
+    drawPile: copyCards(s.drawPile),
+    discardPile: copyCards(s.discardPile),
+    exhaustPile: copyCards(s.exhaustPile),
+    monsterTurnIdx: s.monsterTurnIdx,
+    endTurnQueued: s.endTurnQueued,
+    turnHasEnded: s.turnHasEnded,
+    nextUid: s.nextUid,
+  };
+}
+
+// ============================================================================
+// 覆盖面登记（供接线层判断「这场战斗能不能交给 sts-combat」）
+//
+// 判据只有一条：**有 trace 背书**。派生式判断（比如「编队里的怪都登记了就算支持」）
+// 会把没对拍过的编队悄悄放进来——三邪教徒的成员全是已登记的邪教徒，但参考项目里
+// 该编队的 createMonsters 我们从没验证过，放进来就是无声的赌博。
+// ============================================================================
+
+/**
+ * 已有 trace 背书的编队。新增一批 trace 后往这里加一行。
+ * `test/sts-combat-wiring.test.ts` 会与 `test/golden/traces/*.jsonl` 双向对齐，
+ * 漏加或多加都会失败。
+ */
+export const SUPPORTED_ENCOUNTERS: readonly string[] = [
+  "cultist",
+  "jaw_worm",
+  "jaw_worm_horde",
+  "two_louse",
+  "three_louse",
+];
+
+export function isEncounterSupported(encounterId: string): boolean {
+  return SUPPORTED_ENCOUNTERS.includes(encounterId);
+}
+
+export function isCardSupported(defId: string): boolean {
+  return CARD_RULES[defId] !== undefined;
+}
+
+export function isPotionSupported(potionId: string): boolean {
+  return POTION_RULES[potionId] !== undefined;
+}
+
+/** 战斗内行为已转写的遗物（两遍 initRelics 的并集）。 */
+export function isRelicSupported(relicId: string): boolean {
+  return RELIC_IMMEDIATE[relicId] !== undefined || RELIC_AT_BATTLE_START[relicId] !== undefined;
 }
 
 // ============================================================================
