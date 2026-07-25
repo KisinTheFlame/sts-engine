@@ -591,7 +591,20 @@ export type GameState = {
   /** 每个动作后自增，供 HTTP 幂等（expectedVersion）与乐观并发。 */
   version: number;
   runId: string;
-  seed: number;
+  /**
+   * run 种子，**int64 的十进制字符串**。
+   *
+   * 必须是字符串而非 number：原版种子是 int64，超过 2^53 后 JSON number 会丢精度，
+   * 而游戏级的 sts-map / sts-neow / sts-encounters / sts-combat 全都按 int64 播种，
+   * 差一位就完全对不上。想要玩家在游戏里看到的那种 base-35 串（如 "1RGBGHNF7L"），
+   * 用 sts-rng 的 seedLongToString 转换。
+   */
+  seed: string;
+  /**
+   * 当前楼层号，从 0 起（对齐 GameContext::floorNum）。每进入一个地图节点自增。
+   * 游戏级 RNG 按 `Random(seed + floorNum)` 逐层重播种，故它是复现的必需输入。
+   */
+  floorNum: number;
   character: CharacterId;
   ascension: number;
   /** 当前幕（1-based）。打完本幕 Boss 若还有后续幕则携带状态进入下一幕。 */
