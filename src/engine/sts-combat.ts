@@ -1049,7 +1049,104 @@ const CARD_RULES: Record<string, CardRule> = {
     addToBot(bc, (c) => attackEnemy(c, item.target, dmg));
     addToBot(bc, (c) => debuffEnemy(c, item.target, "vulnerable", up ? 3 : 2));
   },
+
+  // —— 铁甲常用卡首批 ——
+
+  // 愤怒：伤害 + 复制一张自身进弃牌堆。
+  anger: (bc, item, up) => {
+    const dmg = calculateCardDamage(bc, item.target, up ? 8 : 6);
+    addToBot(bc, (c) => attackEnemy(c, item.target, dmg));
+    addToBot(bc, (c) => {
+      c.discardPile.push({ uid: c.nextUid++, defId: "anger", upgraded: up });
+    });
+  },
+
+  // 顺劈斩：对全体。基础值先加精力，再由 AttackAllEnemy 逐怪算伤害。
+  cleave: (bc, _item, up) =>
+    attackAllEnemies(bc, (up ? 11 : 8) + getPower(bc.player.powers, "vigor")),
+
+  // 十字打击：伤害 + 虚弱。
+  clothesline: (bc, item, up) => {
+    const dmg = calculateCardDamage(bc, item.target, up ? 14 : 12);
+    addToBot(bc, (c) => attackEnemy(c, item.target, dmg));
+    addToBot(bc, (c) => debuffEnemy(c, item.target, "weak", up ? 3 : 2));
+  },
+
+  // 重刃：⚠ 基础值已含 2×力量，再过一次 calculateCardDamage 又加一次力量——
+  // 力量实际算了**三**次。这是参考的算法，不是笔误，照抄。
+  heavy_blade: (bc, item, up) => {
+    const base = 14 + (up ? 4 : 2) * getPower(bc.player.powers, "strength");
+    const dmg = calculateCardDamage(bc, item.target, base);
+    addToBot(bc, (c) => attackEnemy(c, item.target, dmg));
+  },
+
+  // 铁浪：⚠ 格挡套了**两层** calculateCardBlock（敏捷因此加算两次）。
+  // 参考原样如此，照抄。注意先加格挡、后造成伤害。
+  iron_wave: (bc, item, up) => {
+    const blk = calculateCardBlock(bc, calculateCardBlock(bc, up ? 7 : 5));
+    const dmg = calculateCardDamage(bc, item.target, up ? 7 : 5);
+    addToBot(bc, (c) => gainBlock(c, blk), false);
+    addToBot(bc, (c) => attackEnemy(c, item.target, dmg));
+  },
+
+  // 柄击：伤害 + 抽牌。
+  pommel_strike: (bc, item, up) => {
+    const dmg = calculateCardDamage(bc, item.target, up ? 10 : 9);
+    addToBot(bc, (c) => attackEnemy(c, item.target, dmg));
+    addToBot(bc, (c) => drawCards(c, up ? 2 : 1));
+  },
+
+  // 无视苦难：格挡 + 抽 1（升级只加格挡，抽牌恒为 1）。
+  shrug_it_off: (bc, _item, up) => {
+    const blk = calculateCardBlock(bc, up ? 11 : 8);
+    addToBot(bc, (c) => gainBlock(c, blk), false);
+    addToBot(bc, (c) => drawCards(c, 1));
+  },
+
+  // 雷霆之击：对全体伤害 + 全体 1 层易伤。
+  thunderclap: (bc, _item, up) => {
+    attackAllEnemies(bc, (up ? 7 : 4) + getPower(bc.player.powers, "vigor"));
+    addToBot(bc, (c) => {
+      for (let i = c.monsters.length - 1; i >= 0; i -= 1) {
+        if (c.monsters[i]?.alive === true) {
+          addToTop(c, (c2) => debuffEnemy(c2, i, "vulnerable", 1, false));
+        }
+      }
+    });
+  },
+
+  // 双重打击：同一伤害值打两次（伤害只算一次，两击等值）。
+  twin_strike: (bc, item, up) => {
+    const dmg = calculateCardDamage(bc, item.target, up ? 7 : 5);
+    addToBot(bc, (c) => attackEnemy(c, item.target, dmg));
+    addToBot(bc, (c) => attackEnemy(c, item.target, dmg));
+  },
+
+  // 全身撞击：伤害等于**当前格挡**（入队时取值）。
+  body_slam: (bc, item) => {
+    const dmg = calculateCardDamage(bc, item.target, bc.player.block);
+    addToBot(bc, (c) => attackEnemy(c, item.target, dmg));
+  },
+
+  // 燃烧：+2(升级 3) 力量（能力牌）。
+  inflame: (bc, _item, up) =>
+    addToBot(bc, (c) => addPower(c.player.powers, "strength", up ? 3 : 2)),
 };
+
+/**
+ * 对全体造成伤害（对齐 Actions::AttackAllEnemy）：先**逐怪算好**伤害矩阵，
+ * 再逐怪结算。两段分开很重要——先打死的怪不会影响后面怪的伤害取值。
+ */
+function attackAllEnemies(bc: BattleContext, baseDamage: number): void {
+  addToBot(bc, (c) => {
+    const matrix = c.monsters.map((m, i) => (m.alive ? calculateCardDamage(c, i, baseDamage) : 0));
+    for (let i = 0; i < c.monsters.length; i += 1) {
+      if (c.monsters[i]?.alive === true) {
+        attackEnemy(c, i, matrix[i]);
+      }
+    }
+  });
+}
 
 /** 对齐 BattleContext::useCard：分派效果入队 → OnAfterCardUsed → 移出手牌 + 扣能量。 */
 function useCard(bc: BattleContext, item: CardQueueItem): void {
@@ -1084,6 +1181,10 @@ function useCard(bc: BattleContext, item: CardQueueItem): void {
 
 /** 对齐 onAfterUseCard 的卡去向：消耗 or 进弃牌堆。 */
 function onAfterUseCard(bc: BattleContext, card: CombatCard, item: CardQueueItem): void {
+  // 能力牌打出后**直接离场**，不进任何牌堆（参考里是把 c.id 置为 INVALID 后 return）。
+  if (getCardDef(card.defId).type === "power") {
+    return;
+  }
   if (item.exhaustOnUse) {
     bc.exhaustPile.push(card);
   } else {

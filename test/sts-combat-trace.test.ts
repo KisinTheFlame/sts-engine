@@ -89,6 +89,17 @@ const CARD: Record<string, string> = {
   STRIKE_RED: "strike",
   DEFEND_RED: "defend",
   BASH: "bash",
+  ANGER: "anger",
+  CLEAVE: "cleave",
+  CLOTHESLINE: "clothesline",
+  HEAVY_BLADE: "heavy_blade",
+  IRON_WAVE: "iron_wave",
+  POMMEL_STRIKE: "pommel_strike",
+  SHRUG_IT_OFF: "shrug_it_off",
+  THUNDERCLAP: "thunderclap",
+  TWIN_STRIKE: "twin_strike",
+  BODY_SLAM: "body_slam",
+  INFLAME: "inflame",
 };
 const ENCOUNTER: Record<string, string> = {
   CULTIST: "cultist",
