@@ -100,6 +100,34 @@ const ENEMY_LIST: EnemyDef[] = [
     },
   },
   {
+    id: "green_louse",
+    name: "绿虱",
+    hpMin: 11,
+    hpMax: 17,
+    moves: [
+      {
+        id: "bite",
+        // 与红虱同理：咬击基础伤害出生时掷定（5~7）、整场固定。
+        name: "啃咬",
+        effects: [{ kind: "deal_damage_rolled" }],
+        intent: "attack",
+      },
+      {
+        id: "spit_web",
+        name: "吐丝",
+        effects: [{ kind: "apply_power", power: "weak", amount: 2, on: "target" }],
+        intent: "debuff",
+      },
+    ],
+    intentRule: {
+      scripted: [],
+      weighted: [
+        { move: "bite", weight: 75, maxInARow: 2 },
+        { move: "spit_web", weight: 25, maxInARow: 2 },
+      ],
+    },
+  },
+  {
     id: "acid_slime_m",
     name: "酸液史莱姆（中）",
     hpMin: 28,

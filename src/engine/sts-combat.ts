@@ -8,11 +8,15 @@
 // 参考：~/Workspace/sts_lightspeed/src/combat/{BattleContext,MonsterGroup,Monster,
 //       MonsterSpecific,CardManager}.cpp、include/combat/{ActionQueue,CardQueue}.h
 //
-// 骨架层（本 PR）：立起队列结构 + 6 流播种 + 一场最小可跑战斗（固定单怪编队）：
-//   init → roll 怪物 HP(monsterHpRng) → roll 初始意图(aiRng) → 建库洗牌(shuffleRng)
-//   → 抽起手 → 玩家 endTurn → 怪物 takeTurn + rollMove(aiRng) → 新回合抽牌 → 回合循环。
-// 逐位对齐面：monsterHpRng/aiRng/shuffleRng/cardRandomRng 的 counter 与牌序、HP、意图。
-// 后续 PR 逐张卡效果 / 逐怪 AI / reshuffle / 药水 迁移进来。
+// 迁移进度（逐层 PR，每层都有对拍 C++ 的 golden）：
+//   ① 骨架：双队列 + 6 流播种 + 最小可跑战斗（init → 抽起手 → endTurn → 怪物回合）
+//   ② 打牌：useCard 分派、伤害/格挡计算（float32 全程）、击杀判胜、reshuffle
+//   ③ 多怪：逐怪 rollMove（含分支内追加 aiRng 的非常数消耗）、编队开局特例
+//   ④ 变体编队：miscRng 选怪与 monsterHpRng **交错**、construct 额外 roll、preBattleAction
+// 尚未迁移：遗物、药水、姿态与球、其余怪种与卡牌。
+//
+// 登记式扩展点（新增怪/编队时往这些表里加，未登记会显式抛错而非静默错配 RNG）：
+//   MOVE_RULES / ENCOUNTER_BUILDERS / ENCOUNTER_SETUP / PRE_BATTLE_ACTION / CARD_RULES
 
 import { StsRandom, JavaRandom, javaShuffle } from "./sts-rng.js";
 import { getEnemyDef, getEncounterDef } from "./enemies/enemies.js";
@@ -164,12 +168,19 @@ export class CardQueue {
 //
 //   auto startRandom = Random(seed + floorNum);
 //   aiRng = monsterHpRng = shuffleRng = cardRandomRng = startRandom;  // 同源逐字节拷贝
-//   miscRng  = gc.miscRng;    // 跨房间持久（run 级）
-//   potionRng = gc.potionRng; // 跨房间持久（run 级）
+//   miscRng  = gc.miscRng;    // 承接自 GameContext
+//   potionRng = gc.potionRng; // 承接自 GameContext
 //
 // 四条同源流各自是 startRandom 的独立拷贝（构造后 counter 都为 0，各自推进）。
-// miscRng/potionRng 是 run 级持久流——骨架层暂用占位新建并留 TODO，待 run 级
-// RNG 账本补齐后接入。
+//
+// ⚠ 关于 miscRng：它并非「跨 run 持久」。GameContext::transitionToMapNode 每上一层都做
+//   `const auto r = Random(seed + floorNum); miscRng = shuffleRng = cardRandomRng = r;`
+//   （GameContext.cpp:758-761，initFromSave 也据此重建、存档根本不存它的 counter）。
+//   所以进入某层的战斗时，miscRng 与四条战斗流**同源同态**、counter 为 0——除非该层
+//   在战斗前先消耗过它（如先进事件房）。故默认新建即为正确语义，调用方需要接续时
+//   仍可用 runMiscRng 覆盖。
+//   potionRng 才是真正的 run 级持久流（Random(seed, potion_seed_count)），
+//   目前战斗内尚无消耗点，待药水迁移时接入。
 // ============================================================================
 
 export type CombatRng = {
@@ -185,8 +196,8 @@ export type CombatRng = {
  * 播种战斗 RNG 流。
  * @param seedLong run 级 int64 种子（bigint）。
  * @param floorNum 当前楼层号（对齐 gc.floorNum）。
- * @param runMiscRng  run 级持久 miscRng；缺省时占位新建（TODO：接入 run 账本）。
- * @param runPotionRng run 级持久 potionRng；缺省时占位新建（TODO：接入 run 账本）。
+ * @param runMiscRng  覆盖 miscRng（本层战斗前已消耗过它时传入）；缺省即同源新建。
+ * @param runPotionRng run 级持久 potionRng；缺省新建，待药水迁移时由调用方传入。
  */
 export function seedCombatRng(
   seedLong: bigint,
@@ -202,8 +213,9 @@ export function seedCombatRng(
     monsterHpRng: new StsRandom(base),
     shuffleRng: new StsRandom(base),
     cardRandomRng: new StsRandom(base),
-    // TODO(run级RNG): miscRng/potionRng 应从 run 级持久流传入，占位新建仅为骨架自洽。
+    // 与四条战斗流同源（见上方注释）；仅当本层战斗前已消耗过 miscRng 时才需覆盖。
     miscRng: runMiscRng ?? new StsRandom(base),
+    // TODO(药水PR): potionRng 是真正的 run 级持久流，接入时须由调用方传入。
     potionRng: runPotionRng ?? new StsRandom(base),
   };
 }
@@ -237,6 +249,11 @@ export type CombatMonster = {
   moveHistory: string[];
   powers: PowerInstance[];
   alive: boolean;
+  /**
+   * 出生时掷定、整场固定的招式伤害（对齐 Monster::miscInfo）。虱子的咬击用它。
+   * 未使用该机制的怪保持 0。
+   */
+  rolledDamage: number;
 };
 
 export type CombatCard = {
@@ -371,6 +388,35 @@ const MOVE_RULES: Record<string, MoveForRoll> = {
     }
     return "bellow";
   },
+
+  // 红虱：纯 roll 分支，不追加 aiRng。对齐 MonsterSpecific.cpp:2583 RED_LOUSE。
+  // （asc17 会放宽连续 grow 的限制，这里按 ascension<17 转写并保留判断位置。）
+  louse: (bc, m, roll) => {
+    if (roll < 25) {
+      if (lastMove(m, "grow") && (bc.ascension >= 17 || lastTwoMoves(m, "grow"))) {
+        return "bite";
+      }
+      return "grow";
+    }
+    if (lastTwoMoves(m, "bite")) {
+      return "grow";
+    }
+    return "bite";
+  },
+
+  // 绿虱：与红虱同构，buff 招换成吐丝。对齐 MonsterSpecific.cpp:2313 GREEN_LOUSE。
+  green_louse: (bc, m, roll) => {
+    if (roll < 25) {
+      if (lastMove(m, "spit_web") && (bc.ascension >= 17 || lastTwoMoves(m, "spit_web"))) {
+        return "bite";
+      }
+      return "spit_web";
+    }
+    if (lastTwoMoves(m, "bite")) {
+      return "spit_web";
+    }
+    return "bite";
+  },
 };
 
 // ============================================================================
@@ -379,6 +425,82 @@ const MOVE_RULES: Record<string, MoveForRoll> = {
 // 在「逐怪 roll HP」之后、「逐怪 rollMove」之前执行——顺序对齐参考的
 // createMonsters → rollMove 循环。
 // ============================================================================
+
+// ============================================================================
+// 建怪（对齐 MonsterGroup::createMonster → Monster::construct）
+//
+// construct 的顺序是 initHp 先、随后按怪种追加 miscInfo roll——两次都走 monsterHpRng，
+// 且紧挨着，中间不会插入别的怪。变体编队因此呈现 misc,hp,hp,misc,hp,hp… 的交错。
+// ============================================================================
+
+function createMonster(bc: BattleContext, defId: string): CombatMonster {
+  const def = getEnemyDef(defId);
+  const hp = bc.rng.monsterHpRng.random(def.hpMin, def.hpMax); // ★ 消耗一次 monsterHpRng
+  const m: CombatMonster = {
+    defId,
+    hp,
+    maxHp: hp,
+    block: 0,
+    currentMove: "",
+    moveHistory: [],
+    powers: [],
+    alive: true,
+    rolledDamage: 0,
+  };
+  // construct 的怪种特例：虱子的咬击伤害整场固定，出生时掷定（对齐 Monster.cpp:116）。
+  if (defId === "louse" || defId === "green_louse") {
+    m.rolledDamage =
+      bc.ascension >= 2 ? bc.rng.monsterHpRng.random(6, 8) : bc.rng.monsterHpRng.random(5, 7); // ★ 再消耗一次 monsterHpRng
+  }
+  bc.monsters.push(m);
+  return m;
+}
+
+// ============================================================================
+// 变体编队（对齐 MonsterGroup::createMonsters 中消耗 miscRng 的分支）
+//
+// ⚠ 这些编队的成员由 miscRng 在战斗开始时掷定，静态 encounter 表里的 enemies
+// 只是给旧版 combat.ts 用的占位，sts-combat 走这里的构建器。
+// ============================================================================
+
+type EncounterBuilder = (bc: BattleContext) => void;
+
+/** 对齐 MonsterGroup::getLouse：一次 miscRng.randomBoolean 决定红/绿。 */
+function getLouse(bc: BattleContext): string {
+  return bc.rng.miscRng.randomBoolean() ? "louse" : "green_louse";
+}
+
+const ENCOUNTER_BUILDERS: Record<string, EncounterBuilder> = {
+  two_louse: (bc) => {
+    createMonster(bc, getLouse(bc));
+    createMonster(bc, getLouse(bc));
+  },
+  three_louse: (bc) => {
+    createMonster(bc, getLouse(bc));
+    createMonster(bc, getLouse(bc));
+    createMonster(bc, getLouse(bc));
+  },
+};
+
+// ============================================================================
+// preBattleAction（对齐 MonsterSpecific.cpp 的开局 buff）
+// ============================================================================
+
+type PreBattleAction = (bc: BattleContext, m: CombatMonster) => void;
+
+const PRE_BATTLE_ACTION: Record<string, PreBattleAction> = {
+  // 虱子蜷缩：首次受到未被格挡的攻击时获得格挡，层数开局掷定（走 monsterHpRng）。
+  louse: (bc, m) => {
+    const amount =
+      bc.ascension >= 7 ? bc.rng.monsterHpRng.random(4, 8) : bc.rng.monsterHpRng.random(3, 7);
+    addPower(m.powers, "curl_up", amount);
+  },
+  green_louse: (bc, m) => {
+    const amount =
+      bc.ascension >= 7 ? bc.rng.monsterHpRng.random(4, 8) : bc.rng.monsterHpRng.random(3, 7);
+    addPower(m.powers, "curl_up", amount);
+  },
+};
 
 type EncounterSetup = (bc: BattleContext) => void;
 
@@ -472,8 +594,12 @@ export type CombatInitInput = {
   /** 玩家当前生命/上限。 */
   playerHp: number;
   playerMaxHp: number;
-  /** 可选：run 级持久流。 */
+  /**
+   * 可选：覆盖 miscRng（本层战斗前已消耗过它时传入，例如先进了事件房）。
+   * 不传即按 Random(seed+floorNum) 新建，与四条战斗流同源——这是常规战斗的正确语义。
+   */
   miscRng?: StsRandom;
+  /** 可选：run 级持久 potionRng（战斗内药水生成用，目前尚无消耗点）。 */
   potionRng?: StsRandom;
 };
 
@@ -513,22 +639,16 @@ export function initCombat(input: CombatInitInput): BattleContext {
     nextUid: 0,
   };
 
-  // —— monsters.init ——
-  // ① createMonsters：固定编队不消耗 miscRng，逐怪按下标 roll HP(monsterHpRng)。
-  //    变体编队（miscRng 选怪、Louse/Darkling miscInfo、ORB_WALKER 双 roll）留后续 PR。
-  for (const defId of encounter.enemies) {
-    const def = getEnemyDef(defId);
-    const hp = bc.rng.monsterHpRng.random(def.hpMin, def.hpMax); // ★ 消耗一次 monsterHpRng
-    bc.monsters.push({
-      defId,
-      hp,
-      maxHp: hp,
-      block: 0,
-      currentMove: "",
-      moveHistory: [],
-      powers: [],
-      alive: true,
-    });
+  // —— monsters.init（对齐 MonsterGroup::init 的三段）——
+  // ① createMonsters：变体编队在此逐怪消耗 miscRng 选型，且与 monsterHpRng **交错**
+  //    （选一只 → 立刻建它 → roll 它的 HP），不是先选完再统一 roll。
+  const builder = ENCOUNTER_BUILDERS[input.encounterId];
+  if (builder !== undefined) {
+    builder(bc);
+  } else {
+    for (const defId of encounter.enemies) {
+      createMonster(bc, defId);
+    }
   }
   bc.monstersAlive = bc.monsters.length;
   // ①b 编队开局特例（军团 buff / 预置哨兵等），仍属 createMonsters 阶段。
@@ -537,7 +657,11 @@ export function initCombat(input: CombatInitInput): BattleContext {
   for (const m of bc.monsters) {
     rollMove(bc, m);
   }
-  // ③ preBattleAction（Curl Up 等消耗 monsterHpRng 的开局 buff）：骨架单怪无此项，留后续。
+  // ③ preBattleAction：开局 buff，其中蜷缩等会再消耗 monsterHpRng——注意它排在
+  //    所有 HP roll 与所有 rollMove **之后**。
+  for (const m of bc.monsters) {
+    PRE_BATTLE_ACTION[m.defId]?.(bc, m);
+  }
 
   // —— cards.init ——
   // 建实例（按 master deck 顺序）→ 一次 shuffleRng 洗牌 → Innate 归位（铁甲基础组无 Innate）。
@@ -709,10 +833,23 @@ function monsterAttacked(bc: BattleContext, m: CombatMonster, rawDamage: number)
 }
 
 function monsterDamageUnblocked(bc: BattleContext, m: CombatMonster, damage: number): void {
+  // onAttacked 链（对齐 attackedUnblockedHelper 的 if/else-if 顺序）。蜷缩把加格挡
+  // addToBot 排在扣血之后，故这里先记下、扣完血再加。
+  let curlUpBlock = 0;
+  const curl = m.powers.find((p) => p.id === "curl_up");
+  if (curl !== undefined && curl.amount > 0) {
+    curlUpBlock = curl.amount;
+    m.powers.splice(m.powers.indexOf(curl), 1); // 触发一次即清除
+  }
+  // TODO(后续PR): 无敌/镀甲/飞行/易塑等其余 onAttacked 分支。
+
   m.hp -= damage;
   if (m.hp <= 0) {
     m.hp = 0;
     monsterDie(bc, m);
+  }
+  if (curlUpBlock > 0 && m.alive) {
+    m.block += curlUpBlock;
   }
 }
 
@@ -982,6 +1119,13 @@ function takeTurn(bc: BattleContext, m: CombatMonster): void {
     } else if (eff.kind === "deal_damage") {
       const dmg = calculateDamageToPlayer(bc, m, eff.amount);
       dealDamageToPlayer(bc, dmg);
+    } else if (eff.kind === "deal_damage_rolled") {
+      // 伤害取出生时掷定的固定值（虱子咬击）。
+      const dmg = calculateDamageToPlayer(bc, m, m.rolledDamage);
+      dealDamageToPlayer(bc, dmg);
+    } else if (eff.kind === "apply_power" && eff.on === "target") {
+      // 怪物给玩家上减益：isSourceMonster=true，故虚弱/易伤**跳过**首次递减。
+      debuffPlayer(bc, eff.power, eff.amount);
     } else if (eff.kind === "gain_block") {
       // 怪物自身获得格挡（对齐 Actions::MonsterGainBlock）。
       m.block += eff.amount;
@@ -1006,8 +1150,44 @@ function calculateDamageToPlayer(bc: BattleContext, m: CombatMonster, baseDamage
   return Math.max(0, Math.trunc(damage));
 }
 
+/**
+ * 怪物给玩家施加减益（对齐 Actions::DebuffPlayer，isSourceMonster=true）。
+ * 与玩家打牌施加的减益相反，虚弱/易伤在此**跳过**首次递减。
+ */
+function debuffPlayer(bc: BattleContext, power: string, amount: number): void {
+  addPower(bc.player.powers, power, amount);
+  if (power === "weak" || power === "vulnerable") {
+    const p = bc.player.powers.find((x) => x.id === power);
+    if (p !== undefined) {
+      p.justApplied = true;
+    }
+  }
+}
+
+/** 玩家侧回合末减益递减（对齐 Player::applyEndOfTurnPowers 的同款 skipFirst 语义）。 */
+function decrementPlayerDebuff(bc: BattleContext, id: string): void {
+  const p = bc.player.powers.find((x) => x.id === id);
+  if (p === undefined) {
+    return;
+  }
+  if (p.justApplied === true) {
+    p.justApplied = false;
+    return;
+  }
+  p.amount -= 1;
+  if (p.amount <= 0) {
+    bc.player.powers.splice(bc.player.powers.indexOf(p), 1);
+  }
+}
+
 /** 对齐 MonsterGroup::applyEndOfRoundPowers：回合末怪物 Power 结算。 */
 function applyEndOfRoundPowers(bc: BattleContext): void {
+  // 顺序对齐 BattleContext::applyEndOfRoundPowers：怪物 endOfTurnTriggers（留后续）
+  // → **玩家减益递减** → 怪物 endOfRoundPowers。
+  decrementPlayerDebuff(bc, "frail");
+  decrementPlayerDebuff(bc, "vulnerable");
+  decrementPlayerDebuff(bc, "weak");
+
   for (const m of bc.monsters) {
     if (!m.alive) {
       continue;
