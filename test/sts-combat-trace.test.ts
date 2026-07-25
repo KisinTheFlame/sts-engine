@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   initCombat,
@@ -66,8 +67,21 @@ type Trace = {
   steps: Step[];
 };
 
-const tracePath = fileURLToPath(new URL("./golden/combat_traces.json", import.meta.url));
-const { traces } = JSON.parse(readFileSync(tracePath, "utf8")) as { traces: Trace[] };
+// 按编队分文件存放（JSONL，每行一条 trace）：
+//  * 新增编队 = 新增一个文件，既有文件零改动，git 历史里不会多出重写的大 blob
+//  * 单个编队重生成只碰它自己那份
+//  * 行结构让 git 能在版本间做增量，diff 也能看出是哪几条 trace 变了
+// 生成是确定性的：同参数重跑逐字节一致，因此不会平白产生新 blob。
+const traceDir = fileURLToPath(new URL("./golden/traces", import.meta.url));
+const traces: Trace[] = readdirSync(traceDir)
+  .filter((f) => f.endsWith(".jsonl"))
+  .sort()
+  .flatMap((f) =>
+    readFileSync(join(traceDir, f), "utf8")
+      .split("\n")
+      .filter((line) => line.length > 0)
+      .map((line) => JSON.parse(line) as Trace),
+  );
 
 // —— 参考枚举名 → 我们的 id ——
 const CARD: Record<string, string> = {
@@ -103,21 +117,34 @@ const MOVE: Record<string, string> = {
 const POTION: Record<string, string | null> = {
   EMPTY: null,
   "Ancient Potion": "ancient_potion",
+  "Attack Potion": "attack_potion",
+  "Blessing Of The Forge": "blessing_of_the_forge",
   "Block Potion": "block_potion",
   "Blood Potion": "blood_potion",
   "Colorless Potion": "colorless_potion",
+  "Cultist Potion": "cultist_potion",
   "Dexterity Potion": "dexterity_potion",
+  "Distilled Chaos": "distilled_chaos",
+  "Duplication Potion": "duplication_potion",
   "Elixir Potion": "elixir_potion",
   "Energy Potion": "energy_potion",
   "Entropic Brew": "entropic_brew",
   "Essence Of Steel": "essence_of_steel",
   "Explosive Potion": "explosive_potion",
+  "Fairy Potion": "fairy_in_a_bottle",
   "Fear Potion": "fear_potion",
   "Fire Potion": "fire_potion",
   "Flex Potion": "flex_potion",
   "Fruit Juice": "fruit_juice",
+  "Gamblers Brew": "gamblers_brew",
+  "Heart Of Iron": "heart_of_iron_potion",
   "Liquid Bronze": "liquid_bronze",
+  "Liquid Memories": "liquid_memories",
+  "Power Potion": "power_potion",
   "Regen Potion": "regen_potion",
+  "Skill Potion": "skill_potion",
+  "Smoke Bomb": "smoke_bomb",
+  "Snecko Oil": "snecko_oil",
   "Speed Potion": "speed_potion",
   "Strength Potion": "strength_potion",
   "Swift Potion": "swift_potion",
