@@ -1,13 +1,4 @@
-import type {
-  CardInstance,
-  CardType,
-  CharacterId,
-  Effect,
-  GameState,
-  PowerId,
-  RelicState,
-} from "../types.js";
-import { addPower, removePower } from "../powers/powers.js";
+import type { CardInstance, CardType, CharacterId, GameState, RelicState } from "../types.js";
 import { getCardDef, rewardCardPoolOf } from "../cards/cards.js";
 import { POTION_DROP_POOL } from "../potions/potions.js";
 import { nextInt } from "../rng.js";
@@ -29,59 +20,34 @@ function transformCardInstance(state: GameState, card: CardInstance): void {
 
 // === 遗物系统 ===
 //
-// 遗物是持久战力：在战斗流程的固定时点触发效果（复刻杀戮尖塔的 atBattleStart / onVictory 等）。
-// state.relics 只存可序列化的 { id, counter }；遗物「行为」在这张表里按 id 查（钩子函数原地改 state），
-// 与卡的 effects 同构。数值为功能性游戏规则，遗物名为原创中文功能译名。
+// 本表现在是**数据表 + 局外行为**：id / 名称 / 稀有度 / 文案 / 池归属 / 角色专属，
+// 加上三个战斗外钩子（见下方 RelicHooks）。
 //
-// 钩子点：
-//   - onCombatStart：战斗开始（敌人已 telegraph、发牌前）。
-//   - onCombatEnd：战斗胜利结算（清 combat 前，可回血）。
-//   - onTurnStart：每个玩家回合开始（含第 1 回合；能量重置后、抽牌前）。
-//   - onTurnEnd：每个玩家回合结束（敌人行动前，可留格挡）。
-//   - onCardPlayed：每打出一张牌后（计数型遗物用 self.counter）；可通过 emit 发射战斗 Effect
-//     （发伤遗物如信封：以玩家为行动者结算）。
-// 直接状态改动（力量/敏捷/格挡/能量/回血）在钩子里做；需要走伤害结算的用 emit 发 Effect。
-// hooks 第二参 self 是该遗物自己的 RelicState，计数型遗物读写 self.counter。
+// 遗物的**战斗内**行为属于 sts-combat.ts 的登记表（`RELIC_IMMEDIATE` /
+// `RELIC_AT_BATTLE_START`）——那边才是逐位对齐的实现。本表里凡是描述战斗内效果的遗物，
+// 只要还没登记进去，就暂时只有文案没有行为；进度见 TODOS.md。
+//
+// state.relics 只存可序列化的 { id, counter }；计数型遗物读写 self.counter。
 
 // "shop"：商店专属遗物（只在商店出现，不进宝箱/精英/事件掉落池）。
 type RelicRarity = "starter" | "common" | "uncommon" | "rare" | "boss" | "shop";
 
-/** emit：以玩家为行动者发射一个战斗 Effect（发伤 / AoE / 加牌走 add_card）。 */
-type Emit = (effect: Effect) => void;
-
+/**
+ * 遗物钩子——**只剩战斗外的三个**。
+ *
+ * 战斗内行为（开局 buff、回合触发、出牌计数、失血/消耗/击杀响应…）随近似战斗一起删了：
+ * 那些实现是照着近似战斗写的，逐位对齐版本要从参考项目重新转写，登记进 sts-combat.ts 的
+ * `RELIC_IMMEDIATE` / `RELIC_AT_BATTLE_START`。本表因此退回「数据表 + 局外行为」。
+ * 已迁移的战斗内遗物见 sts-combat.ts；进度见 TODOS.md。
+ */
 type RelicHooks = {
-  onCombatStart?: (state: GameState, self: RelicState, emit: Emit) => void;
-  onCombatEnd?: (state: GameState, self: RelicState, emit: Emit) => void;
-  onTurnStart?: (state: GameState, self: RelicState, emit: Emit) => void;
-  onTurnEnd?: (state: GameState, self: RelicState, emit: Emit) => void;
-  onCardPlayed?: (state: GameState, self: RelicState, cardType: CardType, emit: Emit) => void;
-  /** 获得该遗物时结算一次（草莓 +最大生命、药水腰带 +药水槽、磨刀石/战争彩绘升级牌）。局外，无 emit。 */
+  /** 战斗胜利结算（燃烧之血、带肉骨头回血）。参考项目里这一步也在 BattleContext 之外。 */
+  onCombatEnd?: (state: GameState, self: RelicState) => void;
+  /** 获得该遗物时结算一次（草莓 +最大生命、药水腰带 +药水槽、磨刀石/战争彩绘升级牌）。 */
   onEquip?: (state: GameState, self: RelicState) => void;
-  /** 玩家受到穿透格挡的伤害（失血）后结算（百年谜题首次失血抽牌）。可 emit 战斗 Effect。 */
-  onLoseHp?: (state: GameState, self: RelicState, emit: Emit) => void;
-  /** 每当一张牌被消耗（进消耗堆）后结算（卡戎之烬 AoE、枯枝加牌）。 */
-  onExhaust?: (state: GameState, self: RelicState, emit: Emit) => void;
-  /** 每当一个敌人被击杀（经攻击伤害致死）后结算（哥布林之角 +能量+抽牌）。 */
-  onEnemyKilled?: (state: GameState, self: RelicState, emit: Emit) => void;
-  /** 每当使用一瓶药水后结算（玩具扑翼机回血）。 */
-  onUsePotion?: (state: GameState, self: RelicState, emit: Emit) => void;
-  /** 每当抽牌堆被洗牌（弃牌堆洗回抽牌堆）后结算（日晷每 3 次 +能量、算盘 +格挡）。 */
-  onShuffle?: (state: GameState, self: RelicState, emit: Emit) => void;
-  /** 每当一张牌被加入牌组（奖励/商店/事件）后结算（陶瓷鱼 +金币、各色蛋升级加入的牌）。局外，无 emit；card 为刚加入的实例。 */
+  /** 每当一张牌被加入牌组（奖励/商店/事件）后结算（陶瓷鱼 +金币、各色蛋升级加入的牌）。 */
   onAddCard?: (state: GameState, self: RelicState, card: CardInstance) => void;
-  /** 每当一张牌被牌效果从手牌弃掉后结算（韧带绷带加格挡、叮沙发伤、悬浮风筝首弃回能量）。 */
-  onDiscard?: (state: GameState, self: RelicState, emit: Emit) => void;
 };
-
-/** 计数型遗物：自增 self.counter，达到 every 则归零并返回 true（触发效果）。 */
-function tickEvery(self: RelicState, every: number): boolean {
-  self.counter += 1;
-  if (self.counter >= every) {
-    self.counter = 0;
-    return true;
-  }
-  return false;
-}
 
 export type RelicDef = {
   id: string;
@@ -94,16 +60,7 @@ export type RelicDef = {
 };
 
 const BURNING_BLOOD_HEAL = 6;
-const BLOOD_VIAL_HEAL = 2;
-const ANCHOR_BLOCK = 10;
-const LANTERN_ENERGY = 1;
-const VAJRA_STRENGTH = 1;
-const MARBLES_VULNERABLE = 1;
 const STRAWBERRY_MAX_HP = 7;
-const AKABEKO_VIGOR = 8;
-const PUZZLE_DRAW = 3;
-const PREPARATION_DRAW = 2;
-export const THE_BOOT_MIN_DAMAGE = 5; // 战靴：无格挡攻击伤害 ≤4 时改为的下限值。
 
 function healPlayer(state: GameState, amount: number): void {
   state.hp = Math.min(state.maxHp, state.hp + amount);
@@ -152,7 +109,7 @@ const RELIC_LIST: RelicDef[] = [
     id: "ring_of_the_snake",
     name: "蛇之戒指",
     rarity: "starter",
-    // 效果在 combat.ts 的 startCombat 里按 hasRelic 处理（额外抽牌不走钩子）。
+    // 战斗内行为待迁移进 sts-combat.ts 的遗物登记表。
     description: "每场战斗的第一回合，额外抽 2 张牌。",
     hooks: {},
   },
@@ -160,7 +117,7 @@ const RELIC_LIST: RelicDef[] = [
     id: "cracked_core",
     name: "残破核心",
     rarity: "starter",
-    // 效果在 combat.ts 的 startCombat 里按 hasRelic 处理（充能球不走钩子）。
+    // 战斗内行为待迁移进 sts-combat.ts 的遗物登记表。
     description: "每场战斗开始时，充能 1 颗闪电球。",
     hooks: {},
   },
@@ -168,7 +125,7 @@ const RELIC_LIST: RelicDef[] = [
     id: "pure_water",
     name: "净水",
     rarity: "starter",
-    // 效果在 combat.ts 的 startCombat 里按 hasRelic 处理（加牌不走钩子）。
+    // 战斗内行为待迁移进 sts-combat.ts 的遗物登记表。
     description: "每场战斗开始时，将 1 张奇迹加入手牌。",
     hooks: {},
   },
@@ -177,157 +134,84 @@ const RELIC_LIST: RelicDef[] = [
     name: "船锚",
     rarity: "common",
     description: "每场战斗开始时，获得 10 点格挡。",
-    hooks: {
-      onCombatStart: (state) => {
-        if (state.combat) {
-          state.combat.playerBlock += ANCHOR_BLOCK;
-        }
-      },
-    },
+    hooks: {},
   },
   {
     id: "blood_vial",
     name: "血瓶",
     rarity: "common",
     description: "每场战斗开始时，回复 2 点生命。",
-    hooks: {
-      onCombatStart: (state) => healPlayer(state, BLOOD_VIAL_HEAL),
-    },
+    hooks: {},
   },
   {
     id: "vajra",
     name: "金刚杵",
     rarity: "common",
     description: "每场战斗开始时，获得 1 点力量。",
-    hooks: {
-      onCombatStart: (state) => {
-        if (state.combat) {
-          addPower(state.combat.playerPowers, "strength", VAJRA_STRENGTH);
-        }
-      },
-    },
+    hooks: {},
   },
   {
     id: "lantern",
     name: "提灯",
     rarity: "common",
     description: "每场战斗的第一回合，额外获得 1 点能量。",
-    hooks: {
-      onCombatStart: (state) => {
-        if (state.combat) {
-          state.combat.energy += LANTERN_ENERGY;
-        }
-      },
-    },
+    hooks: {},
   },
   {
     id: "bag_of_marbles",
     name: "弹珠袋",
     rarity: "common",
     description: "每场战斗开始时，令所有敌人获得 1 层易伤。",
-    hooks: {
-      onCombatStart: (state) => {
-        if (state.combat) {
-          for (const enemy of state.combat.enemies) {
-            if (enemy.hp > 0) {
-              addPower(enemy.powers, "vulnerable", MARBLES_VULNERABLE);
-            }
-          }
-        }
-      },
-    },
+    hooks: {},
   },
   {
     id: "oddly_smooth_stone",
     name: "光滑石",
     rarity: "common",
     description: "每场战斗开始时，获得 1 点敏捷。",
-    hooks: {
-      onCombatStart: (state) => {
-        if (state.combat) {
-          addPower(state.combat.playerPowers, "dexterity", 1);
-        }
-      },
-    },
+    hooks: {},
   },
   {
     id: "shuriken",
     name: "手里剑",
     rarity: "common",
     description: "每打出 3 张攻击牌，获得 1 点力量。",
-    hooks: {
-      onCardPlayed: (state, self, cardType) => {
-        if (state.combat && cardType === "attack" && tickEvery(self, 3)) {
-          addPower(state.combat.playerPowers, "strength", 1);
-        }
-      },
-    },
+    hooks: {},
   },
   {
     id: "kunai",
     name: "苦无",
     rarity: "common",
     description: "每打出 3 张攻击牌，获得 1 点敏捷。",
-    hooks: {
-      onCardPlayed: (state, self, cardType) => {
-        if (state.combat && cardType === "attack" && tickEvery(self, 3)) {
-          addPower(state.combat.playerPowers, "dexterity", 1);
-        }
-      },
-    },
+    hooks: {},
   },
   {
     id: "ornamental_fan",
     name: "装饰扇",
     rarity: "uncommon",
     description: "每打出 3 张攻击牌，获得 4 点格挡。",
-    hooks: {
-      onCardPlayed: (state, self, cardType) => {
-        if (state.combat && cardType === "attack" && tickEvery(self, 3)) {
-          state.combat.playerBlock += 4;
-        }
-      },
-    },
+    hooks: {},
   },
   {
     id: "happy_flower",
     name: "欢乐花",
     rarity: "common",
     description: "每 3 个回合开始时，额外获得 1 点能量。",
-    hooks: {
-      onTurnStart: (state, self) => {
-        if (state.combat && tickEvery(self, 3)) {
-          state.combat.energy += 1;
-        }
-      },
-    },
+    hooks: {},
   },
   {
     id: "horn_cleat",
     name: "角锚",
     rarity: "common",
     description: "第 2 个回合开始时，获得 14 点格挡。",
-    hooks: {
-      onTurnStart: (state, self) => {
-        self.counter += 1;
-        if (state.combat && self.counter === 2) {
-          state.combat.playerBlock += 14;
-        }
-      },
-    },
+    hooks: {},
   },
   {
     id: "orichalcum",
     name: "山铜",
     rarity: "common",
     description: "若回合结束时你没有格挡，获得 6 点格挡。",
-    hooks: {
-      onTurnEnd: (state) => {
-        if (state.combat && state.combat.playerBlock === 0) {
-          state.combat.playerBlock += 6;
-        }
-      },
-    },
+    hooks: {},
   },
   {
     id: "meat_on_the_bone",
@@ -347,39 +231,21 @@ const RELIC_LIST: RelicDef[] = [
     name: "鸟面瓮",
     rarity: "rare",
     description: "每打出一张能力牌，回复 2 点生命。",
-    hooks: {
-      onCardPlayed: (state, _self, cardType) => {
-        if (cardType === "power") {
-          healPlayer(state, 2);
-        }
-      },
-    },
+    hooks: {},
   },
   {
     id: "bronze_scales",
     name: "青铜鳞片",
     rarity: "common",
     description: "每场战斗开始时，获得 3 层荆棘（被攻击时反弹 3 点伤害）。",
-    hooks: {
-      onCombatStart: (state) => {
-        if (state.combat) {
-          addPower(state.combat.playerPowers, "thorns", 3);
-        }
-      },
-    },
+    hooks: {},
   },
   {
     id: "letter_opener",
     name: "开信刀",
     rarity: "uncommon",
     description: "每打出 3 张技能牌，对所有敌人造成 5 点伤害。",
-    hooks: {
-      onCardPlayed: (_state, self, cardType, emit) => {
-        if (cardType === "skill" && tickEvery(self, 3)) {
-          emit({ kind: "deal_damage_all", amount: 5 });
-        }
-      },
-    },
+    hooks: {},
   },
 
   // —— 补全批次：通用遗物 ——
@@ -388,80 +254,42 @@ const RELIC_LIST: RelicDef[] = [
     name: "双节棍",
     rarity: "common",
     description: "每打出 10 张攻击牌，获得 1 点能量。",
-    hooks: {
-      onCardPlayed: (state, self, cardType) => {
-        if (state.combat && cardType === "attack" && tickEvery(self, 10)) {
-          state.combat.energy += 1;
-        }
-      },
-    },
+    hooks: {},
   },
   {
     id: "mercury_hourglass",
     name: "水银沙漏",
     rarity: "uncommon",
     description: "每个回合开始时，对所有敌人造成 3 点伤害。",
-    hooks: {
-      onTurnStart: (state, _self, emit) => {
-        if (state.combat) {
-          emit({ kind: "deal_damage_all", amount: 3 });
-        }
-      },
-    },
+    hooks: {},
   },
   {
     id: "pantograph",
     name: "缩放仪",
     rarity: "uncommon",
     description: "进入 Boss 战时，回复 25 点生命。",
-    hooks: {
-      onCombatStart: (state) => {
-        if (state.combat?.isBoss) {
-          healPlayer(state, 25);
-        }
-      },
-    },
+    hooks: {},
   },
   {
     id: "captains_wheel",
     name: "船长之轮",
     rarity: "rare",
     description: "第 3 个回合开始时，获得 18 点格挡。",
-    hooks: {
-      onTurnStart: (state, self) => {
-        self.counter += 1;
-        if (state.combat && self.counter === 3) {
-          state.combat.playerBlock += 18;
-        }
-      },
-    },
+    hooks: {},
   },
   {
     id: "stone_calendar",
     name: "石历",
     rarity: "rare",
     description: "第 7 个回合结束时，对所有敌人造成 52 点伤害。",
-    hooks: {
-      onTurnEnd: (state, self, emit) => {
-        self.counter += 1;
-        if (state.combat && self.counter === 7) {
-          emit({ kind: "deal_damage_all", amount: 52 });
-        }
-      },
-    },
+    hooks: {},
   },
   {
     id: "thread_and_needle",
     name: "织补针线",
     rarity: "rare",
     description: "每场战斗开始时，获得 4 层镀甲（每回合结束获得 4 点格挡）。",
-    hooks: {
-      onCombatStart: (state) => {
-        if (state.combat) {
-          addPower(state.combat.playerPowers, "plated_armor", 4);
-        }
-      },
-    },
+    hooks: {},
   },
 
   // —— 补全批次：角色专属遗物 ——
@@ -471,17 +299,7 @@ const RELIC_LIST: RelicDef[] = [
     rarity: "common",
     characterLock: "silent",
     description: "每场战斗开始时，令所有敌人获得 1 层虚弱。",
-    hooks: {
-      onCombatStart: (state) => {
-        if (state.combat) {
-          for (const enemy of state.combat.enemies) {
-            if (enemy.hp > 0) {
-              addPower(enemy.powers, "weak", 1);
-            }
-          }
-        }
-      },
-    },
+    hooks: {},
   },
   {
     id: "ninja_scroll",
@@ -489,15 +307,7 @@ const RELIC_LIST: RelicDef[] = [
     rarity: "common",
     characterLock: "silent",
     description: "每场战斗开始时，将 3 张飞刀加入手牌。",
-    hooks: {
-      onCombatStart: (state) => {
-        if (state.combat) {
-          for (let i = 0; i < 3; i += 1) {
-            state.combat.hand.push({ uid: state.nextUid++, defId: "shiv", upgraded: false });
-          }
-        }
-      },
-    },
+    hooks: {},
   },
   {
     id: "twisted_funnel",
@@ -505,17 +315,7 @@ const RELIC_LIST: RelicDef[] = [
     rarity: "uncommon",
     characterLock: "silent",
     description: "每场战斗开始时，令所有敌人获得 4 层中毒。",
-    hooks: {
-      onCombatStart: (state) => {
-        if (state.combat) {
-          for (const enemy of state.combat.enemies) {
-            if (enemy.hp > 0) {
-              addPower(enemy.powers, "poison", 4);
-            }
-          }
-        }
-      },
-    },
+    hooks: {},
   },
   {
     id: "data_disk",
@@ -523,13 +323,7 @@ const RELIC_LIST: RelicDef[] = [
     rarity: "common",
     characterLock: "defect",
     description: "每场战斗开始时，获得 1 点集中。",
-    hooks: {
-      onCombatStart: (state) => {
-        if (state.combat) {
-          addPower(state.combat.playerPowers, "focus", 1);
-        }
-      },
-    },
+    hooks: {},
   },
   {
     id: "teardrop_locket",
@@ -537,13 +331,7 @@ const RELIC_LIST: RelicDef[] = [
     rarity: "uncommon",
     characterLock: "watcher",
     description: "每场战斗开始时，进入平静姿态。",
-    hooks: {
-      onCombatStart: (state) => {
-        if (state.combat) {
-          state.combat.playerStance = "calm";
-        }
-      },
-    },
+    hooks: {},
   },
   {
     id: "holy_water",
@@ -551,15 +339,7 @@ const RELIC_LIST: RelicDef[] = [
     rarity: "rare",
     characterLock: "watcher",
     description: "每场战斗开始时，将 3 张奇迹加入手牌。",
-    hooks: {
-      onCombatStart: (state) => {
-        if (state.combat) {
-          for (let i = 0; i < 3; i += 1) {
-            state.combat.hand.push({ uid: state.nextUid++, defId: "miracle", upgraded: false });
-          }
-        }
-      },
-    },
+    hooks: {},
   },
   // —— 通用普通遗物批次（借新增的 onEquip / onLoseHp 钩子）——
   {
@@ -608,44 +388,26 @@ const RELIC_LIST: RelicDef[] = [
     name: "赤红牛铃",
     rarity: "common",
     description: "每场战斗你的第一张攻击牌额外造成 8 点伤害。",
-    hooks: {
-      onCombatStart: (state) => {
-        if (state.combat) {
-          addPower(state.combat.playerPowers, "vigor", AKABEKO_VIGOR);
-        }
-      },
-    },
+    hooks: {},
   },
   {
     id: "bag_of_preparation",
     name: "行囊",
     rarity: "common",
     description: "每场战斗第一回合额外抽 2 张牌。",
-    hooks: {
-      onCombatStart: (_state, _self, emit) => emit({ kind: "draw", amount: PREPARATION_DRAW }),
-    },
+    hooks: {},
   },
   {
     id: "centennial_puzzle",
     name: "百年谜题",
     rarity: "common",
     description: "每场战斗中第一次失去生命时，抽 3 张牌。",
-    hooks: {
-      onCombatStart: (_state, self) => {
-        self.counter = 0;
-      },
-      onLoseHp: (_state, self, emit) => {
-        if (self.counter === 0) {
-          self.counter = 1;
-          emit({ kind: "draw", amount: PUZZLE_DRAW });
-        }
-      },
-    },
+    hooks: {},
   },
   {
     id: "the_boot",
     name: "战靴",
-    // 伤害下限修正在 combat.ts 的 dealDamageToEnemy 里按 hasRelic 处理（不走钩子）。
+    // 战斗内行为待迁移进 sts-combat.ts 的遗物登记表。
     rarity: "common",
     description: "当你的一次无格挡攻击伤害为 4 或更低时，改为造成 5 点。",
     hooks: {},
@@ -656,71 +418,35 @@ const RELIC_LIST: RelicDef[] = [
     name: "战争艺术",
     rarity: "common",
     description: "若某个回合你没有打出攻击牌，下个回合开始时获得 1 点能量。",
-    hooks: {
-      onCombatStart: (_state, self) => {
-        self.counter = 0;
-      },
-      onTurnStart: (_state, self, emit) => {
-        if (self.counter === 0) {
-          emit({ kind: "gain_energy", amount: 1 });
-        }
-        self.counter = 0;
-      },
-      onCardPlayed: (_state, self, cardType) => {
-        if (cardType === "attack") {
-          self.counter = 1;
-        }
-      },
-    },
+    hooks: {},
   },
   {
     id: "ink_bottle",
     name: "墨水瓶",
     rarity: "uncommon",
     description: "每打出 10 张牌，抽 1 张牌。",
-    hooks: {
-      onCardPlayed: (_state, self, _cardType, emit) => {
-        if (tickEvery(self, 10)) {
-          emit({ kind: "draw", amount: 1 });
-        }
-      },
-    },
+    hooks: {},
   },
   {
     id: "incense_burner",
     name: "熏香炉",
     rarity: "rare",
     description: "每过 6 个回合，获得 1 层虚无缥缈。",
-    hooks: {
-      onTurnStart: (_state, self, emit) => {
-        if (tickEvery(self, 6)) {
-          emit({ kind: "apply_power", power: "intangible", amount: 1, on: "self" });
-        }
-      },
-    },
+    hooks: {},
   },
   {
     id: "self_forming_clay",
     name: "自塑黏土",
     rarity: "uncommon",
     description: "每当你失去生命，下个回合开始时获得 3 点格挡。",
-    hooks: {
-      onLoseHp: (_state, _self, emit) => emit({ kind: "gain_block_next_turn", amount: 3 }),
-    },
+    hooks: {},
   },
   {
     id: "du_vu_doll",
     name: "杜巫娃娃",
     rarity: "rare",
     description: "牌组中每有一张诅咒牌，战斗开始时获得 1 点力量。",
-    hooks: {
-      onCombatStart: (state, _self, emit) => {
-        const curses = state.deck.filter((card) => getCardDef(card.defId).type === "curse").length;
-        if (curses > 0) {
-          emit({ kind: "apply_power", power: "strength", amount: curses, on: "self" });
-        }
-      },
-    },
+    hooks: {},
   },
   // —— 减伤 / 失血联动遗物批次 ——
   {
@@ -728,10 +454,7 @@ const RELIC_LIST: RelicDef[] = [
     name: "化石螺壳",
     rarity: "rare",
     description: "每场战斗开始时，获得 1 层缓冲（抵消下一次会让你失去生命的伤害）。",
-    hooks: {
-      onCombatStart: (_state, _self, emit) =>
-        emit({ kind: "apply_power", power: "buffer", amount: 1, on: "self" }),
-    },
+    hooks: {},
   },
   {
     id: "runic_cube",
@@ -739,14 +462,12 @@ const RELIC_LIST: RelicDef[] = [
     rarity: "boss",
     characterLock: "ironclad",
     description: "每当你失去生命，抽 1 张牌。",
-    hooks: {
-      onLoseHp: (_state, _self, emit) => emit({ kind: "draw", amount: 1 }),
-    },
+    hooks: {},
   },
   {
     id: "torii",
     name: "鸟居",
-    // 减伤在 combat.ts 的 dealDamageToPlayer 里按 hasRelic 处理（不走钩子）。
+    // 战斗内行为待迁移进 sts-combat.ts 的遗物登记表。
     rarity: "rare",
     description: "当你受到 5 点或更少的无格挡攻击伤害时，改为只受到 1 点。",
     hooks: {},
@@ -754,7 +475,7 @@ const RELIC_LIST: RelicDef[] = [
   {
     id: "tungsten_rod",
     name: "钨钢棒",
-    // 减伤在 combat.ts 的 dealDamageToPlayer 里按 hasRelic 处理（不走钩子）。
+    // 战斗内行为待迁移进 sts-combat.ts 的遗物登记表。
     rarity: "boss",
     description: "每当你失去生命时，少失去 1 点。",
     hooks: {},
@@ -766,45 +487,34 @@ const RELIC_LIST: RelicDef[] = [
     rarity: "rare",
     characterLock: "ironclad",
     description: "每当你消耗一张牌，对所有敌人造成 3 点伤害。",
-    hooks: {
-      onExhaust: (_state, _self, emit) => emit({ kind: "deal_damage_all", amount: 3 }),
-    },
+    hooks: {},
   },
   {
     id: "dead_branch",
     name: "枯枝",
     rarity: "rare",
     description: "每当你消耗一张牌，将一张随机无色牌加入手牌。",
-    hooks: {
-      onExhaust: (_state, _self, emit) => emit({ kind: "add_random_colorless", count: 1 }),
-    },
+    hooks: {},
   },
   {
     id: "gremlin_horn",
     name: "哥布林之角",
     rarity: "uncommon",
     description: "每当一个敌人死亡，获得 1 点能量并抽 1 张牌。",
-    hooks: {
-      onEnemyKilled: (_state, _self, emit) => {
-        emit({ kind: "gain_energy", amount: 1 });
-        emit({ kind: "draw", amount: 1 });
-      },
-    },
+    hooks: {},
   },
   {
     id: "toy_ornithopter",
     name: "玩具扑翼机",
     rarity: "common",
     description: "每当你使用一瓶药水，回复 5 点生命。",
-    hooks: {
-      onUsePotion: (_state, _self, emit) => emit({ kind: "heal", amount: 5 }),
-    },
+    hooks: {},
   },
   // —— 计数 / 能量 触发型遗物批次 ——
   {
     id: "ice_cream",
     name: "冰淇淋",
-    // 能量保留在 combat.ts 的回合开始处按 hasRelic 处理（不走钩子）。
+    // 战斗内行为待迁移进 sts-combat.ts 的遗物登记表。
     rarity: "rare",
     description: "能量在回合之间保留，不再于回合开始清零。",
     hooks: {},
@@ -814,34 +524,14 @@ const RELIC_LIST: RelicDef[] = [
     name: "怀表",
     rarity: "rare",
     description: "若某个回合你打出的牌不超过 3 张，下个回合开始时抽 3 张牌。",
-    hooks: {
-      onCombatStart: (_state, self) => {
-        self.counter = 0;
-      },
-      onTurnStart: (_state, self, emit) => {
-        if (self.counter === 1) {
-          emit({ kind: "draw", amount: 3 });
-        }
-        self.counter = 0;
-      },
-      onTurnEnd: (state, self) => {
-        // 本回合出牌 ≤3 → 预约下回合抽 3。
-        self.counter = (state.combat?.cardsPlayedThisTurn ?? 99) <= 3 ? 1 : 0;
-      },
-    },
+    hooks: {},
   },
   {
     id: "mummified_hand",
     name: "木乃伊手",
     rarity: "uncommon",
     description: "每当你打出一张能力牌，手牌中一张随机牌本回合费用变为 0。",
-    hooks: {
-      onCardPlayed: (_state, _self, cardType, emit) => {
-        if (cardType === "power") {
-          emit({ kind: "make_random_hand_card_free" });
-        }
-      },
-    },
+    hooks: {},
   },
   // —— 首领遗物批次（打首领掉落；均带「代价」，此切片以正收益为主，部分代价近似/略）——
   {
@@ -849,41 +539,36 @@ const RELIC_LIST: RelicDef[] = [
     name: "咖啡滴滤器",
     rarity: "boss",
     description: "每回合开始时多获得 1 点能量（代价：无法在篝火休息回血）。",
-    hooks: { onCombatStart: (_s, _self, emit) => emit({ kind: "change_max_energy", delta: 1 }) },
+    hooks: {},
   },
   {
     id: "fusion_hammer",
     name: "融合锤",
     rarity: "boss",
     description: "每回合开始时多获得 1 点能量（代价：无法在篝火打铁升级）。",
-    hooks: { onCombatStart: (_s, _self, emit) => emit({ kind: "change_max_energy", delta: 1 }) },
+    hooks: {},
   },
   {
     id: "runic_dome",
     name: "符文圆顶",
     rarity: "boss",
     description: "每回合开始时多获得 1 点能量（代价：无法看到敌人意图）。",
-    hooks: { onCombatStart: (_s, _self, emit) => emit({ kind: "change_max_energy", delta: 1 }) },
+    hooks: {},
   },
   {
     id: "sozu",
     name: "斗笠",
-    // 「无法使用药水」由 combat.ts 的 usePotion 按 hasRelic 拦截。
+    // 战斗内行为待迁移进 sts-combat.ts 的遗物登记表。
     rarity: "boss",
     description: "每回合开始时多获得 1 点能量（代价：无法使用药水）。",
-    hooks: { onCombatStart: (_s, _self, emit) => emit({ kind: "change_max_energy", delta: 1 }) },
+    hooks: {},
   },
   {
     id: "philosophers_stone",
     name: "贤者之石",
     rarity: "boss",
     description: "每回合开始时多获得 1 点能量；所有敌人在战斗开始时获得 1 点力量。",
-    hooks: {
-      onCombatStart: (_s, _self, emit) => {
-        emit({ kind: "change_max_energy", delta: 1 });
-        emit({ kind: "apply_power", power: "strength", amount: 1, on: "all_enemies" });
-      },
-    },
+    hooks: {},
   },
   {
     id: "mark_of_pain",
@@ -891,12 +576,7 @@ const RELIC_LIST: RelicDef[] = [
     rarity: "boss",
     characterLock: "ironclad",
     description: "每回合开始时多获得 1 点能量；每场战斗开始时抽牌堆放入 2 张伤口。",
-    hooks: {
-      onCombatStart: (_s, _self, emit) => {
-        emit({ kind: "change_max_energy", delta: 1 });
-        emit({ kind: "add_card", cardId: "wound", pile: "draw", count: 2 });
-      },
-    },
+    hooks: {},
   },
   {
     id: "empty_cage",
@@ -958,7 +638,7 @@ const RELIC_LIST: RelicDef[] = [
   {
     id: "ginger",
     name: "姜",
-    // 免疫虚弱在 combat.ts 的 applyPowerToPlayer 里按 hasRelic 处理（不走钩子）。
+    // 战斗内行为待迁移进 sts-combat.ts 的遗物登记表。
     rarity: "rare",
     description: "你不再受到「虚弱」。",
     hooks: {},
@@ -966,7 +646,7 @@ const RELIC_LIST: RelicDef[] = [
   {
     id: "turnip",
     name: "萝卜",
-    // 免疫脆弱在 combat.ts 的 applyPowerToPlayer 里按 hasRelic 处理（不走钩子）。
+    // 战斗内行为待迁移进 sts-combat.ts 的遗物登记表。
     rarity: "rare",
     description: "你不再受到「脆弱」。",
     hooks: {},
@@ -977,22 +657,14 @@ const RELIC_LIST: RelicDef[] = [
     name: "日晷",
     rarity: "uncommon",
     description: "每洗牌 3 次，获得 2 点能量。",
-    hooks: {
-      onShuffle: (_state, self, emit) => {
-        if (tickEvery(self, 3)) {
-          emit({ kind: "gain_energy", amount: 2 });
-        }
-      },
-    },
+    hooks: {},
   },
   {
     id: "the_abacus",
     name: "算盘",
     rarity: "uncommon",
     description: "每当你洗牌，获得 6 点格挡。",
-    hooks: {
-      onShuffle: (_state, _self, emit) => emit({ kind: "gain_block", amount: 6 }),
-    },
+    hooks: {},
   },
   {
     id: "red_skull",
@@ -1000,22 +672,14 @@ const RELIC_LIST: RelicDef[] = [
     rarity: "common",
     characterLock: "ironclad",
     description: "战斗开始时若生命不高于一半，获得 3 点力量。",
-    hooks: {
-      onCombatStart: (state, _self, emit) => {
-        if (state.hp * 2 <= state.maxHp) {
-          emit({ kind: "apply_power", power: "strength", amount: 3, on: "self" });
-        }
-      },
-    },
+    hooks: {},
   },
   {
     id: "toolbox",
     name: "工具箱",
     rarity: "uncommon",
     description: "每场战斗开始时，将一张随机无色牌加入手牌。",
-    hooks: {
-      onCombatStart: (_state, _self, emit) => emit({ kind: "add_random_colorless", count: 1 }),
-    },
+    hooks: {},
   },
   {
     id: "cauldron",
@@ -1049,7 +713,7 @@ const RELIC_LIST: RelicDef[] = [
   {
     id: "calipers",
     name: "卡钳",
-    // 格挡保留在 combat.ts 的回合开始处按 hasRelic 处理（不走钩子）。
+    // 战斗内行为待迁移进 sts-combat.ts 的遗物登记表。
     rarity: "rare",
     description: "回合开始时只失去 15 点格挡，而非全部。",
     hooks: {},
@@ -1057,7 +721,7 @@ const RELIC_LIST: RelicDef[] = [
   {
     id: "runic_pyramid",
     name: "符文金字塔",
-    // 保留手牌在 combat.ts 的 endTurn 保留循环按 hasRelic 处理（不走钩子）。
+    // 战斗内行为待迁移进 sts-combat.ts 的遗物登记表。
     rarity: "boss",
     description: "回合结束时不再弃掉手牌。",
     hooks: {},
@@ -1125,15 +789,15 @@ const RELIC_LIST: RelicDef[] = [
   {
     id: "velvet_choker",
     name: "天鹅绒项圈",
-    // 每回合出牌上限 6 在 combat.ts 的 playCard 按 hasRelic 拦截。
+    // 战斗内行为待迁移进 sts-combat.ts 的遗物登记表。
     rarity: "boss",
     description: "每回合开始时多获得 1 点能量；但每回合最多只能打出 6 张牌。",
-    hooks: { onCombatStart: (_s, _self, emit) => emit({ kind: "change_max_energy", delta: 1 }) },
+    hooks: {},
   },
   {
     id: "magic_flower",
     name: "魔法花",
-    // 回复量 +50% 在 combat.ts 的 heal 效果按 hasRelic 处理。
+    // 战斗内行为待迁移进 sts-combat.ts 的遗物登记表。
     rarity: "rare",
     characterLock: "ironclad",
     description: "战斗中回复生命时，多回复 50%。",
@@ -1177,36 +841,30 @@ const RELIC_LIST: RelicDef[] = [
     name: "灵质",
     rarity: "boss",
     description: "每回合开始时多获得 1 点能量（代价：无法获得金币）。",
-    hooks: { onCombatStart: (_s, _self, emit) => emit({ kind: "change_max_energy", delta: 1 }) },
+    hooks: {},
   },
   {
     id: "cursed_key",
     name: "诅咒之钥",
     rarity: "boss",
     description: "每回合开始时多获得 1 点能量（代价：打开宝箱时会附带一张诅咒）。",
-    hooks: { onCombatStart: (_s, _self, emit) => emit({ kind: "change_max_energy", delta: 1 }) },
+    hooks: {},
   },
   {
     id: "busted_crown",
     name: "破损王冠",
     rarity: "boss",
     description: "每回合开始时多获得 1 点能量（代价：战斗奖励的卡牌选项减少）。",
-    hooks: { onCombatStart: (_s, _self, emit) => emit({ kind: "change_max_energy", delta: 1 }) },
+    hooks: {},
   },
   {
     id: "slavers_collar",
     name: "奴隶主项圈",
     rarity: "boss",
     description: "在精英或首领战中，每回合开始时多获得 1 点能量。",
-    hooks: {
-      onCombatStart: (state, _self, emit) => {
-        if (state.combat?.isBoss) {
-          emit({ kind: "change_max_energy", delta: 1 });
-        }
-      },
-    },
+    hooks: {},
   },
-  // —— 伤害修正型遗物（在 combat.ts 的伤害结算按 hasRelic 处理，不走钩子） ——
+  // —— 伤害修正型遗物（战斗内行为待迁移进 sts-combat.ts） ——
   {
     id: "paper_phrog",
     name: "纸蛙",
@@ -1258,7 +916,7 @@ const RELIC_LIST: RelicDef[] = [
   {
     id: "lizard_tail",
     name: "蜥蜴之尾",
-    // 濒死复活在 combat.ts 的 isPlayerDead/reviveIfPossible 按 hasRelic 处理（counter 记一次性用尽）。
+    // 战斗内行为待迁移进 sts-combat.ts 的遗物登记表。
     rarity: "rare",
     description: "当你在战斗中濒死时，回复至一半生命（整局限一次）。",
     hooks: {},
@@ -1279,7 +937,7 @@ const RELIC_LIST: RelicDef[] = [
   {
     id: "odd_mushroom",
     name: "奇异蘑菇",
-    // 易伤减伤在 combat.ts 的 dealDamageToPlayer 按 hasRelic 处理。
+    // 战斗内行为待迁移进 sts-combat.ts 的遗物登记表。
     rarity: "uncommon",
     description: "你受到的易伤伤害加成从 50% 降为 25%。",
     hooks: {},
@@ -1289,10 +947,7 @@ const RELIC_LIST: RelicDef[] = [
     name: "地精面容",
     rarity: "common",
     description: "每场战斗开始时，你获得 1 层虚弱。",
-    hooks: {
-      onCombatStart: (_s, _self, emit) =>
-        emit({ kind: "apply_power", power: "weak", amount: 1, on: "self" }),
-    },
+    hooks: {},
   },
   {
     id: "cultist_headpiece",
@@ -1306,9 +961,7 @@ const RELIC_LIST: RelicDef[] = [
     name: "诱变力量",
     rarity: "rare",
     description: "每场战斗开始时获得 3 点力量，但在本回合结束时失去。",
-    hooks: {
-      onCombatStart: (_s, _self, emit) => emit({ kind: "apply_strength_temp", amount: 3 }),
-    },
+    hooks: {},
   },
   {
     id: "ring_of_the_serpent",
@@ -1316,15 +969,13 @@ const RELIC_LIST: RelicDef[] = [
     rarity: "rare",
     characterLock: "silent",
     description: "每个回合开始时，多抽 1 张牌。",
-    hooks: {
-      onTurnStart: (_s, _self, emit) => emit({ kind: "draw", amount: 1 }),
-    },
+    hooks: {},
   },
   // —— 引擎特判 / 房间钩子 遗物（不走既有钩子） ——
   {
     id: "sacred_bark",
     name: "神圣树皮",
-    // 药水效果翻倍在 combat.ts 的 usePotion 按 hasRelic 处理。
+    // 战斗内行为待迁移进 sts-combat.ts 的遗物登记表。
     rarity: "boss",
     description: "你使用药水的效果翻倍。",
     hooks: {},
@@ -1332,7 +983,7 @@ const RELIC_LIST: RelicDef[] = [
   {
     id: "champion_belt",
     name: "冠军腰带",
-    // 「施加易伤时也施加虚弱」在 combat.ts 的对敌施加易伤处按 hasRelic 处理。
+    // 战斗内行为待迁移进 sts-combat.ts 的遗物登记表。
     rarity: "uncommon",
     characterLock: "ironclad",
     description: "当你对敌人施加易伤时，也对其施加 1 层虚弱。",
@@ -1386,20 +1037,7 @@ const RELIC_LIST: RelicDef[] = [
     rarity: "shop",
     characterLock: "ironclad",
     description: "每个玩家回合开始，获得 2 点力量，且所有敌人获得 1 点力量。",
-    hooks: {
-      onTurnStart: (state) => {
-        const combat = state.combat;
-        if (!combat) {
-          return;
-        }
-        addPower(combat.playerPowers, "strength", 2);
-        for (const enemy of combat.enemies) {
-          if (enemy.hp > 0) {
-            addPower(enemy.powers, "strength", 1);
-          }
-        }
-      },
-    },
+    hooks: {},
   },
   {
     id: "damaru",
@@ -1407,32 +1045,14 @@ const RELIC_LIST: RelicDef[] = [
     rarity: "common",
     characterLock: "watcher",
     description: "每个玩家回合开始，获得 1 点法力。",
-    hooks: {
-      onTurnStart: (_state, _self, emit) => emit({ kind: "gain_mantra", amount: 1 }),
-    },
+    hooks: {},
   },
   {
     id: "clockwork_souvenir",
     name: "发条纪念品",
     rarity: "shop",
     description: "每场战斗开始时，获得 1 层神器（抵消下一个施加到你身上的减益）。",
-    hooks: {
-      onCombatStart: (state) => {
-        if (state.combat) {
-          addPower(state.combat.playerPowers, "artifact", 1);
-        }
-      },
-    },
-  },
-  {
-    id: "teardrop_locket",
-    name: "泪滴坠饰",
-    rarity: "uncommon",
-    characterLock: "watcher",
-    description: "每场战斗以平静姿态开始。",
-    hooks: {
-      onCombatStart: (_state, _self, emit) => emit({ kind: "enter_stance", stance: "calm" }),
-    },
+    hooks: {},
   },
   {
     id: "nuclear_battery",
@@ -1440,9 +1060,7 @@ const RELIC_LIST: RelicDef[] = [
     rarity: "boss",
     characterLock: "defect",
     description: "每场战斗开始时，充能 1 颗等离子球。",
-    hooks: {
-      onCombatStart: (_state, _self, emit) => emit({ kind: "channel_orb", orbType: "plasma" }),
-    },
+    hooks: {},
   },
   {
     id: "symbiotic_virus",
@@ -1450,9 +1068,7 @@ const RELIC_LIST: RelicDef[] = [
     rarity: "uncommon",
     characterLock: "defect",
     description: "每场战斗开始时，充能 1 颗暗球。",
-    hooks: {
-      onCombatStart: (_state, _self, emit) => emit({ kind: "channel_orb", orbType: "dark" }),
-    },
+    hooks: {},
   },
   {
     id: "cloak_clasp",
@@ -1460,13 +1076,7 @@ const RELIC_LIST: RelicDef[] = [
     rarity: "rare",
     characterLock: "watcher",
     description: "每个玩家回合结束时，每有 1 张手牌就获得 1 点格挡。",
-    hooks: {
-      onTurnEnd: (state) => {
-        if (state.combat) {
-          state.combat.playerBlock += state.combat.hand.length;
-        }
-      },
-    },
+    hooks: {},
   },
   {
     id: "melange",
@@ -1474,16 +1084,14 @@ const RELIC_LIST: RelicDef[] = [
     rarity: "shop",
     characterLock: "watcher",
     description: "每当你洗牌时，预知 3 张。",
-    hooks: {
-      onShuffle: (_state, _self, emit) => emit({ kind: "scry", amount: 3 }),
-    },
+    hooks: {},
   },
   {
     id: "golden_eye",
     name: "金色之眼",
     rarity: "rare",
     characterLock: "watcher",
-    // 效果在 combat.ts 的 doScry 里按 hasRelic 处理（每次预知额外预知 2 张）。
+    // 战斗内行为待迁移进 sts-combat.ts 的遗物登记表。
     description: "每当你预知时，额外预知 2 张。",
     hooks: {},
   },
@@ -1492,30 +1100,14 @@ const RELIC_LIST: RelicDef[] = [
     name: "勇气投索",
     rarity: "shop",
     description: "每场精英战斗开始时，获得 2 点力量。",
-    hooks: {
-      onCombatStart: (state) => {
-        if (state.combat?.isElite) {
-          addPower(state.combat.playerPowers, "strength", 2);
-        }
-      },
-    },
+    hooks: {},
   },
   {
     id: "preserved_insect",
     name: "密封昆虫",
     rarity: "common",
     description: "精英战斗中，敌人以最大生命 75% 的生命开始战斗。",
-    hooks: {
-      onCombatStart: (state) => {
-        const combat = state.combat;
-        if (!combat || !combat.isElite) {
-          return;
-        }
-        for (const enemy of combat.enemies) {
-          enemy.hp = Math.floor(enemy.maxHp * 0.75);
-        }
-      },
-    },
+    hooks: {},
   },
   {
     id: "frozen_core",
@@ -1523,14 +1115,7 @@ const RELIC_LIST: RelicDef[] = [
     rarity: "boss",
     characterLock: "defect",
     description: "每个玩家回合结束时，若有空的充能球槽，则充能 1 颗冰霜球。",
-    hooks: {
-      onTurnEnd: (state, _self, emit) => {
-        const combat = state.combat;
-        if (combat && combat.orbs.length < combat.orbSlots) {
-          emit({ kind: "channel_orb", orbType: "frost" });
-        }
-      },
-    },
+    hooks: {},
   },
   {
     id: "inserter",
@@ -1538,13 +1123,7 @@ const RELIC_LIST: RelicDef[] = [
     rarity: "rare",
     characterLock: "defect",
     description: "每 2 个回合，获得 1 个充能球槽。",
-    hooks: {
-      onTurnStart: (_state, self, emit) => {
-        if (tickEvery(self, 2)) {
-          emit({ kind: "change_orb_slots", delta: 1 });
-        }
-      },
-    },
+    hooks: {},
   },
   {
     id: "runic_capacitor",
@@ -1552,16 +1131,14 @@ const RELIC_LIST: RelicDef[] = [
     rarity: "shop",
     characterLock: "defect",
     description: "每场战斗开始时，额外获得 3 个充能球槽。",
-    hooks: {
-      onCombatStart: (_state, _self, emit) => emit({ kind: "change_orb_slots", delta: 3 }),
-    },
+    hooks: {},
   },
   {
     id: "violet_lotus",
     name: "紫莲",
     rarity: "boss",
     characterLock: "watcher",
-    // 效果在 combat.ts 的 enterStance 里按 hasRelic 处理（离开平静额外 +1 能量）。
+    // 战斗内行为待迁移进 sts-combat.ts 的遗物登记表。
     description: "每当你离开平静姿态，额外获得 1 点能量。",
     hooks: {},
   },
@@ -1571,9 +1148,7 @@ const RELIC_LIST: RelicDef[] = [
     rarity: "uncommon",
     characterLock: "silent",
     description: "每当你弃掉一张牌，获得 3 点格挡。",
-    hooks: {
-      onDiscard: (_state, _self, emit) => emit({ kind: "gain_block", amount: 3 }),
-    },
+    hooks: {},
   },
   {
     id: "tingsha",
@@ -1581,9 +1156,7 @@ const RELIC_LIST: RelicDef[] = [
     rarity: "rare",
     characterLock: "silent",
     description: "每当你弃掉一张牌，对一名随机敌人造成 3 点伤害。",
-    hooks: {
-      onDiscard: (_state, _self, emit) => emit({ kind: "deal_damage_random", amount: 3, times: 1 }),
-    },
+    hooks: {},
   },
   {
     id: "hovering_kite",
@@ -1593,26 +1166,17 @@ const RELIC_LIST: RelicDef[] = [
     description: "每个玩家回合，你第一次弃牌时获得 1 点能量。",
     hooks: {
       // counter 作「本回合是否已弃过牌」标记：回合开始归零，首弃回能量后置 1。
-      onTurnStart: (_state, self) => {
-        self.counter = 0;
-      },
-      onDiscard: (_state, self, emit) => {
-        if (self.counter === 0) {
-          self.counter = 1;
-          emit({ kind: "gain_energy", amount: 1 });
-        }
-      },
     },
   },
   {
     id: "unceasing_top",
     name: "不停转陀螺",
     rarity: "rare",
-    // 效果在 combat.ts 的 playCard 里按 hasRelic 处理（回合内手牌被打空则抽 1）。
+    // 战斗内行为待迁移进 sts-combat.ts 的遗物登记表。
     description: "在你的回合，每当手牌被清空，抽 1 张牌。",
     hooks: {},
   },
-  // === 补全批次 B：奖励 / 篝火 / 宝箱时点遗物（多数逻辑在 run.ts / combat.ts 按 hasRelic 处理）===
+  // === 补全批次 B：奖励 / 篝火 / 宝箱时点遗物（多数逻辑在 run.ts 里按 hasRelic 处理）===
   {
     id: "question_card",
     name: "问号卡",
@@ -1654,13 +1218,7 @@ const RELIC_LIST: RelicDef[] = [
     rarity: "rare",
     // counter 记本局举重次数（篝火「举重」每次 +1，至多 3）；每场战斗开始施加等量力量。
     description: "可在篝火举重，永久获得 1 点力量（至多 3 次）。每场战斗开始时获得已积累的力量。",
-    hooks: {
-      onCombatStart: (state, self) => {
-        if (state.combat && self.counter > 0) {
-          addPower(state.combat.playerPowers, "strength", self.counter);
-        }
-      },
-    },
+    hooks: {},
   },
   {
     id: "shovel",
@@ -1680,7 +1238,7 @@ const RELIC_LIST: RelicDef[] = [
     id: "ancient_tea_set",
     name: "古董茶具",
     rarity: "common",
-    // counter=1 表示「刚在篝火休息过」；下场战斗第一回合 +2 能量后清零（combat.ts 处理）。
+    // counter=1 表示「刚在篝火休息过」；下场战斗第一回合 +2 能量后清零（待迁移进 sts-combat）。
     description: "每当你在篝火休息后，下一场战斗的第一回合额外获得 2 点能量。",
     hooks: {},
   },
@@ -1717,7 +1275,7 @@ const RELIC_LIST: RelicDef[] = [
     id: "medical_kit",
     name: "医疗包",
     rarity: "shop",
-    // 效果在 combat.ts 的 playCard 里按 hasRelic 处理（状态牌 0 费可打、打出即消耗）。
+    // 战斗内行为待迁移进 sts-combat.ts 的遗物登记表。
     description: "你可以打出状态牌。打出状态牌时费用为 0，并将其消耗。",
     hooks: {},
   },
@@ -1725,7 +1283,7 @@ const RELIC_LIST: RelicDef[] = [
     id: "blue_candle",
     name: "蓝烛",
     rarity: "uncommon",
-    // 效果在 combat.ts 的 playCard 里按 hasRelic 处理（诅咒牌 0 费可打、失 1 血、消耗）。
+    // 战斗内行为待迁移进 sts-combat.ts 的遗物登记表。
     description: "你可以打出诅咒牌。打出诅咒牌会失去 1 点生命，并将其消耗。",
     hooks: {},
   },
@@ -1733,7 +1291,7 @@ const RELIC_LIST: RelicDef[] = [
     id: "chemical_x",
     name: "化学 X",
     rarity: "shop",
-    // 效果在 combat.ts 的 playCard 里按 hasRelic 处理（X 费牌 X 额外 +2）。
+    // 战斗内行为待迁移进 sts-combat.ts 的遗物登记表。
     description: "每当你打出一张 X 费牌，其 X 视为额外 +2。",
     hooks: {},
   },
@@ -1741,7 +1299,7 @@ const RELIC_LIST: RelicDef[] = [
     id: "snecko_eye",
     name: "蛇之眼",
     rarity: "boss",
-    // 效果在 combat.ts 处理：每回合多抽 2 张；抽到的可打出牌费用随机 0~3（混乱）。
+    // 战斗内行为待迁移进 sts-combat.ts 的遗物登记表。
     description: "每回合多抽 2 张牌。战斗中，抽到的牌费用随机变为 0~3（X 费牌与废牌除外）。",
     hooks: {},
   },
@@ -1749,7 +1307,7 @@ const RELIC_LIST: RelicDef[] = [
     id: "hand_drill",
     name: "手钻",
     rarity: "shop",
-    // 效果在 combat.ts 的 dealDamageToEnemy 里按 hasRelic 处理（打破格挡 → 2 易伤）。
+    // 战斗内行为待迁移进 sts-combat.ts 的遗物登记表。
     description: "每当你用攻击打破一名敌人的格挡，令其获得 2 层易伤。",
     hooks: {},
   },
@@ -1757,7 +1315,7 @@ const RELIC_LIST: RelicDef[] = [
     id: "strike_dummy",
     name: "打桩人偶",
     rarity: "uncommon",
-    // 效果在 combat.ts 的 deal_damage 里按 hasRelic 处理（名字含「打击」的牌 +3 伤害）。
+    // 战斗内行为待迁移进 sts-combat.ts 的遗物登记表。
     description: "打出名字中带有「打击」的牌时，额外造成 3 点伤害。",
     hooks: {},
   },
@@ -1766,7 +1324,7 @@ const RELIC_LIST: RelicDef[] = [
     name: "腕刃",
     rarity: "rare",
     characterLock: "silent",
-    // 效果在 combat.ts 的 deal_damage 里按 hasRelic 处理（0 费攻击牌 +4 伤害）。
+    // 战斗内行为待迁移进 sts-combat.ts 的遗物登记表。
     description: "你打出的 0 费攻击牌，额外造成 4 点伤害。",
     hooks: {},
   },
@@ -1775,7 +1333,7 @@ const RELIC_LIST: RelicDef[] = [
     name: "蛇之头骨",
     rarity: "common",
     characterLock: "silent",
-    // 效果在 combat.ts 的 apply_power 里按 hasRelic 处理（施加中毒 +1）。
+    // 战斗内行为待迁移进 sts-combat.ts 的遗物登记表。
     description: "每当你对敌人施加中毒，额外施加 1 层。",
     hooks: {},
   },
@@ -1812,7 +1370,7 @@ const RELIC_LIST: RelicDef[] = [
     name: "样本瓶",
     rarity: "rare",
     characterLock: "silent",
-    // 效果在 combat.ts 的 dealDamageToEnemy 死亡分支按 hasRelic 处理（传毒给随机敌人）。
+    // 战斗内行为待迁移进 sts-combat.ts 的遗物登记表。
     description: "每当一名敌人死亡，将它身上的中毒转移给一名随机敌人。",
     hooks: {},
   },
@@ -1829,7 +1387,7 @@ const RELIC_LIST: RelicDef[] = [
     name: "钢笔尖",
     rarity: "common",
     characterLock: "ironclad",
-    // counter 记本局已打出的攻击牌数；每第 10 张造成双倍伤害（combat.ts 处理）。
+    // counter 记本局已打出的攻击牌数；每第 10 张造成双倍伤害（待迁移进 sts-combat）。
     description: "每打出 10 张攻击牌，下一张攻击牌造成双倍伤害。",
     hooks: {},
   },
@@ -1867,13 +1425,7 @@ const RELIC_LIST: RelicDef[] = [
     rarity: "uncommon",
     characterLock: "watcher",
     description: "每当你打出一张攻击牌，本回合获得 1 点敏捷（回合结束时失去）。",
-    hooks: {
-      onCardPlayed: (state, _self, cardType) => {
-        if (cardType === "attack" && state.combat) {
-          addPower(state.combat.playerPowers, "dexterity_temp", 1);
-        }
-      },
-    },
+    hooks: {},
   },
   {
     id: "orange_pellets",
@@ -1881,30 +1433,14 @@ const RELIC_LIST: RelicDef[] = [
     rarity: "shop",
     // counter 作本回合已打出牌型的位掩码（攻/技/能）；集齐则清除全部减益。
     description: "在同一回合内打出攻击、技能和能力牌各一张后，移除你身上所有减益。",
-    hooks: {
-      onTurnStart: (_state, self) => {
-        self.counter = 0;
-      },
-      onCardPlayed: (state, self, cardType) => {
-        const bit =
-          cardType === "attack" ? 1 : cardType === "skill" ? 2 : cardType === "power" ? 4 : 0;
-        self.counter |= bit;
-        if ((self.counter & 7) === 7 && state.combat) {
-          const debuffs: PowerId[] = ["weak", "vulnerable", "frail", "entangled"];
-          for (const id of debuffs) {
-            removePower(state.combat.playerPowers, id);
-          }
-          self.counter = 0;
-        }
-      },
-    },
+    hooks: {},
   },
   {
     id: "emotion_chip",
     name: "情绪芯片",
     rarity: "rare",
     characterLock: "defect",
-    // 效果在 combat.ts 的回合开始处理（上回合掉血则触发所有球被动）。
+    // 战斗内行为待迁移进 sts-combat.ts 的遗物登记表。
     description: "若上一回合你失去了生命，则本回合开始时触发所有充能球的被动效果。",
     hooks: {},
   },
@@ -1913,7 +1449,7 @@ const RELIC_LIST: RelicDef[] = [
     name: "镀金电缆",
     rarity: "uncommon",
     characterLock: "defect",
-    // 效果在 combat.ts 的回合结束处理（最右侧球额外触发一次被动）。
+    // 战斗内行为待迁移进 sts-combat.ts 的遗物登记表。
     description: "每个玩家回合结束时，最右侧的充能球额外触发一次被动效果。",
     hooks: {},
   },
@@ -1921,7 +1457,7 @@ const RELIC_LIST: RelicDef[] = [
     id: "strange_spoon",
     name: "奇怪的勺子",
     rarity: "shop",
-    // 效果在 combat.ts 的 playCard 入堆处理（自带消耗的牌 50% 改为弃牌）。
+    // 战斗内行为待迁移进 sts-combat.ts 的遗物登记表。
     description: "本应被消耗的牌有 50% 的概率改为进入弃牌堆。",
     hooks: {},
   },
@@ -1988,7 +1524,7 @@ const RELIC_LIST: RelicDef[] = [
     id: "gambling_chip",
     name: "赌博芯片",
     rarity: "rare",
-    // 效果在 combat.ts 的 startCombat 里按 hasRelic 处理。参考实现为交互式换手（暂停战斗、
+    // 战斗内行为待迁移进 sts-combat.ts 的遗物登记表。
     // 由外部选择要弃的手牌），纯计算引擎无战斗内多选原语，故按赌徒酿药水的同款近似：弃整手、补抽等量。
     description: "每场战斗开始、抽出起手牌后，弃掉整手牌并补抽等量的新牌。",
     hooks: {},

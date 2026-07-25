@@ -79,7 +79,7 @@ const ENEMY_LIST: EnemyDef[] = [
     moves: [
       {
         id: "bite",
-        // 咬击基础伤害在出生时掷定（5~7）、整场固定，见 startCombat 的 rolledDamage。
+        // 咬击基础伤害在出生时掷定（5~7）、整场固定，见 sts-combat.ts 的 createMonster。
         name: "啃咬",
         effects: [{ kind: "deal_damage_rolled" }],
         intent: "attack",
@@ -373,7 +373,7 @@ const ENEMY_LIST: EnemyDef[] = [
         intent: "attack",
       },
     ],
-    // 出招由 combat.ts 的 shield_gremlin 专属分支处理（有友军则保护、否则攻击）。
+    // 出招规则待登记进 sts-combat.ts 的 MOVE_RULES（有友军则保护、否则攻击）。
     intentRule: { scripted: [], weighted: [] },
   },
   {
@@ -390,7 +390,7 @@ const ENEMY_LIST: EnemyDef[] = [
         intent: "attack",
       },
     ],
-    // 出招由 combat.ts 的 gremlin_wizard 专属分支处理（蓄力3回合→大招→循环）。
+    // 出招规则待登记进 sts-combat.ts 的 MOVE_RULES（蓄力3回合→大招→循环）。
     intentRule: { scripted: [], weighted: [] },
   },
 
@@ -431,7 +431,7 @@ const ENEMY_LIST: EnemyDef[] = [
         intent: "unknown",
       },
     ],
-    // 出招由 combat.ts 的 looter 专属分支处理（抢劫×2 → 猛扑/烟雾弹 → 逃跑）。
+    // 出招规则待登记进 sts-combat.ts 的 MOVE_RULES（抢劫×2 → 猛扑/烟雾弹 → 逃跑）。
     intentRule: { scripted: [], weighted: [] },
   },
   {
@@ -462,7 +462,7 @@ const ENEMY_LIST: EnemyDef[] = [
         intent: "debuff",
       },
     ],
-    // 出招由 combat.ts 的 red_slaver 专属分支处理（首招刺击、缠绕一次性、刮擦/刺击）。
+    // 出招规则待登记进 sts-combat.ts 的 MOVE_RULES（首招刺击、缠绕一次性、刮擦/刺击）。
     intentRule: { scripted: [], weighted: [] },
   },
 
@@ -734,7 +734,7 @@ const ENEMY_LIST: EnemyDef[] = [
         intent: "attack",
       },
     ],
-    // 召唤由 combat.ts gremlin_leader 分支处理（身边地精 <2 则召唤）；否则 鼓舞/突刺。
+    // 召唤由 sts-combat.ts 的 MOVE_RULES 登记 gremlin_leader（待迁移）（身边地精 <2 则召唤）；否则 鼓舞/突刺。
     intentRule: {
       scripted: [],
       weighted: [
@@ -845,7 +845,7 @@ const ENEMY_LIST: EnemyDef[] = [
         intent: "buff",
       },
     ],
-    // 半血暴怒（一次性）由 combat.ts champ 分支覆盖；其余走 weighted。
+    // 半血暴怒（一次性）由 sts-combat.ts 的 MOVE_RULES 登记 champ（待迁移）；其余走 weighted。
     intentRule: {
       scripted: [],
       weighted: [
@@ -1238,7 +1238,7 @@ const ENEMY_LIST: EnemyDef[] = [
         intent: "unknown",
       },
     ],
-    // 出招由 combat.ts transient 分支处理（重殴数回合后消散离场）。
+    // 出招由 sts-combat.ts 的 MOVE_RULES 登记 transient（待迁移）（重殴数回合后消散离场）。
     intentRule: { scripted: [], weighted: [] },
   },
 
@@ -1262,7 +1262,7 @@ const ENEMY_LIST: EnemyDef[] = [
         intent: "attack",
       },
     ],
-    // 出招由 combat.ts giant_head 分支处理（前 3 回合凝视，之后每回合重击）。
+    // 出招由 sts-combat.ts 的 MOVE_RULES 登记 giant_head（待迁移）（前 3 回合凝视，之后每回合重击）。
     intentRule: { scripted: [], weighted: [] },
   },
 
@@ -1458,7 +1458,7 @@ const ENEMY_LIST: EnemyDef[] = [
         intent: "debuff",
       },
     ],
-    // 出招由 combat.ts 的 lagavulin 专属分支处理（睡眠/苏醒/攻击循环），intentRule 留空。
+    // 出招由 sts-combat.ts 的 MOVE_RULES 登记 lagavulin（待迁移）（睡眠/苏醒/攻击循环），intentRule 留空。
     intentRule: { scripted: [], weighted: [] },
   },
 
@@ -1482,7 +1482,7 @@ const ENEMY_LIST: EnemyDef[] = [
         intent: "debuff",
       },
     ],
-    // 出招由 combat.ts 的 sentry 专属分支处理（错位开局 + 严格交替），intentRule 留空。
+    // 出招由 sts-combat.ts 的 MOVE_RULES 登记 sentry（待迁移）（错位开局 + 严格交替），intentRule 留空。
     intentRule: { scripted: [], weighted: [] },
   },
 
@@ -1600,7 +1600,7 @@ const ENEMY_LIST: EnemyDef[] = [
         intent: "attack",
       },
     ],
-    // 出招由 combat.ts 的 hexaghost 专属分支处理，intentRule 留空。
+    // 出招由 sts-combat.ts 的 MOVE_RULES 登记 hexaghost（待迁移），intentRule 留空。
     intentRule: { scripted: [], weighted: [] },
   },
 
@@ -1703,7 +1703,7 @@ const ENEMY_LIST: EnemyDef[] = [
         intent: "attack",
       },
     ],
-    // 出招由 combat.ts 的 slime_boss 专属分支处理（黏液→蓄力→猛砸 循环），intentRule 留空。
+    // 出招由 sts-combat.ts 的 MOVE_RULES 登记 slime_boss（待迁移）（黏液→蓄力→猛砸 循环），intentRule 留空。
     intentRule: { scripted: [], weighted: [] },
   },
 

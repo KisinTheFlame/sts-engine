@@ -1,4 +1,4 @@
-import type { CardInstance, CharacterId, CombatEngine, GameState } from "./types.js";
+import type { CardInstance, CharacterId, GameState } from "./types.js";
 import { getCharacterConfig } from "./characters/characters.js";
 import { seedRng } from "./rng.js";
 import { seedStringToLong } from "./sts-rng.js";
@@ -28,12 +28,6 @@ export function newRun(input: {
   seed: number | bigint | string;
   character?: CharacterId;
   ascension?: number;
-  /**
-   * 用哪套战斗实现，缺省 `"legacy"`（近似实现，覆盖几乎全部内容）。
-   * 传 `"sts"` 则逐场优先走游戏级战斗 `sts-combat.ts`（与原版逐位一致），
-   * 它尚未覆盖的战斗会自动回退 legacy 并在 log 里写明——详见 combat-bridge.ts。
-   */
-  combatEngine?: CombatEngine;
 }): GameState {
   const character: CharacterId = input.character ?? "ironclad";
   const config = getCharacterConfig(character);
@@ -65,9 +59,7 @@ export function newRun(input: {
     potionDropBonus: 0,
     map: { nodes: {}, rows: 0, startNodeIds: [], bossNodeId: "" },
     currentNodeId: null,
-    combatEngine: input.combatEngine ?? "legacy",
     combat: null,
-    stsCombat: null,
     stsPotionRng: null,
     reward: null,
     event: null,
@@ -138,9 +130,8 @@ export function applyAction(state: GameState, action: GameAction): ActionResult 
 
 /** 战斗胜利后收尾：非 Boss 转卡奖励；Boss 胜利若还有后续幕则携带状态进入下一幕，否则通关。 */
 function settleAfterCombat(state: GameState): void {
-  // 「战斗字段清空但还停在战斗屏」= 刚刚打赢一场非 Boss 战。两套实现各占一个字段，
-  // 都要判：走 sts 路径时 state.combat 恒为 null，只看它会每个动作都发一次奖励。
-  if (state.combat === null && state.stsCombat === null && state.screen === "combat") {
+  // 「combat 已清空但还停在战斗屏」= 刚刚打赢一场非 Boss 战。
+  if (state.combat === null && state.screen === "combat") {
     generateReward(state);
     return;
   }

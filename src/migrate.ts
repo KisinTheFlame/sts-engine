@@ -42,56 +42,27 @@ export function migrateLoadedState(raw: unknown): GameState {
     state["seed"] = String(state["seed"]);
   }
   backfill(state, "cardSelect", null); // 选牌子界面（图书馆/复制器/和平烟斗）——老档没有。
-  // 游戏级战斗接线：老档一律按近似实现续玩（换实现只在新对局生效，不半局切换）。
-  backfill(state, "combatEngine", "legacy");
-  backfill(state, "stsCombat", null);
-  backfill(state, "stsPotionRng", null);
+  backfill(state, "stsPotionRng", null); // run 级持久 potionRng——老档没有。
+  // 一度存在过的 combatEngine 开关（近似/游戏级二选一）随近似实现一起删了。
+  delete state["combatEngine"];
 
+  // 战斗字段换代：
+  //  * 0.16.0 的档把游戏级战斗放在 stsCombat，combat 留给近似战斗 → 平移到 combat。
+  //  * 更老的档 combat 里是近似战斗的形状（enemies/playerPowers…），与游戏级快照不兼容，
+  //    无法平移，只能作废这一场、回地图继续爬。
+  const sts = asRecord(state["stsCombat"]);
+  delete state["stsCombat"];
+  if (sts) {
+    state["combat"] = sts;
+  }
   const combat = asRecord(state["combat"]);
-  if (combat) {
-    // 充能球（C3）/ 姿态（C4）：老战斗存档没有，回填空/无。
-    backfill(combat, "orbs", []);
-    backfill(combat, "orbSlots", state["character"] === "defect" ? 3 : 0);
-    backfill(combat, "playerStance", "none");
-    backfill(combat, "mantra", 0); // 法力（观者神性）——老档没有。
-    backfill(combat, "nextTurnBlock", 0);
-    backfill(combat, "nextTurnEnergy", 0);
-    backfill(combat, "nextTurnDraw", 0);
-    backfill(combat, "nextTurnStance", null); // 烈怒渐起——老档没有。
-    backfill(combat, "nightmarePending", null); // 噩梦——老档没有。
-    backfill(combat, "pendingBomb", null); // 炸弹——老档没有。
-    backfill(combat, "extraTurnPending", false); // 宝库——老档没有。
-    backfill(combat, "doomedNextTurn", false); // 亵渎——老档没有。
-    backfill(combat, "nextTurnPhantasmal", false); // 幻杀——老档没有。
-    backfill(combat, "attacksThisTurn", 0);
-    backfill(combat, "cardsDiscardedThisTurn", 0); // 弃牌联动——老档没有。
-    backfill(combat, "cardsPlayedThisTurn", 0); // 出牌计数——老档没有。
-    backfill(combat, "mantraGainedThisCombat", 0); // 璀璨光辉——老档没有。
-    backfill(combat, "frostChanneledThisCombat", 0); // 暴风雪——老档没有。
-    backfill(combat, "lightningChanneledThisCombat", 0); // 雷霆一击——老档没有。
-    backfill(combat, "powersPlayedThisCombat", 0); // 力场——老档没有。
-    backfill(combat, "timesLostHpThisCombat", 0); // 血债血偿——老档没有。
-    backfill(combat, "lastCardType", null);
-    backfill(combat, "isElite", false); // 精英战标记——老档没有。
-    backfill(combat, "hpAtTurnStart", state["hp"] ?? 0); // 情绪芯片——老档没有。
-    const enemies = Array.isArray(combat["enemies"]) ? combat["enemies"] : [];
-    for (const entry of enemies) {
-      const enemy = asRecord(entry);
-      if (enemy) {
-        backfill(enemy, "hasRevived", false); // 复活（三幕觉醒者）
-        backfill(enemy, "hasSplit", false);
-        backfill(enemy, "escaped", false);
-        backfill(enemy, "curlUpConsumed", false);
-        backfill(enemy, "asleep", false);
-        backfill(enemy, "rolledDamage", 0);
-        backfill(enemy, "moveHistory", []);
-        backfill(enemy, "rotationIndex", 0);
-        backfill(enemy, "modeShiftAccum", 0);
-        backfill(enemy, "modeShiftThreshold", null);
-        backfill(enemy, "stance", null);
-        backfill(enemy, "powers", []);
-      }
+  if (combat && combat["enemies"] !== undefined) {
+    state["combat"] = null;
+    if (state["screen"] === "combat") {
+      state["screen"] = "map";
     }
   }
+  backfill(state, "combat", null);
+
   return state as unknown as GameState;
 }

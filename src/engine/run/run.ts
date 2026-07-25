@@ -95,8 +95,9 @@ function resolveNode(state: GameState, node: MapNode): void {
       return;
     }
     case "elite": {
-      // 精英战：独立精英池；胜利后必发 1 个遗物。isElite=true 供勇气投索 / 密封昆虫判定。
-      startCombat(state, pickEliteEncounter(state.rng, state.act), true);
+      // 精英战：独立精英池；胜利后必发 1 个遗物（勇气投索 / 密封昆虫那类「精英战内」
+      // 判定随近似战斗一起删了，等它们迁进 sts-combat 时再补）。
+      startCombat(state, pickEliteEncounter(state.rng, state.act));
       state.pendingRelicReward = true;
       return;
     }
@@ -488,7 +489,7 @@ function applyEventOutcome(state: GameState, outcome: EventOutcome): void {
     }
     case "start_combat": {
       // 事件触发战斗：进入指定遭遇；elite 则胜利后发遗物（斗兽场/神秘球等）。
-      startCombat(state, outcome.encounterId, outcome.elite ?? false);
+      startCombat(state, outcome.encounterId);
       if (outcome.elite) {
         state.pendingRelicReward = true;
       }
