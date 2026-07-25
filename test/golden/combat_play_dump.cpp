@@ -154,10 +154,16 @@ struct Sim {
             }
         }
 
-        // end of round powers
+        // end of round powers (Monster::applyEndOfRoundPowers)
         if (mAlive && mRitual > 0) {
             if (mRitualJustApplied) mRitualJustApplied = false;
             else mStrength += mRitual;
+        }
+        // Vulnerable decays here. Bash applies it via DebuffEnemy<VULNERABLE>(t, 2, false),
+        // i.e. isSourceMonster=false, so addDebuff never sets justApplied (Monster.h:318) —
+        // a player-applied debuff does NOT skip its first decrement.
+        if (mAlive && mVuln > 0) {
+            --mVuln;
         }
 
         ++turn;
