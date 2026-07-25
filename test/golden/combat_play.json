@@ -1,0 +1,322 @@
+{
+  "cases": [
+    {
+      "seed": "1RGBGHNF7L",
+      "seedLong": "138414915365391",
+      "floor": 1,
+      "turns": [
+        {
+          "turn": 1,
+          "played": [0, 1, 1],
+          "monsterHp": 43,
+          "monsterVuln": 0,
+          "monsterStrength": 0,
+          "playerHp": 80,
+          "playerBlock": 10,
+          "energy": 0,
+          "handAfterPlay": [0, 0],
+          "discard": [0, 1, 1]
+        },
+        {
+          "turn": 2,
+          "played": [0, 1, 0],
+          "monsterHp": 31,
+          "monsterVuln": 0,
+          "monsterStrength": 0,
+          "playerHp": 80,
+          "playerBlock": 5,
+          "energy": 0,
+          "handAfterPlay": [2, 1],
+          "discard": [0, 1, 1, 0, 0, 0, 1, 0]
+        },
+        {
+          "turn": 3,
+          "played": [0, 2],
+          "monsterHp": 17,
+          "monsterVuln": 2,
+          "monsterStrength": 3,
+          "playerHp": 79,
+          "playerBlock": 0,
+          "energy": 0,
+          "handAfterPlay": [0, 1, 1],
+          "discard": [0, 2]
+        }
+      ],
+      "final": {
+        "turn": 4,
+        "intent": "dark_strike",
+        "monsterHp": 17,
+        "monsterStrength": 6,
+        "playerHp": 70,
+        "hand": [1, 0, 0, 0, 1],
+        "drawPile": [],
+        "counters": { "aiRng": 4, "monsterHpRng": 1, "shuffleRng": 2, "cardRandomRng": 0 }
+      }
+    },
+    {
+      "seed": "SLAYTHESPIRE",
+      "seedLong": "2665621045298406349",
+      "floor": 1,
+      "turns": [
+        {
+          "turn": 1,
+          "played": [0, 0, 0],
+          "monsterHp": 36,
+          "monsterVuln": 0,
+          "monsterStrength": 0,
+          "playerHp": 80,
+          "playerBlock": 0,
+          "energy": 0,
+          "handAfterPlay": [0, 1],
+          "discard": [0, 0, 0]
+        },
+        {
+          "turn": 2,
+          "played": [1, 2],
+          "monsterHp": 28,
+          "monsterVuln": 2,
+          "monsterStrength": 0,
+          "playerHp": 80,
+          "playerBlock": 5,
+          "energy": 0,
+          "handAfterPlay": [0, 1, 1],
+          "discard": [0, 0, 0, 0, 1, 1, 2]
+        },
+        {
+          "turn": 3,
+          "played": [0, 1, 1],
+          "monsterHp": 19,
+          "monsterVuln": 2,
+          "monsterStrength": 3,
+          "playerHp": 79,
+          "playerBlock": 10,
+          "energy": 0,
+          "handAfterPlay": [0, 0],
+          "discard": [0, 1, 1]
+        }
+      ],
+      "final": {
+        "turn": 4,
+        "intent": "dark_strike",
+        "monsterHp": 19,
+        "monsterStrength": 6,
+        "playerHp": 79,
+        "hand": [0, 1, 1, 2, 0],
+        "drawPile": [],
+        "counters": { "aiRng": 4, "monsterHpRng": 1, "shuffleRng": 2, "cardRandomRng": 0 }
+      }
+    },
+    {
+      "seed": "0",
+      "seedLong": "0",
+      "floor": 1,
+      "turns": [
+        {
+          "turn": 1,
+          "played": [0, 0, 1],
+          "monsterHp": 42,
+          "monsterVuln": 0,
+          "monsterStrength": 0,
+          "playerHp": 80,
+          "playerBlock": 5,
+          "energy": 0,
+          "handAfterPlay": [0, 2],
+          "discard": [0, 0, 1]
+        },
+        {
+          "turn": 2,
+          "played": [1, 1, 0],
+          "monsterHp": 36,
+          "monsterVuln": 0,
+          "monsterStrength": 0,
+          "playerHp": 80,
+          "playerBlock": 10,
+          "energy": 0,
+          "handAfterPlay": [0, 1],
+          "discard": [0, 0, 1, 0, 2, 1, 1, 0]
+        },
+        {
+          "turn": 3,
+          "played": [0, 1, 0],
+          "monsterHp": 24,
+          "monsterVuln": 0,
+          "monsterStrength": 3,
+          "playerHp": 80,
+          "playerBlock": 5,
+          "energy": 0,
+          "handAfterPlay": [0, 1],
+          "discard": [0, 1, 0]
+        }
+      ],
+      "final": {
+        "turn": 4,
+        "intent": "dark_strike",
+        "monsterHp": 24,
+        "monsterStrength": 6,
+        "playerHp": 76,
+        "hand": [0, 1, 2, 0, 1],
+        "drawPile": [],
+        "counters": { "aiRng": 4, "monsterHpRng": 1, "shuffleRng": 2, "cardRandomRng": 0 }
+      }
+    },
+    {
+      "seed": "3IX8N7ZPAA5",
+      "seedLong": "9766940983340980",
+      "floor": 1,
+      "turns": [
+        {
+          "turn": 1,
+          "played": [2, 0],
+          "monsterHp": 31,
+          "monsterVuln": 2,
+          "monsterStrength": 0,
+          "playerHp": 80,
+          "playerBlock": 0,
+          "energy": 0,
+          "handAfterPlay": [0, 0, 0],
+          "discard": [2, 0]
+        },
+        {
+          "turn": 2,
+          "played": [1, 0, 1],
+          "monsterHp": 22,
+          "monsterVuln": 2,
+          "monsterStrength": 0,
+          "playerHp": 80,
+          "playerBlock": 10,
+          "energy": 0,
+          "handAfterPlay": [1, 1],
+          "discard": [2, 0, 0, 0, 0, 1, 0, 1]
+        },
+        {
+          "turn": 3,
+          "played": [1, 1, 1],
+          "monsterHp": 22,
+          "monsterVuln": 2,
+          "monsterStrength": 3,
+          "playerHp": 80,
+          "playerBlock": 15,
+          "energy": 0,
+          "handAfterPlay": [0, 1],
+          "discard": [1, 1, 1]
+        }
+      ],
+      "final": {
+        "turn": 4,
+        "intent": "dark_strike",
+        "monsterHp": 22,
+        "monsterStrength": 6,
+        "playerHp": 80,
+        "hand": [0, 2, 0, 0, 0],
+        "drawPile": [],
+        "counters": { "aiRng": 4, "monsterHpRng": 1, "shuffleRng": 2, "cardRandomRng": 0 }
+      }
+    },
+    {
+      "seed": "NEOWLIVES",
+      "seedLong": "52737824750267",
+      "floor": 1,
+      "turns": [
+        {
+          "turn": 1,
+          "played": [0, 1, 1],
+          "monsterHp": 48,
+          "monsterVuln": 0,
+          "monsterStrength": 0,
+          "playerHp": 80,
+          "playerBlock": 10,
+          "energy": 0,
+          "handAfterPlay": [0, 2],
+          "discard": [0, 1, 1]
+        },
+        {
+          "turn": 2,
+          "played": [1, 1, 0],
+          "monsterHp": 42,
+          "monsterVuln": 0,
+          "monsterStrength": 0,
+          "playerHp": 80,
+          "playerBlock": 10,
+          "energy": 0,
+          "handAfterPlay": [0, 0],
+          "discard": [0, 1, 1, 0, 2, 1, 1, 0]
+        },
+        {
+          "turn": 3,
+          "played": [1, 0, 0],
+          "monsterHp": 30,
+          "monsterVuln": 0,
+          "monsterStrength": 3,
+          "playerHp": 80,
+          "playerBlock": 5,
+          "energy": 0,
+          "handAfterPlay": [1, 0],
+          "discard": [1, 0, 0]
+        }
+      ],
+      "final": {
+        "turn": 4,
+        "intent": "dark_strike",
+        "monsterHp": 30,
+        "monsterStrength": 6,
+        "playerHp": 76,
+        "hand": [2, 1, 0, 0, 1],
+        "drawPile": [],
+        "counters": { "aiRng": 4, "monsterHpRng": 1, "shuffleRng": 2, "cardRandomRng": 0 }
+      }
+    },
+    {
+      "seed": "SLAYTHESPIRE",
+      "seedLong": "2665621045298406349",
+      "floor": 5,
+      "turns": [
+        {
+          "turn": 1,
+          "played": [1, 2],
+          "monsterHp": 42,
+          "monsterVuln": 2,
+          "monsterStrength": 0,
+          "playerHp": 80,
+          "playerBlock": 5,
+          "energy": 0,
+          "handAfterPlay": [0, 1, 1],
+          "discard": [1, 2]
+        },
+        {
+          "turn": 2,
+          "played": [0, 0, 1],
+          "monsterHp": 24,
+          "monsterVuln": 2,
+          "monsterStrength": 0,
+          "playerHp": 80,
+          "playerBlock": 5,
+          "energy": 0,
+          "handAfterPlay": [0, 0],
+          "discard": [1, 2, 0, 1, 1, 0, 0, 1]
+        },
+        {
+          "turn": 3,
+          "played": [0, 1, 1],
+          "monsterHp": 15,
+          "monsterVuln": 2,
+          "monsterStrength": 3,
+          "playerHp": 79,
+          "playerBlock": 10,
+          "energy": 0,
+          "handAfterPlay": [0, 0],
+          "discard": [0, 1, 1]
+        }
+      ],
+      "final": {
+        "turn": 4,
+        "intent": "dark_strike",
+        "monsterHp": 15,
+        "monsterStrength": 6,
+        "playerHp": 79,
+        "hand": [2, 1, 1, 0, 0],
+        "drawPile": [],
+        "counters": { "aiRng": 4, "monsterHpRng": 1, "shuffleRng": 2, "cardRandomRng": 0 }
+      }
+    }
+  ]
+}

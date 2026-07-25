@@ -16,6 +16,7 @@
 
 import { StsRandom, JavaRandom, javaShuffle } from "./sts-rng.js";
 import { getEnemyDef, getEncounterDef } from "./enemies/enemies.js";
+import { getCardDef } from "./cards/cards.js";
 
 // ============================================================================
 // 战斗结局（对齐 Outcome）
@@ -78,6 +79,14 @@ export class ActionQueue {
     return a;
   }
 
+  /**
+   * 战斗胜利时丢弃标了 clearOnCombatVictory 的排队动作，保留其余（对齐
+   * BattleContext::clearPostCombatActions 的筛选语义）。
+   */
+  clearOnCombatVictory(): void {
+    this.items = this.items.filter((a) => !a.clearOnCombatVictory);
+  }
+
   get size(): number {
     return this.items.length;
   }
@@ -100,6 +109,8 @@ export type CardQueueItem = {
   freeToPlay: boolean;
   exhaustOnUse: boolean;
   purgeOnUse: boolean;
+  /** 打出时才掷随机目标（对齐 CardQueueItem::randomTarget，消耗 cardRandomRng）。 */
+  randomTarget: boolean;
 };
 
 export function endTurnItem(): CardQueueItem {
@@ -112,6 +123,7 @@ export function endTurnItem(): CardQueueItem {
     freeToPlay: false,
     exhaustOnUse: false,
     purgeOnUse: false,
+    randomTarget: false,
   };
 }
 
@@ -200,7 +212,15 @@ export function seedCombatRng(
 // 战斗内实体（骨架层最小形态）
 // ============================================================================
 
-export type PowerInstance = { id: string; amount: number };
+export type PowerInstance = {
+  id: string;
+  amount: number;
+  /**
+   * 本回合刚施加（对齐 Monster 的 justApplied 位）。仪式/虚弱等「首回合跳过」的
+   * 效果靠它在回合末判定是否生效：邪教徒咏唱当回合不涨力量，下回合起才涨。
+   */
+  justApplied?: boolean;
+};
 
 export type CombatMonster = {
   /** 敌人定义 id（enemies.ts）。 */
@@ -224,6 +244,7 @@ export type CombatCard = {
   uid: number;
   /** 卡定义 id（cards.ts）。 */
   defId: string;
+  upgraded: boolean;
 };
 
 export type CombatPlayer = {
@@ -234,6 +255,7 @@ export type CombatPlayer = {
   energyPerTurn: number;
   cardDrawPerTurn: number;
   powers: PowerInstance[];
+  cardsPlayedThisTurn: number;
 };
 
 // ============================================================================
@@ -256,6 +278,8 @@ export type BattleContext = {
 
   player: CombatPlayer;
   monsters: CombatMonster[];
+  /** 存活怪物数（对齐 MonsterGroup::monstersAlive）；归零即玩家胜利。 */
+  monstersAlive: number;
 
   hand: CombatCard[];
   drawPile: CombatCard[];
@@ -405,8 +429,10 @@ export function initCombat(input: CombatInitInput): BattleContext {
       energyPerTurn: 3,
       cardDrawPerTurn: 5,
       powers: [],
+      cardsPlayedThisTurn: 0,
     },
     monsters: [],
+    monstersAlive: 0,
     hand: [],
     drawPile: [],
     discardPile: [],
@@ -434,6 +460,7 @@ export function initCombat(input: CombatInitInput): BattleContext {
       alive: true,
     });
   }
+  bc.monstersAlive = bc.monsters.length;
   // ② rollMove：逐怪滚初始意图（aiRng）。
   for (const m of bc.monsters) {
     rollMove(bc, m);
@@ -442,7 +469,12 @@ export function initCombat(input: CombatInitInput): BattleContext {
 
   // —— cards.init ——
   // 建实例（按 master deck 顺序）→ 一次 shuffleRng 洗牌 → Innate 归位（铁甲基础组无 Innate）。
-  const drawPile: CombatCard[] = input.deckCardIds.map((defId) => ({ uid: bc.nextUid++, defId }));
+  // TODO(后续PR): 升级态应随 master deck 传入；骨架期起始牌组均未升级。
+  const drawPile: CombatCard[] = input.deckCardIds.map((defId) => ({
+    uid: bc.nextUid++,
+    defId,
+    upgraded: false,
+  }));
   shuffleCards(bc, drawPile); // ★ 消耗一次 shuffleRng
   bc.drawPile = drawPile;
 
@@ -510,8 +542,257 @@ function playCardQueueItem(bc: BattleContext, item: CardQueueItem): void {
     callEndOfTurnActions();
     return;
   }
-  // TODO(后续PR): useCard 分派（attack/skill/power）+ 随机目标(cardRandomRng) + 效果入队。
-  throw new Error("sts-combat 骨架层暂未实现打牌；仅支持 endTurn 项");
+  if (item.randomTarget) {
+    // ★ 随机目标走 cardRandomRng（对齐 BattleContext.cpp:844 getRandomMonsterIdx）
+    item.target = getRandomMonsterIdx(bc);
+  }
+  useCard(bc, item);
+}
+
+/** 对齐 MonsterGroup::getRandomMonsterIdx（存活怪中随机，消耗一次 cardRandomRng）。 */
+function getRandomMonsterIdx(bc: BattleContext): number {
+  const alive = bc.monsters.filter((m) => m.alive);
+  if (alive.length === 0) {
+    return 0;
+  }
+  const pick = bc.rng.cardRandomRng.random(alive.length - 1); // ★ 消耗一次 cardRandomRng
+  return bc.monsters.indexOf(alive[pick]);
+}
+
+// ============================================================================
+// 伤害 / 格挡计算（对齐 BattleContext::calculateCardDamage / calculateCardBlock）
+//
+// 伤害全程 float32 运算、末尾一次向零截断——这是逐位对齐的要害：先加力量/精力，
+// 再乘虚弱 0.75f，再乘易伤 1.5f，顺序不可换（浮点不满足结合律）。
+// 用 Math.fround 逐步收窄模拟 C++ float。
+// ============================================================================
+
+function getPower(powers: PowerInstance[], id: string): number {
+  return powers.find((p) => p.id === id)?.amount ?? 0;
+}
+
+export function calculateCardDamage(
+  bc: BattleContext,
+  targetIdx: number,
+  baseDamage: number,
+): number {
+  let damage = Math.fround(baseDamage);
+
+  // 玩家 Power AtDamageGive
+  damage = Math.fround(damage + getPower(bc.player.powers, "strength"));
+  const vigor = getPower(bc.player.powers, "vigor");
+  if (vigor > 0) {
+    damage = Math.fround(damage + vigor);
+  }
+  if (getPower(bc.player.powers, "weak") > 0) {
+    damage = Math.fround(damage * 0.75);
+  }
+  // TODO(后续PR): 双倍伤害/笔尖/姿态（愤怒×2、神性×3）。
+
+  // 敌人 Power AtDamageReceive
+  const target = bc.monsters[targetIdx];
+  if (target !== undefined && getPower(target.powers, "vulnerable") > 0) {
+    damage = Math.fround(damage * 1.5);
+  }
+  // TODO(后续PR): 缓慢、飞行、虚无。
+
+  return Math.max(0, Math.trunc(damage));
+}
+
+export function calculateCardBlock(bc: BattleContext, baseBlock: number): number {
+  let block = baseBlock;
+  const dex = getPower(bc.player.powers, "dexterity");
+  if (dex !== 0) {
+    block = Math.max(0, block + dex);
+  }
+  if (getPower(bc.player.powers, "frail") > 0) {
+    return Math.trunc((block * 3) / 4); // C++ 整除，向零截断
+  }
+  return block;
+}
+
+// ============================================================================
+// 伤害结算（对齐 Actions::AttackEnemy → Monster::attacked → damageUnblockedHelper → die）
+// ============================================================================
+
+function attackEnemy(bc: BattleContext, idx: number, damage: number): void {
+  const m = bc.monsters[idx];
+  if (m === undefined || !m.alive) {
+    return;
+  }
+  monsterAttacked(bc, m, damage);
+  checkCombat(bc);
+}
+
+function monsterAttacked(bc: BattleContext, m: CombatMonster, rawDamage: number): void {
+  let damage = Math.max(0, rawDamage);
+  // 格挡吸收：先扣伤害再削格挡，两者都基于进入时的原值（对齐 Monster::attacked）。
+  const tempDamage = damage;
+  damage -= m.block;
+  m.block = Math.max(0, m.block - tempDamage);
+  // TODO(后续PR): 蜷缩/镀甲/反甲/狂怒等 onAttacked 触发。
+  if (damage > 0) {
+    monsterDamageUnblocked(bc, m, damage);
+  }
+}
+
+function monsterDamageUnblocked(bc: BattleContext, m: CombatMonster, damage: number): void {
+  m.hp -= damage;
+  if (m.hp <= 0) {
+    m.hp = 0;
+    monsterDie(bc, m);
+  }
+}
+
+function monsterDie(bc: BattleContext, m: CombatMonster): void {
+  m.alive = false;
+  bc.monstersAlive -= 1;
+  if (bc.monstersAlive === 0) {
+    bc.outcome = "player_victory";
+  }
+  // TODO(后续PR): 孢子云/重生/尸爆/地精角等死亡触发。
+}
+
+/** 对齐 BattleContext::checkCombat：胜利时清扫「战斗后不该再跑」的排队动作。 */
+function checkCombat(bc: BattleContext): void {
+  if (bc.outcome === "player_victory") {
+    bc.cardQueue.clear();
+    bc.actionQueue.clearOnCombatVictory();
+  }
+}
+
+function gainBlock(bc: BattleContext, amount: number): void {
+  if (amount <= 0) {
+    return;
+  }
+  bc.player.block += amount;
+}
+
+/** 对齐 BattleContext::debuffEnemy：神器优先抵消一层。 */
+function debuffEnemy(bc: BattleContext, idx: number, power: string, amount: number): void {
+  const m = bc.monsters[idx];
+  if (m === undefined || !m.alive) {
+    return;
+  }
+  const artifact = m.powers.find((p) => p.id === "artifact");
+  if (artifact !== undefined && artifact.amount > 0) {
+    artifact.amount -= 1;
+    return;
+  }
+  addPower(m.powers, power, amount);
+}
+
+// ============================================================================
+// 卡牌行为（逐卡转写自参考 useAttackCard / useSkillCard 的 switch 分支）
+//
+// 关键语义：伤害/格挡在**入队时**就用当时的状态算好并捕获，不在执行时再算
+// （对齐 `addToBot(Actions::AttackEnemy(t, calculateCardDamage(...)))`）。
+// 故痛击的易伤只影响其后打出的牌，不影响痛击自身那一击。
+// ============================================================================
+
+type CardRule = (bc: BattleContext, item: CardQueueItem, upgraded: boolean) => void;
+
+const CARD_RULES: Record<string, CardRule> = {
+  // 打击：造成 6(升级 9) 点伤害。对齐 BattleContext.cpp:967 STRIKE_RED。
+  strike: (bc, item, up) => {
+    const dmg = calculateCardDamage(bc, item.target, up ? 9 : 6);
+    addToBot(bc, (c) => attackEnemy(c, item.target, dmg));
+  },
+  // 防御：获得 5(升级 8) 点格挡。GainBlock 的 clearOnCombatVictory=false。
+  defend: (bc, _item, up) => {
+    const blk = calculateCardBlock(bc, up ? 8 : 5);
+    addToBot(bc, (c) => gainBlock(c, blk), false);
+  },
+  // 痛击：造成 8(升级 10) 点伤害并施加 2(升级 3) 层易伤。对齐 BattleContext.cpp:980 BASH。
+  bash: (bc, item, up) => {
+    const dmg = calculateCardDamage(bc, item.target, up ? 10 : 8);
+    addToBot(bc, (c) => attackEnemy(c, item.target, dmg));
+    addToBot(bc, (c) => debuffEnemy(c, item.target, "vulnerable", up ? 3 : 2));
+  },
+};
+
+/** 对齐 BattleContext::useCard：分派效果入队 → OnAfterCardUsed → 移出手牌 + 扣能量。 */
+function useCard(bc: BattleContext, item: CardQueueItem): void {
+  const card = bc.hand.find((c) => c.uid === item.cardUid);
+  if (card === undefined) {
+    throw new Error(`useCard: 手牌中找不到 uid=${String(item.cardUid)}`);
+  }
+  const def = getCardDef(card.defId);
+  const rule = CARD_RULES[card.defId];
+  if (rule === undefined) {
+    throw new Error(`sts-combat 暂未登记卡牌行为: ${card.defId}`);
+  }
+
+  item.exhaustOnUse ||= def.exhausts === true;
+  bc.player.cardsPlayedThisTurn += 1;
+
+  rule(bc, item, card.upgraded);
+
+  addToBot(bc, (c) => onAfterUseCard(c, card, item));
+
+  // 移出手牌 + 扣能量（对齐 useCard 尾部）。
+  const handIdx = bc.hand.indexOf(card);
+  if (handIdx >= 0) {
+    bc.hand.splice(handIdx, 1);
+  }
+  if (item.energyOnUse > 0 && !item.freeToPlay) {
+    bc.player.energy -= item.energyOnUse;
+  }
+}
+
+/** 对齐 onAfterUseCard 的卡去向：消耗 or 进弃牌堆。 */
+function onAfterUseCard(bc: BattleContext, card: CombatCard, item: CardQueueItem): void {
+  if (item.exhaustOnUse) {
+    bc.exhaustPile.push(card);
+  } else {
+    bc.discardPile.push(card);
+  }
+}
+
+// ============================================================================
+// 打牌公开入口
+// ============================================================================
+
+export type PlayCardResult = { ok: true } | { ok: false; reason: string };
+
+/**
+ * 打出手牌第 handIdx 张，target 为敌人下标（非指向性牌忽略）。
+ * 合法性检查通过后入 cardQueue 并驱动执行（对齐游戏「点牌 → 排队 → 执行」）。
+ */
+export function playCard(bc: BattleContext, handIdx: number, target = 0): PlayCardResult {
+  if (bc.outcome !== "undecided") {
+    return { ok: false, reason: "战斗已结束" };
+  }
+  const card = bc.hand[handIdx];
+  if (card === undefined) {
+    return { ok: false, reason: `手牌下标越界: ${handIdx}` };
+  }
+  const def = getCardDef(card.defId);
+  const cost = def.cost ?? 0;
+  if (cost > bc.player.energy) {
+    return { ok: false, reason: `能量不足：需要 ${cost}，剩余 ${bc.player.energy}` };
+  }
+  if (def.targeted) {
+    const t = bc.monsters[target];
+    if (t === undefined || !t.alive) {
+      return { ok: false, reason: `目标无效: ${target}` };
+    }
+  }
+
+  bc.cardQueue.pushBack({
+    cardUid: card.uid,
+    target,
+    isEndTurn: false,
+    triggerOnUse: true,
+    energyOnUse: cost,
+    freeToPlay: false,
+    exhaustOnUse: false,
+    purgeOnUse: false,
+    randomTarget: false,
+  });
+  bc.inputState = "executing";
+  executeActions(bc);
+  return { ok: true };
 }
 
 // ============================================================================
@@ -560,11 +841,53 @@ function takeTurn(bc: BattleContext, m: CombatMonster): void {
   for (const eff of move.effects) {
     if (eff.kind === "apply_power" && eff.on === "self") {
       addPower(m.powers, eff.power, eff.amount);
+      if (eff.power === "ritual") {
+        // 仪式当回合不结算（skipFirst），回合末只清标志。
+        const ritual = m.powers.find((p) => p.id === "ritual");
+        if (ritual !== undefined) {
+          ritual.justApplied = true;
+        }
+      }
     } else if (eff.kind === "deal_damage") {
-      dealDamageToPlayer(bc, eff.amount);
+      const dmg = calculateDamageToPlayer(bc, m, eff.amount);
+      dealDamageToPlayer(bc, dmg);
     }
     // 其余效果留后续 PR。
   }
+}
+
+/**
+ * 怪物攻击伤害（对齐 Monster::calculateDamageToPlayer）。
+ * float32 全程：先加怪物力量，再乘玩家易伤 1.5f，末尾一次截断。
+ */
+function calculateDamageToPlayer(bc: BattleContext, m: CombatMonster, baseDamage: number): number {
+  let damage = Math.fround(baseDamage + getPower(m.powers, "strength"));
+  if (getPower(m.powers, "weak") > 0) {
+    damage = Math.fround(damage * 0.75);
+  }
+  if (getPower(bc.player.powers, "vulnerable") > 0) {
+    damage = Math.fround(damage * 1.5);
+  }
+  // TODO(后续PR): 被围攻/姿态/虚无。
+  return Math.max(0, Math.trunc(damage));
+}
+
+/** 对齐 MonsterGroup::applyEndOfRoundPowers：回合末怪物 Power 结算。 */
+function applyEndOfRoundPowers(bc: BattleContext): void {
+  for (const m of bc.monsters) {
+    if (!m.alive) {
+      continue;
+    }
+    const ritual = m.powers.find((p) => p.id === "ritual");
+    if (ritual !== undefined && ritual.amount > 0) {
+      if (ritual.justApplied === true) {
+        ritual.justApplied = false; // 施加当回合跳过
+      } else {
+        addPower(m.powers, "strength", ritual.amount);
+      }
+    }
+  }
+  // TODO(后续PR): 缓慢清零、锁定递减、虚弱/易伤递减等。
 }
 
 function addPower(powers: PowerInstance[], id: string, amount: number): void {
@@ -587,11 +910,13 @@ function dealDamageToPlayer(bc: BattleContext, amount: number): void {
 }
 
 function afterMonsterTurns(bc: BattleContext): void {
+  applyEndOfRoundPowers(bc); // 回合末怪物 Power（仪式涨力量等）
   bc.turnHasEnded = false;
   bc.monsterTurnIdx = 6; // 复位到「非怪物回合」
   bc.turn += 1;
   // 新回合：清玩家格挡、抽牌、回能量。
   bc.player.block = 0;
+  bc.player.cardsPlayedThisTurn = 0;
   drawCards(bc, bc.player.cardDrawPerTurn);
   bc.player.energy = bc.player.energyPerTurn;
   // 胜负检查（怪全灭）。
@@ -609,6 +934,10 @@ export type CombatProbe = {
   monsterIntents: string[];
   handCardIds: string[];
   drawPileCardIds: string[];
+  discardPileCardIds: string[];
+  playerHp: number;
+  playerBlock: number;
+  energy: number;
   counters: { aiRng: number; monsterHpRng: number; shuffleRng: number; cardRandomRng: number };
   turn: number;
   outcome: Outcome;
@@ -620,6 +949,10 @@ export function probe(bc: BattleContext): CombatProbe {
     monsterIntents: bc.monsters.map((m) => m.currentMove),
     handCardIds: bc.hand.map((c) => c.defId),
     drawPileCardIds: bc.drawPile.map((c) => c.defId),
+    discardPileCardIds: bc.discardPile.map((c) => c.defId),
+    playerHp: bc.player.hp,
+    playerBlock: bc.player.block,
+    energy: bc.player.energy,
     counters: {
       aiRng: bc.rng.aiRng.counter,
       monsterHpRng: bc.rng.monsterHpRng.counter,
