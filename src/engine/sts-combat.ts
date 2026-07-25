@@ -636,7 +636,9 @@ export function initCombat(input: CombatInitInput): BattleContext {
     potionCapacity: input.potionCapacity ?? 3,
     outcome: "undecided",
     inputState: "executing",
-    turn: 1,
+    // 对齐 BattleContext::turn——初值 0，afterMonsterTurns 里才 ++。玩家的第一个回合
+    // turn 为 0；getMonsterTurnNumber() 那类「第几回合」语义要另行 +1，别混用。
+    turn: 0,
     actionQueue: new ActionQueue(),
     cardQueue: new CardQueue(),
     player: {
@@ -857,11 +859,17 @@ function monsterAttacked(bc: BattleContext, m: CombatMonster, rawDamage: number)
 function monsterDamageUnblocked(bc: BattleContext, m: CombatMonster, damage: number): void {
   // onAttacked 链（对齐 attackedUnblockedHelper 的 if/else-if 顺序）。蜷缩把加格挡
   // addToBot 排在扣血之后，故这里先记下、扣完血再加。
-  let curlUpBlock = 0;
   const curl = m.powers.find((p) => p.id === "curl_up");
   if (curl !== undefined && curl.amount > 0) {
-    curlUpBlock = curl.amount;
+    const amount = curl.amount;
     m.powers.splice(m.powers.indexOf(curl), 1); // 触发一次即清除
+    // 必须**入队**而非当场加：这是 addToBot(Actions::MonsterGainBlock)，
+    // 所以 ① 触发那一击不被它减免；② 怪物即便被这一击打死，格挡照样落在尸体上；
+    // ③ 但若这一击终结了战斗，clearPostCombatActions 会把它连同其它排队动作清掉。
+    // 三种表现同时成立，只有走队列才能都对上。
+    addToBot(bc, () => {
+      m.block += amount;
+    });
   }
   // TODO(后续PR): 无敌/镀甲/飞行/易塑等其余 onAttacked 分支。
 
@@ -869,9 +877,6 @@ function monsterDamageUnblocked(bc: BattleContext, m: CombatMonster, damage: num
   if (m.hp <= 0) {
     m.hp = 0;
     monsterDie(bc, m);
-  }
-  if (curlUpBlock > 0 && m.alive) {
-    m.block += curlUpBlock;
   }
 }
 
@@ -914,7 +919,9 @@ function debuffEnemy(
   isSourceMonster = false,
 ): void {
   const m = bc.monsters[idx];
-  if (m === undefined || !m.alive) {
+  // ⚠ 不能加存活判断：参考的 debuffEnemy 只有神器那一道拦截，对已死的怪照样落减益
+  //（AttackEnemy 才会 isDeadOrEscaped 提前返回）。加了会让「痛击击杀」少一层易伤。
+  if (m === undefined) {
     return;
   }
   const artifact = m.powers.find((p) => p.id === "artifact");
@@ -993,7 +1000,9 @@ function useCard(bc: BattleContext, item: CardQueueItem): void {
 
   rule(bc, item, card.upgraded);
 
-  addToBot(bc, (c) => onAfterUseCard(c, card, item));
+  // clearOnCombatVictory=false（对齐 Actions::OnAfterCardUsed 的第二参数）：
+  // 打出致命一击后战斗虽已胜利，这张牌仍要落进弃牌堆。标 true 会让它凭空消失。
+  addToBot(bc, (c) => onAfterUseCard(c, card, item), false);
 
   // 移出手牌 + 扣能量（对齐 useCard 尾部）。
   const handIdx = bc.hand.indexOf(card);
@@ -1299,9 +1308,12 @@ function callEndOfTurnActions(): void {
 }
 
 function onTurnEnding(bc: BattleContext): void {
-  // 弃掉手牌（保留牌/以太消失留后续），进入怪物回合。均无 RNG。
-  for (const card of bc.hand) {
-    bc.discardPile.push(card);
+  // 弃掉手牌（保留牌/以太消失留后续），进入怪物回合。无 RNG，但**顺序要命**：
+  // 对齐 discardAtEndOfTurnHelper 的 `for (i = cardsInHand-1; i >= 0; --i)`——
+  // 从手牌末尾往前弃。弃牌堆的排列会成为下次 reshuffle 的洗牌输入，正序会洗出
+  // 另一副牌序。
+  for (let i = bc.hand.length - 1; i >= 0; i -= 1) {
+    bc.discardPile.push(bc.hand[i]);
   }
   bc.hand = [];
   bc.endTurnQueued = false;
@@ -1408,8 +1420,12 @@ function debuffPlayer(bc: BattleContext, power: string, amount: number): void {
     }
     return;
   }
+  // ⚠ 与怪物侧不对称：玩家这边只在**原本没有该状态**时才设 justApplied
+  //（对齐 Player::debuff 的 `isSourceMonster && !hasStatus<s>()`）。叠加到已有减益上
+  // 不重置标志，因此当回合末照常递减。Monster::addDebuff 则没有这道 !hasStatus 判断。
+  const had = bc.player.powers.some((x) => x.id === power && x.amount > 0);
   addPower(bc.player.powers, power, amount);
-  if (power === "weak" || power === "vulnerable") {
+  if (!had && (power === "weak" || power === "vulnerable" || power === "frail")) {
     const p = bc.player.powers.find((x) => x.id === power);
     if (p !== undefined) {
       p.justApplied = true;
