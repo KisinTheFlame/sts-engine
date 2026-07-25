@@ -1080,10 +1080,14 @@ const CARD_RULES: Record<string, CardRule> = {
     addToBot(bc, (c) => attackEnemy(c, item.target, dmg));
   },
 
-  // 铁浪：⚠ 格挡套了**两层** calculateCardBlock（敏捷因此加算两次）。
-  // 参考原样如此，照抄。注意先加格挡、后造成伤害。
+  // 铁浪：格挡 + 伤害，先加格挡后造成伤害。
+  //
+  // ⚠ 参考项目曾在这里把 calculateCardBlock 套了两层，敏捷因此被算两次
+  //（敏捷 2 时给 9 点而非 7 点）。全项目 15 处同类写法都是单层、只有这里嵌套，
+  // 且无测试覆盖——已确认是笔误并在参考侧修复（sts_lightspeed 49c5390），
+  // 样例数据随之重新生成。此处按正确的单层实现。
   iron_wave: (bc, item, up) => {
-    const blk = calculateCardBlock(bc, calculateCardBlock(bc, up ? 7 : 5));
+    const blk = calculateCardBlock(bc, up ? 7 : 5);
     const dmg = calculateCardDamage(bc, item.target, up ? 7 : 5);
     addToBot(bc, (c) => gainBlock(c, blk), false);
     addToBot(bc, (c) => attackEnemy(c, item.target, dmg));
