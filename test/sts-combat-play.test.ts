@@ -144,6 +144,18 @@ describe("sts-combat 打牌路径对拍 C++ 黄金向量（三回合贪心，逐
     expect(probe(bc).outcome).toBe("player_victory");
   });
 
+  it("玩家施加的易伤不跳过首次递减：当回合末即 2→1，再一回合归 0", () => {
+    // 对齐 Monster::addDebuff——justApplied 仅在 isSourceMonster 为真时设置，
+    // 而痛击走 DebuffEnemy<VULNERABLE>(t, 2, false)，故不享受「施加当回合跳过」。
+    const g = golden.cases[0]!;
+    const bc = newBattle(g);
+    bc.monsters[0]!.powers.push({ id: "vulnerable", amount: 2 });
+    endTurn(bc);
+    expect(powerOf(bc, "vulnerable")).toBe(1);
+    endTurn(bc);
+    expect(powerOf(bc, "vulnerable")).toBe(0);
+  });
+
   it("能量不足时拒绝出牌且不改变状态", () => {
     const g = golden.cases[0]!;
     const bc = newBattle(g);

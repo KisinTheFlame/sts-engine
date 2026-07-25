@@ -320,10 +320,80 @@ function livingMonsters(bc: BattleContext): CombatMonster[] {
 /** getMoveForRoll：给定 roll 与意图历史，返回下一个 move id。可在内部追加消耗 aiRng。 */
 type MoveForRoll = (bc: BattleContext, m: CombatMonster, roll: number) => string;
 
+/**
+ * 占位意图（对齐参考给颚虫军团预置的 DARKLING_REGROW 哨兵）：只要不是 INVALID 即可，
+ * 作用是让首次 rollMove 的 firstTurn() 为假，从而直接走 roll 分支。
+ */
+const MOVE_SENTINEL = "__preset__";
+
+/** 对齐 Monster::firstTurn（moveHistory[0] == INVALID）。 */
+function firstTurn(m: CombatMonster): boolean {
+  return m.moveHistory.length === 0;
+}
+
+/** 对齐 Monster::lastMove（moveHistory[0] == moveId）。 */
+function lastMove(m: CombatMonster, moveId: string): boolean {
+  return m.moveHistory[0] === moveId;
+}
+
+/** 对齐 Monster::lastTwoMoves（moveHistory[0] 与 [1] 均为 moveId）。 */
+function lastTwoMoves(m: CombatMonster, moveId: string): boolean {
+  return m.moveHistory[0] === moveId && m.moveHistory[1] === moveId;
+}
+
 const MOVE_RULES: Record<string, MoveForRoll> = {
   // 邪教徒：首回合（无历史）必咏唱，之后恒暗袭。roll 被消耗但不影响结果（故不取用）。
   // 对齐 MonsterSpecific.cpp:2280 CULTIST。
-  cultist: (_bc, m) => (m.moveHistory.length === 0 ? "incantation" : "dark_strike"),
+  cultist: (_bc, m) => (firstTurn(m) ? "incantation" : "dark_strike"),
+
+  // 颚虫：对齐 MonsterSpecific.cpp:2450 JAW_WORM。
+  // ⚠ 三处分支会**追加**一次 aiRng.randomBoolean(chance)，故单次 rollMove 的 aiRng
+  // 消耗不是常数（1 或 2 次）——这是逐位对齐最易错的地方。
+  // chance 走 Math.fround 收窄成 float32，与 C++ 的 `nextFloat() < 0.357f` 同精度比较。
+  jaw_worm: (bc, m, roll) => {
+    if (firstTurn(m)) {
+      return "chomp";
+    }
+    if (roll < 25) {
+      if (lastMove(m, "chomp")) {
+        return bc.rng.aiRng.randomBoolean(Math.fround(0.5625)) ? "bellow" : "thrash";
+      }
+      return "chomp";
+    }
+    if (roll < 55) {
+      if (lastTwoMoves(m, "thrash")) {
+        return bc.rng.aiRng.randomBoolean(Math.fround(0.357)) ? "chomp" : "bellow";
+      }
+      return "thrash";
+    }
+    if (lastMove(m, "bellow")) {
+      return bc.rng.aiRng.randomBoolean(Math.fround(0.416)) ? "chomp" : "thrash";
+    }
+    return "bellow";
+  },
+};
+
+// ============================================================================
+// 编队开局特例（对齐 MonsterGroup::createMonsters 中各 encounter 的额外初始化）
+//
+// 在「逐怪 roll HP」之后、「逐怪 rollMove」之前执行——顺序对齐参考的
+// createMonsters → rollMove 循环。
+// ============================================================================
+
+type EncounterSetup = (bc: BattleContext) => void;
+
+const ENCOUNTER_SETUP: Record<string, EncounterSetup> = {
+  // 颚虫军团：三只开局各 +3 力量 +5 格挡（ascension 0），并预置意图哨兵使首次
+  // rollMove 直接走 roll 分支。对齐 MonsterGroup.cpp JAW_WORM_HORDE。
+  jaw_worm_horde: (bc) => {
+    const strBuff = bc.ascension >= 17 ? 5 : bc.ascension >= 2 ? 4 : 3;
+    const blockBuff = bc.ascension >= 17 ? 9 : bc.ascension >= 2 ? 6 : 5;
+    for (const m of bc.monsters) {
+      addPower(m.powers, "strength", strBuff);
+      m.block += blockBuff;
+      m.moveHistory = [MOVE_SENTINEL];
+    }
+  },
 };
 
 function rollMove(bc: BattleContext, m: CombatMonster): void {
@@ -461,6 +531,8 @@ export function initCombat(input: CombatInitInput): BattleContext {
     });
   }
   bc.monstersAlive = bc.monsters.length;
+  // ①b 编队开局特例（军团 buff / 预置哨兵等），仍属 createMonsters 阶段。
+  ENCOUNTER_SETUP[input.encounterId]?.(bc);
   // ② rollMove：逐怪滚初始意图（aiRng）。
   for (const m of bc.monsters) {
     rollMove(bc, m);
@@ -668,8 +740,20 @@ function gainBlock(bc: BattleContext, amount: number): void {
   bc.player.block += amount;
 }
 
-/** 对齐 BattleContext::debuffEnemy：神器优先抵消一层。 */
-function debuffEnemy(bc: BattleContext, idx: number, power: string, amount: number): void {
+/**
+ * 对齐 BattleContext::debuffEnemy → Monster::addDebuff：神器优先抵消一层。
+ *
+ * ⚠ justApplied 只在 **isSourceMonster 为真**且为虚弱/易伤时设置（Monster.h:318）。
+ * 玩家打牌施加的减益走 isSourceMonster=false，**不跳过**首次递减——即痛击的易伤
+ * 在同一回合末就从 2 减到 1。
+ */
+function debuffEnemy(
+  bc: BattleContext,
+  idx: number,
+  power: string,
+  amount: number,
+  isSourceMonster = false,
+): void {
   const m = bc.monsters[idx];
   if (m === undefined || !m.alive) {
     return;
@@ -680,6 +764,28 @@ function debuffEnemy(bc: BattleContext, idx: number, power: string, amount: numb
     return;
   }
   addPower(m.powers, power, amount);
+  if (isSourceMonster && (power === "weak" || power === "vulnerable")) {
+    const p = m.powers.find((x) => x.id === power);
+    if (p !== undefined) {
+      p.justApplied = true;
+    }
+  }
+}
+
+/** 回合末递减一层减益，减到 0 则移除（对齐 decrementStatus + hasStatus 清零）。 */
+function decrementDebuff(m: CombatMonster, id: string): void {
+  const p = m.powers.find((x) => x.id === id);
+  if (p === undefined) {
+    return;
+  }
+  if (p.justApplied === true) {
+    p.justApplied = false; // 施加当回合跳过（仅怪物来源的减益会走到这里）
+    return;
+  }
+  p.amount -= 1;
+  if (p.amount <= 0) {
+    m.powers.splice(m.powers.indexOf(p), 1);
+  }
 }
 
 // ============================================================================
@@ -820,6 +926,22 @@ function onTurnEnding(bc: BattleContext): void {
   bc.endTurnQueued = false;
   bc.turnHasEnded = true;
   bc.monsterTurnIdx = 0; // 从第一个怪开始行动
+  applyPreTurnLogic(bc);
+}
+
+/**
+ * 怪物阶段开始（对齐 Actions::MonsterStartTurnAction → MonsterGroup::applyPreTurnLogic）：
+ * 逐怪清空格挡（壁垒除外）。注意时点——玩家回合内怪物格挡仍在，故开局自带格挡的
+ * 编队（如颚虫军团）第一回合会挡下玩家攻击。
+ */
+function applyPreTurnLogic(bc: BattleContext): void {
+  for (const m of bc.monsters) {
+    if (!m.alive) {
+      continue;
+    }
+    m.block = 0;
+  }
+  // TODO(后续PR): 壁垒、窒息等开局状态。
 }
 
 function doMonsterTurn(bc: BattleContext, idx: number): void {
@@ -828,6 +950,11 @@ function doMonsterTurn(bc: BattleContext, idx: number): void {
     return;
   }
   takeTurn(bc, m);
+  // 玩家阵亡后参考会在处理后续排队动作前跳出主循环，故这一步的 RollMove 不会执行——
+  // 不短路的话 aiRng 会多消耗一次，counter 就对不上了。
+  if (bc.outcome !== "undecided") {
+    return;
+  }
   rollMove(bc, m); // ★ 行动后滚下一意图（消耗 aiRng）
 }
 
@@ -839,6 +966,10 @@ function takeTurn(bc: BattleContext, m: CombatMonster): void {
     return;
   }
   for (const eff of move.effects) {
+    // 同理：一旦分出胜负，后续排队效果在参考里也不会再执行。
+    if (bc.outcome !== "undecided") {
+      return;
+    }
     if (eff.kind === "apply_power" && eff.on === "self") {
       addPower(m.powers, eff.power, eff.amount);
       if (eff.power === "ritual") {
@@ -851,6 +982,9 @@ function takeTurn(bc: BattleContext, m: CombatMonster): void {
     } else if (eff.kind === "deal_damage") {
       const dmg = calculateDamageToPlayer(bc, m, eff.amount);
       dealDamageToPlayer(bc, dmg);
+    } else if (eff.kind === "gain_block") {
+      // 怪物自身获得格挡（对齐 Actions::MonsterGainBlock）。
+      m.block += eff.amount;
     }
     // 其余效果留后续 PR。
   }
@@ -886,8 +1020,11 @@ function applyEndOfRoundPowers(bc: BattleContext): void {
         addPower(m.powers, "strength", ritual.amount);
       }
     }
+    // 顺序对齐参考：仪式 → 缓慢 → 锁定 → 虚弱 → 易伤。
+    decrementDebuff(m, "weak");
+    decrementDebuff(m, "vulnerable");
   }
-  // TODO(后续PR): 缓慢清零、锁定递减、虚弱/易伤递减等。
+  // TODO(后续PR): 缓慢清零、锁定递减。
 }
 
 function addPower(powers: PowerInstance[], id: string, amount: number): void {
