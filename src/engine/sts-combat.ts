@@ -13,14 +13,18 @@
 //   ② 打牌：useCard 分派、伤害/格挡计算（float32 全程）、击杀判胜、reshuffle
 //   ③ 多怪：逐怪 rollMove（含分支内追加 aiRng 的非常数消耗）、编队开局特例
 //   ④ 变体编队：miscRng 选怪与 monsterHpRng **交错**、construct 额外 roll、preBattleAction
-// 尚未迁移：遗物、药水、姿态与球、其余怪种与卡牌。
+//   ⑤ 药水：drinkPotion 路径、药水池与 returnRandomPotion 拒绝采样（potionRng）
+// 尚未迁移：遗物、姿态与球、其余怪种/卡牌/药水。
 //
-// 登记式扩展点（新增怪/编队时往这些表里加，未登记会显式抛错而非静默错配 RNG）：
-//   MOVE_RULES / ENCOUNTER_BUILDERS / ENCOUNTER_SETUP / PRE_BATTLE_ACTION / CARD_RULES
+// 登记式扩展点（新增怪/编队/卡/药水时往这些表里加，未登记会显式抛错而非静默错配 RNG）：
+//   MOVE_RULES / ENCOUNTER_BUILDERS / ENCOUNTER_SETUP / PRE_BATTLE_ACTION
+//   CARD_RULES / POTION_RULES
 
 import { StsRandom, JavaRandom, javaShuffle } from "./sts-rng.js";
 import { getEnemyDef, getEncounterDef } from "./enemies/enemies.js";
 import { getCardDef } from "./cards/cards.js";
+import { getPotionDef } from "./potions/potions.js";
+import type { CharacterId } from "./types.js";
 
 // ============================================================================
 // 战斗结局（对齐 Outcome）
@@ -179,8 +183,9 @@ export class CardQueue {
 //   所以进入某层的战斗时，miscRng 与四条战斗流**同源同态**、counter 为 0——除非该层
 //   在战斗前先消耗过它（如先进事件房）。故默认新建即为正确语义，调用方需要接续时
 //   仍可用 runMiscRng 覆盖。
-//   potionRng 才是真正的 run 级持久流（Random(seed, potion_seed_count)），
-//   目前战斗内尚无消耗点，待药水迁移时接入。
+//   potionRng 才是真正的 run 级持久流（Random(seed, potion_seed_count)，存档存其 counter）。
+//   战斗内唯一消耗点是熵酿；跨房间续算时**必须**由调用方传入已推进的实例，
+//   否则每场战斗都会从头重来。
 // ============================================================================
 
 export type CombatRng = {
@@ -215,7 +220,7 @@ export function seedCombatRng(
     cardRandomRng: new StsRandom(base),
     // 与四条战斗流同源（见上方注释）；仅当本层战斗前已消耗过 miscRng 时才需覆盖。
     miscRng: runMiscRng ?? new StsRandom(base),
-    // TODO(药水PR): potionRng 是真正的 run 级持久流，接入时须由调用方传入。
+    // run 级持久流：调用方跨房间续算时须传入已推进的实例（缺省仅便于单场测试）。
     potionRng: runPotionRng ?? new StsRandom(base),
   };
 }
@@ -285,6 +290,13 @@ export type BattleContext = {
   seedLong: bigint;
   floorNum: number;
   ascension: number;
+  /** 角色（决定药水池前 3 项）。 */
+  character: CharacterId;
+
+  /** 药水槽（定长 potionCapacity；null = 空）。 */
+  potions: (string | null)[];
+  potionCount: number;
+  potionCapacity: number;
 
   outcome: Outcome;
   inputState: InputState;
@@ -594,6 +606,12 @@ export type CombatInitInput = {
   /** 玩家当前生命/上限。 */
   playerHp: number;
   playerMaxHp: number;
+  /** 角色（决定药水池前 3 项）；缺省铁甲。 */
+  character?: CharacterId;
+  /** 入场时的药水槽（null = 空）；缺省三个空槽。 */
+  potions?: (string | null)[];
+  /** 药水槽容量（点金石 +2 等）；缺省 3。 */
+  potionCapacity?: number;
   /**
    * 可选：覆盖 miscRng（本层战斗前已消耗过它时传入，例如先进了事件房）。
    * 不传即按 Random(seed+floorNum) 新建，与四条战斗流同源——这是常规战斗的正确语义。
@@ -612,6 +630,10 @@ export function initCombat(input: CombatInitInput): BattleContext {
     seedLong: input.seedLong,
     floorNum: input.floorNum,
     ascension: input.ascension,
+    character: input.character ?? "ironclad",
+    potions: [...(input.potions ?? [null, null, null])],
+    potionCount: (input.potions ?? []).filter((p) => p !== null).length,
+    potionCapacity: input.potionCapacity ?? 3,
     outcome: "undecided",
     inputState: "executing",
     turn: 1,
@@ -993,6 +1015,228 @@ function onAfterUseCard(bc: BattleContext, card: CombatCard, item: CardQueueItem
 }
 
 // ============================================================================
+// 药水池（对齐 include/constants/Potions.h PotionPool::potionPool[4][33]）
+//
+// 每个角色 33 个：前 3 个是角色专属，后 30 个通用且四角色同序。
+// 顺序**就是** getRandomPotion 的下标映射，改动即改变同种子结果。
+// ============================================================================
+
+const POTION_POOL_SIZE = 33;
+
+/** 通用 30 项（下标 3..32），四角色共用同一顺序。 */
+const SHARED_POTIONS: readonly string[] = [
+  "block_potion",
+  "dexterity_potion",
+  "energy_potion",
+  "explosive_potion",
+  "fire_potion",
+  "strength_potion",
+  "swift_potion",
+  "weak_potion",
+  "fear_potion",
+  "attack_potion",
+  "skill_potion",
+  "power_potion",
+  "colorless_potion",
+  "flex_potion",
+  "speed_potion",
+  "blessing_of_the_forge",
+  "regen_potion",
+  "ancient_potion",
+  "liquid_bronze",
+  "gamblers_brew",
+  "essence_of_steel",
+  "duplication_potion",
+  "distilled_chaos",
+  "liquid_memories",
+  "cultist_potion",
+  "fruit_juice",
+  "snecko_oil",
+  "fairy_in_a_bottle",
+  "smoke_bomb",
+  "entropic_brew",
+];
+
+/** 各角色专属的前 3 项。 */
+const CLASS_POTIONS: Record<CharacterId, readonly string[]> = {
+  ironclad: ["blood_potion", "elixir_potion", "heart_of_iron_potion"],
+  silent: ["poison_potion", "cunning_potion", "ghost_in_a_jar"],
+  defect: ["focus_potion", "potion_of_capacity", "essence_of_darkness"],
+  watcher: ["bottled_miracle", "stance_potion", "ambrosia"],
+};
+
+function potionForClass(character: CharacterId, idx: number): string {
+  const own = CLASS_POTIONS[character];
+  return idx < own.length ? own[idx] : SHARED_POTIONS[idx - own.length];
+}
+
+/** 对齐 sts::getRandomPotion：一次 potionRng.random(poolSize-1)。 */
+function getRandomPotion(bc: BattleContext): string {
+  const idx = bc.rng.potionRng.random(POTION_POOL_SIZE - 1); // ★ 消耗一次 potionRng
+  return potionForClass(bc.character, idx);
+}
+
+/**
+ * 对齐 sts::returnRandomPotionOfRarity。
+ *
+ * ⚠ 这个循环的形状很怪但必须照抄：`limited` 为真时 spamCheck 初值即为真，所以**至少**
+ * 会再抽一次；此后只要抽到果汁就把 spamCheck 保持为真、继续重抽。效果是 limited
+ * 模式排除果汁，且消耗的 potionRng 次数不定。
+ */
+function returnRandomPotionOfRarity(bc: BattleContext, rarity: string, limited: boolean): string {
+  let temp = getRandomPotion(bc);
+  let spamCheck = limited;
+  while (getPotionDef(temp).rarity !== rarity || spamCheck) {
+    spamCheck = limited;
+    temp = getRandomPotion(bc);
+    if (temp !== "fruit_juice") {
+      spamCheck = false;
+    }
+  }
+  return temp;
+}
+
+/** 对齐 sts::returnRandomPotion：先掷稀有度，再在该稀有度里重抽。 */
+export function returnRandomPotion(bc: BattleContext, limited = false): string {
+  const roll = bc.rng.potionRng.random(0, 99); // ★ 消耗一次 potionRng
+  const rarity = roll < 65 ? "common" : roll < 90 ? "uncommon" : "rare";
+  return returnRandomPotionOfRarity(bc, rarity, limited);
+}
+
+// ============================================================================
+// 药水槽与饮用（对齐 BattleContext::obtainPotion / discardPotion / drinkPotion）
+// ============================================================================
+
+/** 对齐 obtainPotion：满槽则丢弃，否则填入第一个空位。 */
+export function obtainPotion(bc: BattleContext, potionId: string): void {
+  if (bc.potionCount >= bc.potionCapacity) {
+    return;
+  }
+  for (let i = 0; i < bc.potionCapacity; i += 1) {
+    if (bc.potions[i] === null) {
+      bc.potions[i] = potionId;
+      bc.potionCount += 1;
+      return;
+    }
+  }
+}
+
+export function discardPotion(bc: BattleContext, idx: number): void {
+  if (bc.potions[idx] === null || bc.potions[idx] === undefined) {
+    return;
+  }
+  bc.potions[idx] = null;
+  bc.potionCount -= 1;
+}
+
+/**
+ * 药水效果（逐个转写自 drinkPotion 的 switch 分支）。
+ * 未登记的药水显式抛错，绝不静默跳过——静默会让 potionRng/战斗状态悄悄错位。
+ */
+type PotionRule = (bc: BattleContext, target: number) => void;
+
+const POTION_RULES: Record<string, PotionRule> = {
+  block_potion: (bc) => addToBot(bc, (c) => gainBlock(c, 12), false),
+  // 火焰/爆炸药水走 DamageEnemy（非攻击伤害），**不**触发蜷缩等 onAttacked 链。
+  fire_potion: (bc, target) => addToBot(bc, (c) => damageEnemyNonAttack(c, target, 20)),
+  explosive_potion: (bc) =>
+    addToBot(bc, (c) => {
+      for (let i = 0; i < c.monsters.length; i += 1) {
+        damageEnemyNonAttack(c, i, 10);
+      }
+    }),
+  strength_potion: (bc) => addToBot(bc, (c) => addPower(c.player.powers, "strength", 2)),
+  dexterity_potion: (bc) => addToBot(bc, (c) => addPower(c.player.powers, "dexterity", 2)),
+  energy_potion: (bc) =>
+    addToBot(bc, (c) => {
+      c.player.energy += 2;
+    }),
+  swift_potion: (bc) => addToBot(bc, (c) => drawCards(c, 3)),
+  // 药水施加的减益同样是 isSourceMonster=false，不跳过首次递减。
+  weak_potion: (bc, target) => addToBot(bc, (c) => debuffEnemy(c, target, "weak", 3, false)),
+  fear_potion: (bc, target) => addToBot(bc, (c) => debuffEnemy(c, target, "vulnerable", 3, false)),
+  blood_potion: (bc) => {
+    // 对齐 (float)(maxHp * 40) / 100.0f 后截断。
+    const heal = Math.trunc(Math.fround((bc.player.maxHp * 40) / 100));
+    addToBot(bc, (c) => healPlayer(c, heal));
+  },
+  fruit_juice: (bc) => {
+    // 立即生效，不入队（对齐 player.increaseMaxHp）。
+    bc.player.maxHp += 5;
+    bc.player.hp += 5;
+  },
+  ancient_potion: (bc) => addToBot(bc, (c) => addPower(c.player.powers, "artifact", 1)),
+  // 熵酿：把空槽填满随机药水——战斗内唯一消耗 potionRng 的地方。
+  entropic_brew: (bc) =>
+    addToBot(bc, (c) => {
+      for (let i = 0; i < c.potionCapacity; i += 1) {
+        obtainPotion(c, returnRandomPotion(c, true));
+      }
+    }),
+};
+
+function healPlayer(bc: BattleContext, amount: number): void {
+  bc.player.hp = Math.min(bc.player.maxHp, bc.player.hp + amount);
+}
+
+/**
+ * 非攻击伤害（对齐 Monster::damage，区别于 attacked）：同样先被格挡吸收，
+ * 但**不**触发蜷缩 / 反甲等 onAttacked 链。
+ */
+function damageEnemyNonAttack(bc: BattleContext, idx: number, rawDamage: number): void {
+  const m = bc.monsters[idx];
+  if (m === undefined || !m.alive) {
+    return;
+  }
+  let damage = Math.max(0, rawDamage);
+  const tempDamage = damage;
+  damage -= m.block;
+  m.block = Math.max(0, m.block - tempDamage);
+  if (damage <= 0) {
+    return;
+  }
+  m.hp -= damage;
+  if (m.hp <= 0) {
+    m.hp = 0;
+    monsterDie(bc, m);
+  }
+  checkCombat(bc);
+}
+
+export type DrinkPotionResult = { ok: true } | { ok: false; reason: string };
+
+/**
+ * 喝下第 idx 槽的药水（对齐 BattleContext::drinkPotion）。
+ * 注意顺序：**先清空槽位**再结算效果——熵酿因此能把自己腾出的那一格也填回去。
+ */
+export function drinkPotion(bc: BattleContext, idx: number, target = 0): DrinkPotionResult {
+  if (bc.outcome !== "undecided") {
+    return { ok: false, reason: "战斗已结束" };
+  }
+  const potionId = bc.potions[idx];
+  if (potionId === null || potionId === undefined) {
+    return { ok: false, reason: `药水槽 ${idx} 为空` };
+  }
+  const rule = POTION_RULES[potionId];
+  if (rule === undefined) {
+    return { ok: false, reason: `sts-combat 暂未登记药水: ${potionId}` };
+  }
+  const def = getPotionDef(potionId);
+  if (def.targeted) {
+    const t = bc.monsters[target];
+    if (t === undefined || !t.alive) {
+      return { ok: false, reason: `目标无效: ${target}` };
+    }
+  }
+
+  discardPotion(bc, idx); // 先清槽，再结算
+  rule(bc, target);
+  bc.inputState = "executing";
+  executeActions(bc);
+  return { ok: true };
+}
+
+// ============================================================================
 // 打牌公开入口
 // ============================================================================
 
@@ -1155,6 +1399,15 @@ function calculateDamageToPlayer(bc: BattleContext, m: CombatMonster, baseDamage
  * 与玩家打牌施加的减益相反，虚弱/易伤在此**跳过**首次递减。
  */
 function debuffPlayer(bc: BattleContext, power: string, amount: number): void {
+  // 神器优先抵消一层（古代药水等来源）。
+  const artifact = bc.player.powers.find((p) => p.id === "artifact");
+  if (artifact !== undefined && artifact.amount > 0) {
+    artifact.amount -= 1;
+    if (artifact.amount === 0) {
+      bc.player.powers.splice(bc.player.powers.indexOf(artifact), 1);
+    }
+    return;
+  }
   addPower(bc.player.powers, power, amount);
   if (power === "weak" || power === "vulnerable") {
     const p = bc.player.powers.find((x) => x.id === power);
@@ -1255,6 +1508,7 @@ export type CombatProbe = {
   playerHp: number;
   playerBlock: number;
   energy: number;
+  potions: (string | null)[];
   counters: { aiRng: number; monsterHpRng: number; shuffleRng: number; cardRandomRng: number };
   turn: number;
   outcome: Outcome;
@@ -1270,6 +1524,7 @@ export function probe(bc: BattleContext): CombatProbe {
     playerHp: bc.player.hp,
     playerBlock: bc.player.block,
     energy: bc.player.energy,
+    potions: [...bc.potions],
     counters: {
       aiRng: bc.rng.aiRng.counter,
       monsterHpRng: bc.rng.monsterHpRng.counter,
