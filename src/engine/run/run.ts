@@ -13,7 +13,7 @@ import { EVENT_POOL, getEventDef } from "../events/events.js";
 import type { EventOutcome } from "../events/events.js";
 import { generateShop } from "../shop/shop.js";
 import { nextInt, nextRange } from "../rng.js";
-import { startCombat } from "../combat/combat.js";
+import { startCombat } from "../combat-bridge.js";
 import { generateMap, availableNext } from "../map/map.js";
 
 // === 爬塔 / 分支地图 / 奖励 / 休息 / 宝箱 ===

@@ -11,22 +11,70 @@ import type { RngState } from "../engine/types.js";
 // 纯引擎层：只读 GameState、产出合法 GameAction。用于平衡验证（跑几千局看胜率/回合数）
 // 与黄金种子回归（确定性）。策略自带 RNG（与游戏 RNG 分离，不污染对局种子）。
 
+/**
+ * 战斗屏的统一视图。两套战斗实现（近似的 state.combat 与游戏级的 state.stsCombat）
+ * 字段名不同，而策略只需要这几项，折一层就都能驱动。
+ */
+type CombatView = {
+  hand: { defId: string; upgraded: boolean }[];
+  energy: number;
+  /** 贪心的攻击目标：血最低的存活敌人。 */
+  target: number;
+  /** 缠绕：本回合打不出攻击牌。 */
+  entangled: boolean;
+};
+
+function lowestHpIndex(units: { hp: number; alive: boolean }[]): number {
+  let best = -1;
+  let bestHp = Infinity;
+  units.forEach((unit, index) => {
+    if (unit.alive && unit.hp < bestHp) {
+      bestHp = unit.hp;
+      best = index;
+    }
+  });
+  return best < 0 ? 0 : best;
+}
+
+function combatView(state: GameState): CombatView | null {
+  if (state.screen !== "combat") {
+    return null;
+  }
+  if (state.combat) {
+    const combat = state.combat;
+    return {
+      hand: combat.hand.map((c) => ({ defId: c.defId, upgraded: c.upgraded })),
+      energy: combat.energy,
+      target: lowestHpIndex(combat.enemies.map((e) => ({ hp: e.hp, alive: e.hp > 0 }))),
+      entangled: combat.playerPowers.some((p) => p.id === "entangled" && p.amount > 0),
+    };
+  }
+  if (state.stsCombat) {
+    const combat = state.stsCombat;
+    return {
+      hand: combat.hand.map((c) => ({ defId: c.defId, upgraded: c.upgraded })),
+      energy: combat.player.energy,
+      target: lowestHpIndex(combat.monsters.map((m) => ({ hp: m.hp, alive: m.alive }))),
+      entangled: combat.player.powers.some((p) => p.id === "entangled" && p.amount > 0),
+    };
+  }
+  return null;
+}
+
 /** 枚举当前态下的合法动作。 */
 function legalActions(state: GameState): GameAction[] {
-  if (state.screen === "combat" && state.combat) {
-    const combat = state.combat;
-    const target = lowestHpEnemyIndex(state);
-    const entangled = combat.playerPowers.some((p) => p.id === "entangled" && p.amount > 0);
+  const combat = combatView(state);
+  if (combat) {
     const actions: GameAction[] = [];
     combat.hand.forEach((instance, handIndex) => {
       const def = getCardDef(instance.defId);
       const cost = costOf(def, instance.upgraded);
-      const blockedByEntangle = entangled && def.type === "attack";
+      const blockedByEntangle = combat.entangled && def.type === "attack";
       if (cost !== null && cost <= combat.energy && !blockedByEntangle) {
         actions.push({
           type: "play_card",
           handIndex,
-          targetIndex: def.targeted ? target : null,
+          targetIndex: def.targeted ? combat.target : null,
         });
       }
     });
@@ -106,39 +154,28 @@ export class GreedyPolicy implements Policy {
       }
       return { type: "choose", optionIndex: state.shop.items.length + 1 }; // 离开
     }
-    if (state.screen !== "combat" || !state.combat) {
+    const combat = combatView(state);
+    if (!combat) {
       return { type: "choose", optionIndex: 0 };
     }
-    const combat = state.combat;
-    const target = lowestHpEnemyIndex(state);
-    const entangled = combat.playerPowers.some((p) => p.id === "entangled" && p.amount > 0);
     // 先上能力牌（常驻收益），再出攻击牌，最后加格挡牌，够费就打。
     const order = ["power", "attack", "skill"];
     for (const wantType of order) {
       for (let handIndex = 0; handIndex < combat.hand.length; handIndex += 1) {
         const def = getCardDef(combat.hand[handIndex].defId);
         const cost = costOf(def, combat.hand[handIndex].upgraded);
-        if (entangled && def.type === "attack") {
+        if (combat.entangled && def.type === "attack") {
           continue; // 缠绕：本回合打不出攻击牌。
         }
         if (def.type === wantType && cost !== null && cost <= combat.energy) {
-          return { type: "play_card", handIndex, targetIndex: def.targeted ? target : null };
+          return {
+            type: "play_card",
+            handIndex,
+            targetIndex: def.targeted ? combat.target : null,
+          };
         }
       }
     }
     return { type: "end_turn" };
   }
-}
-
-function lowestHpEnemyIndex(state: GameState): number {
-  const enemies = state.combat?.enemies ?? [];
-  let best = -1;
-  let bestHp = Infinity;
-  enemies.forEach((enemy, index) => {
-    if (enemy.hp > 0 && enemy.hp < bestHp) {
-      bestHp = enemy.hp;
-      best = index;
-    }
-  });
-  return best < 0 ? 0 : best;
 }

@@ -22,15 +22,10 @@ import {
   getPower,
   removePower,
 } from "../powers/powers.js";
-import {
-  getRelicDef,
-  hasRelic,
-  grantRelic,
-  bossRelicPool,
-  THE_BOOT_MIN_DAMAGE,
-} from "../relics/relics.js";
+import { getRelicDef, hasRelic, THE_BOOT_MIN_DAMAGE } from "../relics/relics.js";
 import type { RelicDef } from "../relics/relics.js";
 import { getPotionDef } from "../potions/potions.js";
+import { grantBossVictory } from "../post-combat.js";
 
 // === 战斗状态机 ===
 //
@@ -98,8 +93,6 @@ const ALCHEMIZE_POOL = [
 const HELLO_WORLD_POOL: readonly string[] = ALL_CARDS.filter((c) => c.rarity === "common").map(
   (c) => c.id,
 );
-const BOSS_GOLD_MIN = 95; // 击败首领掉金币区间（对齐 StS）。
-const BOSS_GOLD_MAX = 105;
 const AWAKENED_REVIVE_STRENGTH = 3; // 觉醒者复活时获得的力量。
 const TIME_WARP_STRENGTH = 2; // 时间扭曲触发时时间吞噬者获得的力量。
 const TRANSIENT_FADE_TURN = 5; // 无常连续攻击到第 5 回合消散离场。
@@ -3884,18 +3877,9 @@ function resolveCombatIfEnded(state: GameState): void {
   // 战斗内牌堆（含临时状态牌）随战斗消失，master deck 不受影响。
   state.combat = null;
   if (combat.isBoss) {
-    // 击败首领掉金币（~100，对齐 StS）；随后 victory / 进入下一幕由 settleAfterCombat 决定。
-    const gold = nextRange(state.rng, BOSS_GOLD_MIN, BOSS_GOLD_MAX);
-    state.gold += gold;
-    state.log.push(`击败首领，获得 ${gold} 金币。`);
-    // 首领遗物奖励：随机掉一件未持有的 boss 遗物。
-    const bossRelics = bossRelicPool(state.character).filter((id) => !hasRelic(state, id));
-    if (bossRelics.length > 0) {
-      const id = bossRelics[nextInt(state.rng, bossRelics.length)];
-      grantRelic(state, id);
-      state.log.push(`首领倒下，你获得了遗物「${getRelicDef(id).name}」。`);
-    }
-    state.screen = "victory";
+    // 首领战利品与 sts-combat 路径共用（post-combat.ts）；随后 victory / 进入下一幕
+    // 由 settleAfterCombat 决定。
+    grantBossVictory(state);
   }
   // 非 Boss 的奖励生成在 run 层处理（避免 combat 依赖 run）。
 }

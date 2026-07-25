@@ -42,6 +42,10 @@ export function migrateLoadedState(raw: unknown): GameState {
     state["seed"] = String(state["seed"]);
   }
   backfill(state, "cardSelect", null); // 选牌子界面（图书馆/复制器/和平烟斗）——老档没有。
+  // 游戏级战斗接线：老档一律按近似实现续玩（换实现只在新对局生效，不半局切换）。
+  backfill(state, "combatEngine", "legacy");
+  backfill(state, "stsCombat", null);
+  backfill(state, "stsPotionRng", null);
 
   const combat = asRecord(state["combat"]);
   if (combat) {

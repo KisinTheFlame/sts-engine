@@ -21,6 +21,20 @@ const result = applyAction(state, { type: "choose", optionIndex: 0 });
 // state 被原地推进；result.ok 表示动作是否合法
 ```
 
+### 战斗实现的选择
+
+`newRun` 可传 `combatEngine`：
+
+| 取值               | 战斗实现                                                                        |
+| ------------------ | ------------------------------------------------------------------------------- |
+| `"legacy"`（缺省） | `engine/combat/combat`。近似实现（单条 PRNG、无动作队列），覆盖几乎全部内容     |
+| `"sts"`            | `engine/sts-combat`。与原版**逐位一致**（6 条 RNG 流 + 动作队列），但覆盖面还窄 |
+
+`"sts"` 是**逐场**生效的：覆盖得到的战斗走游戏级实现（状态落在 `state.stsCombat`），
+覆盖不到的照旧走近似实现（状态落在 `state.combat`）并在 `state.log` 里写明原因——不会静默换实现。
+想先问一句能不能覆盖，用 `engine/combat-bridge` 的 `stsCombatCoverage(state, encounterId)`。
+迁移进度见 [TODOS.md](TODOS.md)。
+
 完整 API 走子路径导入（前缀 `@kisinwen/sts-engine/`）：
 
 | 子路径                   | 内容                                                                                                    |
@@ -41,6 +55,7 @@ const result = applyAction(state, { type: "choose", optionIndex: 0 });
 | `engine/sts-neow`        | `generateNeowOptions`（游戏级 Neow 开局四选项，同种子复现，逐位对齐）                                   |
 | `engine/sts-encounters`  | `generateEncounters`（游戏级三幕怪物遭遇序列：怪物/精英/boss，同种子复现）                              |
 | `engine/sts-combat`      | `initCombat` / `playCard` / `drinkPotion` / `endTurn`（游戏级战斗：6 条 RNG 流 + 动作队列，同种子复现） |
+| `engine/combat-bridge`   | `stsCombatCoverage`（问某场战斗能否走游戏级战斗；引擎选路的唯一接缝）                                   |
 | `engine/glossary`        | `GLOSSARY`                                                                                              |
 | `sim/policy`             | `GreedyPolicy`（自动对局策略，测试用）                                                                  |
 | `migrate`                | `migrateLoadedState`（老存档字段回填）                                                                  |
