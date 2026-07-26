@@ -221,6 +221,26 @@ export type CardQueueItem = {
   randomTarget: boolean;
 };
 
+/**
+ * 「不触发效果」的出牌项（对齐 `CardQueueItem item; item.triggerOnUse = false; item.card = c;`）。
+ *
+ * 回合末手里的灼伤那一类用它：playCardQueueItem 见 triggerOnUse 为假就**跳过** useCard、
+ * 只走 useNoTriggerCard。energyOnUse 保持 0——那条路径压根不扣能量。
+ */
+export function noTriggerItem(card: CombatCard): CardQueueItem {
+  return {
+    cardUid: card.uid,
+    target: 0,
+    isEndTurn: false,
+    triggerOnUse: false,
+    energyOnUse: 0,
+    freeToPlay: false,
+    exhaustOnUse: false,
+    purgeOnUse: false,
+    randomTarget: false,
+  };
+}
+
 export function endTurnItem(): CardQueueItem {
   return {
     cardUid: null,
@@ -709,6 +729,28 @@ function shuffleCards(bc: BattleContext, cards: CombatCard[]): void {
   javaShuffle(cards, lcg);
 }
 
+/**
+ * 抽一张牌进手（对齐 CardManager::draw 的循环体，CardManager.cpp:397）。
+ *
+ * 参考在每张牌**离开抽牌堆之后、进手牌之前**跑一串逐张触发。本批只登记了进化：
+ * 抽到**状态牌**时 `addToBot(DrawCards(层数))`——注意是入队而非当场抽，所以进化引发的
+ * 补抽排在本次 drawCards 的全部牌抽完之后。
+ *
+ * TODO(后续PR): 困惑（抽到时掷 cardRandomRng 改费用）、腐化（技能牌费用 -9）、
+ *   火焰吐息（抽到状态/诅咒时对全体伤害）、虚无（抽到时 -1 能量）。
+ *   四条都需要逐实例卡牌状态或尚未登记的 Power。
+ */
+function drawOneCard(bc: BattleContext, card: CombatCard): void {
+  if (getCardDef(card.defId).type === "status") {
+    const evolve = getPower(bc.player.powers, "evolve");
+    if (evolve > 0) {
+      addToBot(bc, (c) => drawCards(c, evolve));
+    }
+  }
+  // 手牌上限由调用方的 toDraw 保证不会越界（对齐参考 `if (cardsInHand < 10) moveToHand`）。
+  bc.hand.push(card);
+}
+
 function drawCards(bc: BattleContext, count: number): void {
   // 抽牌堆顶 = 数组尾（对齐 CardManager::popFromDrawPile = drawPile.back()+pop_back()）。
   // 对齐 BattleContext::drawCards 顶部四条提前返回里的 NO_DRAW（战斗恍惚打完那一张牌
@@ -725,7 +767,7 @@ function drawCards(bc: BattleContext, count: number): void {
     // reshuffle：先抽干现有牌库（无 RNG），再把弃牌堆洗回，补抽剩余。
     const before = bc.drawPile.length;
     for (let i = 0; i < before; i += 1) {
-      bc.hand.push(bc.drawPile.pop()!);
+      drawOneCard(bc, bc.drawPile.pop()!);
     }
     toDraw -= before;
     if (bc.discardPile.length > 0) {
@@ -736,7 +778,7 @@ function drawCards(bc: BattleContext, count: number): void {
   }
   const n = Math.min(toDraw, bc.drawPile.length);
   for (let i = 0; i < n; i += 1) {
-    bc.hand.push(bc.drawPile.pop()!);
+    drawOneCard(bc, bc.drawPile.pop()!);
   }
 }
 
@@ -769,15 +811,93 @@ function onShuffle(): void {
 const MAX_HAND_SIZE = 10;
 
 /**
- * 进消耗堆（对齐 BattleContext::triggerAndMoveToExhaustPile）。
+ * 进消耗堆（对齐 BattleContext::triggerAndMoveToExhaustPile，BattleContext.cpp:2814）。
  *
- * 参考在压入消耗堆**之前**先跑一串消耗触发；本批一个都没登记，所以现在只剩压栈。
- * 保留这个调用点是为了将来补触发时只改一处、不至于漏掉某条消耗路径。
- * TODO(遗物PR): 卡戎的骨灰（addToTop DamageAllEnemy 3）、枯枝（随机牌入手）。
- * TODO(后续PR): 黑暗拥抱（抽牌）、无痛之心（加格挡）、死灵诅咒、哨兵（**同步**回能量）。
+ * 参考在压入消耗堆**之前**先跑一串消耗触发，顺序固定：
+ *   卡戎的骨灰 → 枯枝 → 黑暗拥抱 → 无痛之心 → 死灵诅咒 → 哨兵。
+ * 本批登记了中间两条（都是玩家 Power），其余留 TODO。这个函数是全项目**唯一**的消耗入口，
+ * 所以补触发只需改这一处、不会漏掉某条消耗路径（第四批把消耗收成单一入口就是为了这个）。
+ *
+ * ⚠ 两条都是 addToBot，且顺序不可换（黑暗拥抱的抽牌排在无痛之心的格挡之前）。
+ * ⚠ 无痛之心走的是 `Actions::GainBlock(层数)`——**不过** calculateCardBlock，敏捷/脆弱都
+ * 不参与；且 GainBlock 的 clearOnCombatVictory=false（Actions.cpp:161）。
+ *
+ * TODO(遗物PR): 卡戎的骨灰（addToTop DamageAllEnemy 3）、枯枝（随机牌入手，消耗 cardRandomRng）。
+ * TODO(后续PR): 死灵诅咒（消耗时自己再回手）、哨兵（**同步**回能量，不入队）。
  */
 function triggerAndMoveToExhaustPile(bc: BattleContext, card: CombatCard): void {
+  const darkEmbrace = getPower(bc.player.powers, "dark_embrace");
+  if (darkEmbrace > 0) {
+    addToBot(bc, (c) => drawCards(c, darkEmbrace));
+  }
+  const feelNoPain = getPower(bc.player.powers, "feel_no_pain");
+  if (feelNoPain > 0) {
+    addToBot(bc, (c) => gainBlock(c, feelNoPain), false);
+  }
   bc.exhaustPile.push(card);
+}
+
+// ============================================================================
+// 凭空造牌（对齐 Actions::MakeTempCardIn{Hand,DrawPile,Discard} +
+// CardManager::createTempCardIn{Hand,DrawPile,Discard}）
+//
+// 状态牌 / 诅咒牌就是这么进场的。三个去向的 RNG 表现完全不同：
+//   * 进弃牌堆   —— 无 RNG，直接 push_back
+//   * 进手牌     —— 无 RNG，走 moveToHandHelper（手牌满 10 张改进弃牌堆）
+//   * 洗入抽牌堆 —— **每张消耗一次 cardRandomRng**（抽牌堆为空时不掷）
+//
+// uid 一律取 nextUid++（对齐 `c.uniqueId = nextUniqueCardId++`）。参考的 nextUniqueCardId
+// 初值是大牌组张数，我们的 nextUid 在建库时正好推进到同一个数，故两边一致。
+// ============================================================================
+
+function makeCardInstance(bc: BattleContext, defId: string, upgraded = false): CombatCard {
+  return { uid: bc.nextUid++, defId, upgraded };
+}
+
+/** 对齐 Actions::MakeTempCardInDiscard：逐张 push 到弃牌堆末尾，不消耗 RNG。 */
+function makeTempCardInDiscard(
+  bc: BattleContext,
+  defId: string,
+  amount: number,
+  upgraded = false,
+): void {
+  for (let i = 0; i < amount; i += 1) {
+    bc.discardPile.push(makeCardInstance(bc, defId, upgraded));
+  }
+}
+
+/** 对齐 Actions::MakeTempCardInHand：逐张走 moveToHandHelper，不消耗 RNG。 */
+function makeTempCardInHand(
+  bc: BattleContext,
+  defId: string,
+  amount: number,
+  upgraded = false,
+): void {
+  for (let i = 0; i < amount; i += 1) {
+    moveToHandHelper(bc, makeCardInstance(bc, defId, upgraded));
+  }
+}
+
+/**
+ * 对齐 Actions::MakeTempCardInDrawPile（Actions.cpp:239）的 `shuffleInto = true` 分支。
+ *
+ * ⚠ 三处照抄：
+ *  ① 插入位置 `cardRandomRng.random(drawPile.size() - 1)`，即 0..size-1——**永远不会**插到
+ *     牌堆顶（下标 size）。下标 0 是牌堆底、末尾是牌堆顶（`popFromDrawPile` 取 back）。
+ *  ② 抽牌堆为空时 idx 取 0 且**不掷 RNG**。少判这个条件会白吃一次 cardRandomRng。
+ *  ③ 每张牌各掷一次：`amount` 张就消耗 `amount` 次（本批登记的牌 amount 都是 1）。
+ *  参考的 `shuffleInto = false` 分支是 `// todo else`（压根没实现），所以只转写 true 那支。
+ */
+function makeTempCardInDrawPile(
+  bc: BattleContext,
+  defId: string,
+  amount: number,
+  upgraded = false,
+): void {
+  for (let i = 0; i < amount; i += 1) {
+    const idx = bc.drawPile.length === 0 ? 0 : bc.rng.cardRandomRng.random(bc.drawPile.length - 1); // ★ 消耗一次 cardRandomRng
+    bc.drawPile.splice(idx, 0, makeCardInstance(bc, defId, upgraded));
+  }
 }
 
 /**
@@ -849,8 +969,31 @@ function exhaustRandomCardInHand(bc: BattleContext, count: number): void {
 //   monsters.init(HP→rollMove) → cards.init(建库+洗牌) → initRelics → 抽起手
 // ============================================================================
 
-/** 入场牌组的一张牌（master deck 的投影：只有 defId 与升级态影响战斗）。 */
-export type CombatDeckCard = { defId: string; upgraded: boolean };
+/**
+ * 入场牌组的一张牌（master deck 的投影）。
+ *
+ * `innate` 是**实例级**的固有位，对齐参考 `CardManager::init` 里那句
+ * `isInnateMemo[i] = deckCard.isInnate() || isBottled`——瓶装遗物封入的那一张是靠
+ * `gc.deck.bottleIdxs` 判定的，与卡定义无关，所以必须逐实例带过来。
+ */
+export type CombatDeckCard = { defId: string; upgraded: boolean; innate?: boolean };
+
+/**
+ * 这张牌开局是否固有（对齐 `Card::isInnate()` → `isCardInnate(id, upgraded)`，
+ * 再或上瓶装遗物的实例位）。
+ *
+ * 参考的 `isCardInnate` 是「完整名单 + `default: false`」，可全表信任；名单里
+ * 背刺 / 启动程序 / 华丽登场 / 心灵冲击 / 扭曲恒为真，暴虐 / 无限之刃 / 残影 / 寒冷 /
+ * 你好世界 / 风暴 / 机器学习 / 战斗圣歌 / 阿尔法 / 建立是 `upgraded`——两组与数据表的
+ * `innate` / `upgradedInnate` 逐项对齐过。
+ */
+function isDeckCardInnate(card: CombatDeckCard): boolean {
+  if (card.innate === true) {
+    return true;
+  }
+  const def = getCardDef(card.defId);
+  return def.innate === true || (card.upgraded && def.upgradedInnate === true);
+}
 
 export type CombatInitInput = {
   seedLong: bigint;
@@ -949,17 +1092,34 @@ export function initCombat(input: CombatInitInput): BattleContext {
     PRE_BATTLE_ACTION[m.defId]?.(bc, m);
   }
 
-  // —— cards.init ——
-  // 建实例（按 master deck 顺序）→ 一次 shuffleRng 洗牌 → Innate 归位（铁甲基础组无 Innate）。
-  // TODO(后续PR): Innate 归位（背刺 / 瓶装遗物）；目前登记的牌里没有固有牌，
-  // combat-bridge 的覆盖面检查也会把带固有的牌组挡在门外。
-  const drawPile: CombatCard[] = input.deck.map((card) => ({
-    uid: bc.nextUid++,
-    defId: card.defId,
-    upgraded: card.upgraded,
-  }));
-  shuffleCards(bc, drawPile); // ★ 消耗一次 shuffleRng
-  bc.drawPile = drawPile;
+  // —— cards.init（对齐 CardManager::init，CardManager.cpp:15）——
+  //
+  // ① 建实例：uid 就是它在 master deck 里的下标（对齐 `c.setUniqueId(deckIdx)` 与
+  //    `nextUniqueCardId = gc.deck.size()`，故建完 nextUid 正好等于牌组张数）。
+  // ② 一次 shuffleRng 洗牌。参考洗的是下标数组 `idxs` 再按 idxs[i] 取牌，与直接洗牌实例
+  //    等价（Collections::shuffle 的交换序列只由 RNG 决定，作用在哪个数组上都是同一置换）。
+  // ③ **固有归位**：把固有牌搬到抽牌堆**顶**。参考的写法是一次稳定分区——
+  //    `normalIdx` 从 0 起、`innateIdx` 从 normalCount 起，按洗牌后的顺序依次落位，
+  //    所以两组各自的相对顺序都保留。数组尾即牌堆顶（popFromDrawPile 取 back），
+  //    于是固有牌排在最后就是「开局第一批被抽到」。
+  const innateUids = new Set<number>();
+  const instances: CombatCard[] = input.deck.map((card) => {
+    const instance = { uid: bc.nextUid++, defId: card.defId, upgraded: card.upgraded };
+    if (isDeckCardInnate(card)) {
+      innateUids.add(instance.uid);
+    }
+    return instance;
+  });
+  shuffleCards(bc, instances); // ★ 消耗一次 shuffleRng
+  const isInnate = (c: CombatCard): boolean => innateUids.has(c.uid);
+  const innateCount = innateUids.size;
+  bc.drawPile = [...instances.filter((c) => !isInnate(c)), ...instances.filter(isInnate)];
+  // ④ 固有牌比起手数还多时补抽差额（对齐 CardManager::init 末尾）。⚠ 这条 addToBot 排在
+  //    下面那条「抽起手」**之前**，因为参考的 cards.init 早于 initRelics 里的 DrawCards。
+  if (innateCount > bc.player.cardDrawPerTurn) {
+    const extra = innateCount - bc.player.cardDrawPerTurn;
+    addToBot(bc, (c) => drawCards(c, extra));
+  }
 
   // —— initRelics ——（骨架层跳过：铁甲燃烧之血等开局遗物不消耗 RNG，效果留后续 PR）
 
@@ -1057,7 +1217,47 @@ function playCardQueueItem(bc: BattleContext, item: CardQueueItem): void {
     // ★ 随机目标走 cardRandomRng（对齐 BattleContext.cpp:844 getRandomMonsterIdx）
     item.target = getRandomMonsterIdx(bc);
   }
-  useCard(bc, item);
+  // 对齐 playCardQueueItem 的两道分支（BattleContext.cpp:849/867）：
+  //   canUseCard = purgeOnUse || (triggerOnUse && canUse(...))  → useCard()
+  //   if (!triggerOnUse)                                       → useNoTriggerCard()
+  // 两者互斥（purgeOnUse 未登记，恒为假），故这里写成 if/else。
+  if (item.triggerOnUse) {
+    useCard(bc, item);
+  } else {
+    useNoTriggerCard(bc, item);
+  }
+}
+
+/**
+ * 「不触发效果」的牌结算（对齐 BattleContext::useNoTriggerCard，BattleContext.cpp:919）。
+ *
+ * 回合末手里的灼伤走这条：**不**过 useCard，所以不计入 cardsPlayedThisTurn、不扣能量、
+ * 不排 OnAfterCardUsed。顺序照抄：
+ *   ① `addToTop(DamagePlayer(层数, selfDamage))` —— 走 Player::damage，**过格挡**；
+ *   ② 同步从手牌移除；
+ *   ③ `addToBot(DiscardNoTriggerCard)` —— 把队列项里那份**副本**放进弃牌堆。
+ * ①是 addToTop、③是 addToBot，此刻动作队列已抽干，故执行顺序就是「先失血、再进弃牌堆」。
+ *
+ * TODO(后续PR): 腐朽（2 点伤害）、怀疑（1 层虚弱，**同步** debuff）、羞耻（1 层脆弱，同步）、
+ *   悔恨（按 regretCardCount 失血）。四张诅咒牌都还没有入手途径。
+ */
+function useNoTriggerCard(bc: BattleContext, item: CardQueueItem): void {
+  const card = bc.hand.find((c) => c.uid === item.cardUid);
+  if (card === undefined) {
+    throw new Error(`useNoTriggerCard: 手牌中找不到 uid=${String(item.cardUid)}`);
+  }
+  if (card.defId === "burn") {
+    // 灼伤：升级形态 4 点（灼伤+ 只由六焰鬼在第 9 回合后生成，我们尚无来源）。
+    const damage = card.upgraded ? 4 : 2;
+    addToTop(bc, (c) => damagePlayerNonAttack(c, damage));
+  }
+  const idx = bc.hand.indexOf(card);
+  if (idx >= 0) {
+    bc.hand.splice(idx, 1);
+  }
+  addToBot(bc, (c) => {
+    c.discardPile.push(card);
+  });
 }
 
 /** 对齐 MonsterGroup::getRandomMonsterIdx（存活怪中随机，消耗一次 cardRandomRng）。 */
@@ -2622,6 +2822,18 @@ export function playCard(bc: BattleContext, handIdx: number, target = 0): PlayCa
     return { ok: false, reason: `手牌下标越界: ${handIdx}` };
   }
   const def = getCardDef(card.defId);
+  // 打不出来的牌（对齐 CardInstance::canUse 的按类型分支，CardInstance.cpp:322-332）：
+  // 诅咒牌要蓝烛、状态牌要医疗包（黏液除外，它本来就能打）。本批开始有灼伤 / 伤口 / 眩晕
+  // 真的躺在手里，少了这道门它们会一路走到 CARD_RULES 查不到而抛「暂未登记」——
+  // 而它们其实是登记了的、只是打不出来，那种报错会指错方向。
+  // TODO(后续PR): canUse 剩下的分支——缠绕封攻击、冲突（手里全是攻击牌才能打）、
+  //   秘密技巧/武器（抽牌堆里得有对应牌型）。三条都还没有对应内容登记。
+  if (def.type === "curse" && !hasRelic(bc, "blue_candle")) {
+    return { ok: false, reason: `「${def.name}」是诅咒牌，打不出来` };
+  }
+  if (def.type === "status" && card.defId !== "slimed" && !hasRelic(bc, "medical_kit")) {
+    return { ok: false, reason: `「${def.name}」是状态牌，打不出来` };
+  }
   // 升级降费必须走 upgradedCost（对齐 Cards.h:703 getEnergyCost 里那几组 `upgraded ? a : b`）：
   // 严阵以待 2→1、见红 1→0、全身撞击 1→0 等。此前只读 def.cost，升级态的能量会多扣。
   const cost = (card.upgraded ? def.upgradedCost : undefined) ?? def.cost ?? 0;
@@ -2842,8 +3054,19 @@ function callEndOfTurnActions(bc: BattleContext): void {
     addToBot(bc, (c) => gainBlock(c, metallicize), false);
   }
   // TODO(后续PR): 镀甲（PLATED_ARMOR，紧接金属化之后）、如水般（需姿态）、充能球回合末触发。
-  // TODO(后续PR): 手中灼伤 / 腐朽 / 怀疑 / 羞耻 / 悔恨按 noTrigger 入 cardQueue——
-  //   需要状态牌 / 诅咒牌生成机制，本批未实现。
+
+  // —— 手中的「回合末自己结算一次」的牌 ——
+  // 灼伤 / 腐朽 / 怀疑 / 羞耻 / 悔恨在手上时，回合末按 `triggerOnUse = false` 入**出牌队列**
+  // （不是动作队列），由 playCardQueueItem 走 useNoTriggerCard 那条分支。
+  // ⚠ 三处照抄：① 扫描按手牌下标升序、逐张 addToBotCard；② 入的是 cardQueue，所以它们排在
+  // onTurnEnding **之前**结算（executeActions 先抽干 cardQueue 再看 endTurnQueued）；
+  // ③ `regretCardCount` 在此刻取手牌数（只有悔恨用，尚未登记）。
+  // TODO(后续PR): 腐朽 / 怀疑 / 羞耻 / 悔恨——四张诅咒牌都还没有入手途径。
+  for (const card of bc.hand) {
+    if (card.defId === "burn") {
+      bc.cardQueue.pushBack(noTriggerItem(card));
+    }
+  }
   // TODO(后续PR): 姿态 onEndOfTurn。
 }
 
@@ -2890,13 +3113,55 @@ function applyEndOfTurnPowers(bc: BattleContext): void {
 }
 
 /**
- * 弃掉手牌（对齐 BattleContext::discardAtEndOfTurn → discardAtEndOfTurnHelper）。
+ * 这张牌是不是以太（对齐 CardInstance::isEthereal → isCardEthereal(id, upgraded)）。
  *
- * ⚠ **顺序要命**：对齐 `for (i = cardsInHand-1; i >= 0; --i)`——从手牌末尾往前弃。
- * 弃牌堆的排列会成为下次 reshuffle 的洗牌输入，正序会洗出另一副牌序。
- * TODO(后续PR): 保留牌（自带保留 / 卢恩金字塔 / 平衡）与以太牌消失。
+ * 参考那份名单是「完整枚举 + `default: false`」，可以全表信任：杀戮 / 幽灵护甲 / 眩晕 /
+ * 笨拙 / 虚无 / 升华诅咒恒为真，幻影 / 回响成型 / 提婆形态是 `!upgraded`（升级后不再以太）。
+ * 后三张一张都没登记，故这里只读数据表的 `ethereal` 位；登记它们时要加一个
+ * `upgradedEthereal` 字段，不能继续无条件读。
+ */
+function isEtherealCard(card: CombatCard): boolean {
+  return getCardDef(card.defId).ethereal === true;
+}
+
+/**
+ * 回合末处理手牌（对齐 BattleContext::discardAtEndOfTurn，BattleContext.cpp:2465）。
+ *
+ * ⚠ 它自己**一张牌都不搬**，只往队首插两组动作：
+ *   ① `addToTop(DiscardAtEndOfTurnHelper)` —— 真正的弃手牌；
+ *   ② 再按手牌下标**升序** `addToTop(ExhaustSpecificCardInHand(i, uid))` 逐张消耗以太牌。
+ * 因为都是 addToTop 且②在①之后推入，实际执行顺序是「以太牌按下标**降序**消耗 → 弃其余」。
+ * 降序消耗使下标始终有效；反过来写（正序消耗、或把 helper 放到以太之后推）都会错位。
+ *
+ * ⚠ 以太牌走的是 exhaustSpecificCardInHand，因此会触发消耗链（黑暗拥抱 / 无痛之心）——
+ * 而它们的 addToBot 落在整条回合末序列的**末尾**（UnnamedEndOfTurnAction 之后），
+ * 这个位置是队列语义自然得出的，不是特例。
+ *
+ * TODO(后续PR): 保留牌（自带保留 / 卢恩金字塔 / 平衡）——参考在①之前还有一段 limbo 搬运。
  */
 function discardAtEndOfTurn(bc: BattleContext): void {
+  addToTop(bc, (c) => discardAtEndOfTurnHelper(c));
+  for (let i = 0; i < bc.hand.length; i += 1) {
+    const card = bc.hand[i];
+    if (isEtherealCard(card)) {
+      const idx = i;
+      const uid = card.uid;
+      addToTop(bc, (c) => exhaustSpecificCardInHand(c, idx, uid));
+    }
+  }
+}
+
+/**
+ * 真正的弃手牌（对齐 BattleContext::discardAtEndOfTurnHelper，BattleContext.cpp:2501）。
+ *
+ * ⚠ 两处照抄：① 结局已定就整个跳过（以太牌的消耗若打死了最后一只怪，手牌就留在手上）；
+ * ② **顺序要命**——`for (i = cardsInHand-1; i >= 0; --i)`，从手牌末尾往前弃。
+ * 弃牌堆的排列会成为下次 reshuffle 的洗牌输入，正序会洗出另一副牌序。
+ */
+function discardAtEndOfTurnHelper(bc: BattleContext): void {
+  if (bc.outcome !== "undecided") {
+    return;
+  }
   for (let i = bc.hand.length - 1; i >= 0; i -= 1) {
     bc.discardPile.push(bc.hand[i]);
   }
@@ -3141,6 +3406,28 @@ function dealDamageToPlayer(bc: BattleContext, amount: number, attackerIdx = -1)
 }
 
 /**
+ * 非攻击伤害打在玩家身上（对齐 Player::damage，Player.cpp:174）。
+ *
+ * ⚠ 与 attacked（怪物出招）和 playerLoseHp（放血一类）都不同：
+ *   * **过格挡**（这一点与 playerLoseHp 相反——灼伤是能被格挡挡掉的）；
+ *   * **不触发荆棘 / 火焰屏障**（那两条在 attacked 里，因为需要攻击者下标）。
+ * 参考里 `selfDamage` 位只用来判定破裂（RUPTURE）加力量，那张能力牌尚未登记。
+ * TODO(遗物PR): 钨钢棒减 1、缓冲（BUFFER）、虚无缥缈（INTANGIBLE 把伤害压成 1）。
+ */
+function damagePlayerNonAttack(bc: BattleContext, amount: number): void {
+  const blocked = Math.min(bc.player.block, amount);
+  bc.player.block -= blocked;
+  const unblocked = amount - blocked;
+  if (unblocked <= 0) {
+    return;
+  }
+  bc.player.hp = Math.max(0, bc.player.hp - unblocked);
+  if (bc.player.hp <= 0) {
+    wouldDie(bc);
+  }
+}
+
+/**
  * 濒死结算（对齐 Player::wouldDie）：先归零，再找瓶中仙灵——找到就消耗掉它、
  * 回复 30% 最大生命（神圣树皮 60%，下限 1）并**存活**；没有才判负。
  * 蜥蜴尾巴同理，留到遗物迁移。
@@ -3167,8 +3454,14 @@ function wouldDie(bc: BattleContext): void {
  * 本批只有恶魔形态（DEMON_FORM=44）命中。
  */
 function applyStartOfTurnPostDrawPowers(bc: BattleContext): void {
-  // TODO(后续PR): 暴虐（BRUTALITY=39，排在恶魔形态**之前**）——卡牌本体升级后是固有牌，
-  //   缺「固有牌归位」机制，故整张牌尚未登记。
+  // 暴虐（BRUTALITY=39）排在恶魔形态（DEMON_FORM=44）**之前**——枚举序，与获得顺序无关。
+  // ⚠ 失血走 PlayerLoseHp（不过格挡、clearOnCombatVictory=false），抽牌是默认的 true；
+  // 两条都 addToBot，故「先失血后抽牌」。
+  const brutality = getPower(bc.player.powers, "brutality");
+  if (brutality > 0) {
+    addToBot(bc, (c) => playerLoseHp(c, brutality), false);
+    addToBot(bc, (c) => drawCards(c, brutality));
+  }
   const demonForm = getPower(bc.player.powers, "demon_form");
   if (demonForm > 0) {
     addToBot(bc, (c) => addPower(c.player.powers, "strength", demonForm));
