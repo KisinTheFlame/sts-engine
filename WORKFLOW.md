@@ -88,13 +88,27 @@ tools/regen-traces.sh --check
 编辑 harness 的 `trace_dump.cpp`：
 
 - 在 `BATCH_N` 里加本批的 `CardId::XXX`（用**参考的枚举名**）
-- **variant 1/2 用「当前全牌组」，每批替换、不要再堆新的一对**。后一批的牌组是前一批的
-  超集、本来就覆盖得住；每批追加一对 = 每轮 +20MB 重复验证同一批卡。
+- **每批新开一对 variant**（未升级 + 全升级），牌组是「起始 10 + 首批 11 + 本批」。
+  首批那 11 张是为了让牌堆有料（检索类效果才有得选），它们已有背书、不增加风险。
+  已有的 variant **一律不动**。
 
-两条不变量（改 harness 后必须复验，脚本会自动查）：
+三条不变量（改 harness 后必须复验，脚本会自动查前两条）：
 
+- ⚠ **牌组不得超过 64 张**（`CardManager::MAX_GROUP_SIZE`）。`CardManager::init` 直接
+  `drawPile.resize(gc.deck.size())`，而 `fixed_list` **没有任何越界检查**，65 张起写穿
+  `std::array<CardInstance, 64>`——静默内存破坏，不是 assert。这就是「每批新开一对」而不是
+  「用全牌组替换 variant 1/2」的原因：全牌组早就超了。harness 里有一道显式检查会先报错退出。
 - **variant 0 必须排在最前且不变**。`traceIdx` 驱动遗物/药水轮换，位置一动既有数据全部失效。
 - **`deckUpgraded` 只在确有升级牌时输出**，故未升级的行与该字段存在之前的数据逐字节一致。
+
+`tools/split-traces.mjs` 按 **variant 在 harness 输出里的首次出现顺序**排，不是按牌组张数
+——张数排序的前提（「后一个 variant 更大」）已被 64 张上限打破，新 variant 更小，
+按张数会插到文件**中间**而不是追加。
+
+**牌组要为「让新代码被走到」而设计，不只是「把新卡塞进去」。** 第四批加了第二张 `EXHUME`：
+`ExhumeAction` 会把消耗堆里的掘尸滤掉，而掘尸自己是在 `OnAfterCardUsed`（晚于 `ExhumeAction`）
+才进消耗堆的，只有一张时那个过滤器**永远走不到**——变异测试当场证实了它是盲区（0 例失败），
+加第二张之后变成 52 例。
 
 ### 生成并安装
 
@@ -122,7 +136,7 @@ tools/regen-traces.sh --install UPPERCUT DEMON_FORM METALLICIZE ...
 pnpm typecheck && pnpm lint && pnpm test && pnpm format
 ```
 
-全绿是**下限**，不是完成。`sts-combat-trace.test.ts` 现有 3075 例逐帧对拍，
+全绿是**下限**，不是完成。`sts-combat-trace.test.ts` 现有 3675 例逐帧对拍，
 其中一部分用**全升级牌组**——所以每条规则 `up ? x : y` 的两个分支都会被验证。
 
 改共享路径（`callEndOfTurnActions`、`drawCards`、`onTurnEnding`、`useCard` 之类）时，
@@ -192,6 +206,14 @@ cp /tmp/sc.bak src/engine/sts-combat.ts
   `out_of_range`。harness 的 `playerStatusValue` 已规避（按 1 输出），不必再改。
 - **玩家 Power 按 `PlayerStatus` 枚举序结算，不是获得顺序**（参考遍历 `std::map`）。
 - **`Player::cc` 全项目无人赋值**（UB，影响熵酿药水池），harness 里显式赋值规避。
+- **`fixed_list` 全项目无越界检查**（`include/data_structure/fixed_list.h`）。牌堆是
+  `fixed_list<CardInstance, 64>`，牌组超 64 张就是静默内存破坏。改 harness 牌组时先数数。
+- **harness 的策略可以比 `enumerateCardSelectActions` 更聪明**。那个枚举器对多选屏
+  （净化 / 赌博）只产出「一张都不选」，还自带注释 `just dont deal with this right now`——
+  照它走的话 `chooseExhaustCards` 的非空路径永远没有预言机。枚举器只是搜索用的辅助，
+  **预言机是 `BattleContext`**：自己拼一个合法的多选 action（`isValidMultiCardSelectAction`
+  会校验）交给 `Action::execute`，跑的仍是参考的真实代码。第四批就是这么把净化从
+  「开屏关屏」变成真的消耗 1~5 张的。
 - **重新克隆参考项目会丢掉所有补丁**，TODOS 里列了清单，要重新应用。
 - `git` 相关：本仓库在 worktree 里跑，`gh pr merge --delete-branch` 会因 master 被主仓库
   检出而失败，删远端分支用 `git push origin --delete <branch>`。

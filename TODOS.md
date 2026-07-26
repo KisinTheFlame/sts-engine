@@ -33,7 +33,7 @@
 
 | 类别 | 已登记 | 数据表里有               | 登记表                                      |
 | ---- | ------ | ------------------------ | ------------------------------------------- |
-| 卡牌 | 55     | 359（铁甲 74 / 无色 41） | `CARD_RULES`                                |
+| 卡牌 | 65     | 359（铁甲 74 / 无色 41） | `CARD_RULES`                                |
 | 怪物 | 4      | 227                      | `MOVE_RULES`                                |
 | 遗物 | 8      | 168                      | `RELIC_IMMEDIATE` / `RELIC_AT_BATTLE_START` |
 | 药水 | 13     | 42                       | `POTION_RULES`                              |
@@ -62,19 +62,40 @@
 
 ### 二、内容铺量
 
-按登记表逐条转写参考项目的精确行为，范围先限定铁甲 + 无色（60 张待实现）。
-其中 **18 张**用现有机制即可表达；**42 张**需要下列子系统。
+按登记表逐条转写参考项目的精确行为，范围先限定铁甲 + 无色（50 张待实现）。
 
-- `fetch_from_draw`（6 张）—— 从抽牌堆检索，需选牌屏
-- `add_random_colorless` / `add_random_cards_to_draw`（各 2 张）—— 消耗 `cardRandomRng`
-- `put_hand_card_on_top`（2 张）—— 需选牌屏
+选牌屏那一批已做（见下方第三项）。剩下卡在这些子系统上：
+
+- `add_random_colorless` / `add_random_cards_to_draw`（各 2 张）—— 消耗 `cardRandomRng`，
+  还需要「战斗内卡池」（`CombatCardPool` / `CombatColorlessCardPool`）与凭空造牌实例
+- **逐实例卡牌状态**（`costForTurn` / `freeToPlayOnce` / `specialData`）—— 未雨绸缪一类
+  「本回合免费」、发现的 0 费副本、灼热之刃的层数都要它。当前 `CombatCard` 只有
+  `{uid, defId, upgraded}`
 - 各 1 张：`double_block`、`double_strength`、`deal_damage_all_x`（X 费）、`deal_damage_random`、
   `deal_damage_draw_pile_count`、`deal_damage_perfected`、`exhaust_non_attacks`、
   `exhaust_non_attacks_gain_block` 等
 
+第四批点名跳过的（连同原因）：
+
+| 卡                     | 为什么跳过                                                                                                                                                    |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `seek` 搜寻            | 参考项目三个 switch 里都没有 case，等于没实现——没有预言机可背书                                                                                               |
+| `discovery` 发现       | 需要 `CombatCardPool`（战斗内可获得卡池，按角色）+ 凭空造牌 + 逐实例 0 费                                                                                     |
+| `forethought` 深谋远虑 | 参考的**升级分支整段被注释掉**（`Actions.cpp:793-795`），升级态退化成未升级行为。全升级 variant 会照着错的跑，等于没有预言机。另外还需逐实例 `freeToPlayOnce` |
+| `dual_wield` 双持      | 机制齐了（`createTempCardInHand` + 手牌重排），但参考自己注明「dual wield is so fucking buggy」且要新分配 uid；本批优先把选牌屏做扎实，留给下一批             |
+| `violence` 暴力        | 不需要选牌屏（是随机检索），但**参考有 bug**：见下方「已确认但尚未打补丁」                                                                                    |
+
 ### 三、整类缺失的机制
 
-- **消耗堆相关**：消耗触发（无痛之心 / 黑暗拥抱）、从消耗堆取回
+- ~~**选牌屏**（card select screen）~~ **已完成**：`inputState` 加 `card_select`、
+  `cardSelect: CardSelectInfo | null`、`selectCard` / `selectCards` 两个入口，以及
+  `executeActions` 顶部的 `inputState !== "executing" → break`（开屏时**队列原样留着**，
+  这是全部时序的根）。已转写 8 个 task：`armaments` / `exhaust_one` / `exhaust_many` /
+  `exhume` / `headbutt` / `secret_technique` / `secret_weapon` / `warcry`。
+  尚缺的 task：`codex` / `discovery` / `dual_wield` / `forethought` / `gamble` / `hologram` /
+  `liquid_memories` / `meditate` / `nightmare` / `recycle` / `seek` / `setup`。
+- **消耗堆相关**：~~从消耗堆取回~~（掘尸已登记，`triggerAndMoveToExhaustPile` 是统一入口）；
+  仍缺消耗**触发**（无痛之心 / 黑暗拥抱 / 卡戎的骨灰 / 枯枝 / 死灵诅咒 / 哨兵）
 - ~~**回合末 Power**：金属化、燃烧、恶魔形态一类持续生效的能力牌~~ **已完成**：
   `callEndOfTurnActions` / `applyEndOfTurnPowers` / `applyStartOfTurnPostDrawPowers` 三个时点
   已按参考逐位转写，玩家 Power 按 `PlayerStatus` **枚举序**（而非获得顺序）遍历。
@@ -93,8 +114,9 @@
 
 - 数据：`test/golden/traces/<encounter>.jsonl`，每行一条 trace
 - 测试：
-  - `test/sts-combat-trace.test.ts` —— 逐帧对拍（3075 例）
-  - `test/sts-combat-wiring.test.ts` —— 接线：入参一致性、存档往返、胜负出口、未迁移即抛错；
+  - `test/sts-combat-trace.test.ts` —— 逐帧对拍（3675 例）
+  - `test/sts-combat-wiring.test.ts` —— 接线：入参一致性、存档往返、胜负出口、未迁移即抛错、
+    选牌屏（开屏 / 存档往返 / 残留动作不丢 / 非法选择被拒 / 两个策略都不死循环）；
     其中一条把 `SUPPORTED_ENCOUNTERS` 与 trace 文件名双向对齐，漏加或多加都失败
   - `test/data-tables.test.ts` —— 数据表不变量。**数据表是两代实现共用的**，它错了游戏级实现
     会照着错的数值逐位复现。首次跑就抓到了 `teardrop_locket` 重复定义（watcher 奖励池里
@@ -106,21 +128,32 @@ harness 已支持选牌屏动作（`select_card` / `select_cards`），姿态 / 
 
 ### 铺量是追加式的，不重生成既有数据
 
-每条 trace 都自带**生成它的那副牌组**，重放端按行走。所以铺一批卡不是重生成，而是加一个
+每条 trace 都自带**生成它的那副牌组**，重放端按行走。所以铺一批卡不是重生成，而是加一对
 deck variant，只追加行：
 
-| variant | 牌组                             | 种子   | 升级 |
-| ------- | -------------------------------- | ------ | ---- |
-| 0       | 起始 + 首批 11 张（21 张）       | 全 125 | 否   |
-| 1       | + 第二批 29 + 第三批 12（62 张） | 前 40  | 否   |
-| 2       | 同上                             | 前 40  | 是   |
+| variant | 牌组                                | 种子   | 升级 |
+| ------- | ----------------------------------- | ------ | ---- |
+| 0       | 起始 + 首批 11 张（21 张）          | 全 125 | 否   |
+| 1       | + 第二批 29 + 第三批 12（62 张）    | 前 40  | 否   |
+| 2       | 同上                                | 前 40  | 是   |
+| 3       | 起始 + 首批 11 + 第四批 11（32 张） | 前 20  | 否   |
+| 4       | 同上                                | 前 20  | 是   |
 
-两条不变量（改 harness 后必须复验）：
+三条不变量（改 harness 后必须复验，`tools/regen-traces.sh` 会自动查前两条）：
 
+- ⚠ **牌组不得超过 64 张**（`CardManager::MAX_GROUP_SIZE`）。`CardManager::init` 直接
+  `drawPile.resize(gc.deck.size())`，而 `fixed_list` **完全没有越界检查**
+  （`void resize(int size) { list_size = size; }`），65 张起就会写穿
+  `std::array<CardInstance, 64>`——是静默的内存破坏，不是 assert。variant 1/2 已经 62 张，
+  离边界只剩两格，所以第四批**塞不进去**，只能另开一对。三个牌堆（抽/弃/消耗）都是这个上限。
 - **variant 0 必须排在最前且不变**：`traceIdx` 驱动遗物/药水轮换，位置一动既有文件就不再逐字节
-  可复现。排序是 variant 优先的全序，所以新数据是字面意义的追加——`head -n <旧行数>`
-  仍与旧文件逐字节一致
+  可复现。新数据是字面意义的追加——`head -n <旧行数>` 仍与旧文件逐字节一致
 - **`deckUpgraded` 只在确有升级牌时输出**，故未升级的行与该字段存在之前提交的数据完全一致
+
+排序（`tools/split-traces.mjs`）按 **variant 在 harness 输出里的首次出现顺序**，
+不再按「牌组张数升序」。旧写法的前提是「后一个 variant 的牌组更大」，而 64 张上限让这个前提
+失效：第四批的牌组比 variant 1/2 小，按张数排会插到文件**中间**，把「追加」变成「插入」，
+既有的上千例背书全部错位。（这个坑是真踩到了才发现的——第一次 `--install` 就红在第 376 行。）
 
 variant 2（全升级）补的是一个真实漏洞：在它之前，所有 trace 的牌组都未升级，每条卡牌规则
 `up ? x : y` 的**一半从来没有预言机看过**。变异验证：把 `playCard` 退回忽略 `upgradedCost`
@@ -131,8 +164,19 @@ variant 2（全升级）补的是一个真实漏洞：在它之前，所有 trac
 
 **「对拍全绿」也不等于新代码被验证了，要用变异测试确认。** 删掉一段逻辑后对拍仍全绿，
 说明那段逻辑没有预言机看着。已确认覆盖到的（括号内为变异后的失败例数）：
-`upgradedCost`（230）、回合末弃牌顺序（1866）、燃烧失血量取 `combustHpLoss` 而非层数（130）、
-玩家 Power 的**枚举序**遍历（4）、灵活还债走 `DebuffPlayer` 因而被神器吃掉（3）。
+
+- 前三批：`upgradedCost`（230）、回合末弃牌顺序（1866）、燃烧失血量取 `combustHpLoss`
+  而非层数（130）、玩家 Power 的**枚举序**遍历（4）、灵活还债走 `DebuffPlayer` 因而被神器吃掉（3）
+- 第四批（选牌屏）：`executeActions` 顶部的 `inputState` 门（479）、
+  `chooseWarcryCard` 放牌堆顶而非底（382）、`chooseDrawToHandCard` 要从抽牌堆移除（324）、
+  秘密技巧/武器的牌型（242）、`chooseExhaustOneCard` 进消耗堆而非弃牌堆（236）、
+  净化多选**降序**消耗（212）、焚誓「先开屏后抽牌」的顺序（204）、坚毅两分支不可互换（170）、
+  未雨绸缪抽牌数恒为 2（141）、`chooseHeadbuttCard` 放牌堆顶（127）、军备格挡恒为 5（110）、
+  `chooseArmamentsCard` 的手牌重排（89，顺序反过来同样 89）、
+  `DrawToHandAction` 扫描循环里的 `cardRandomRng` 消耗（368）、
+  `WarcryAction` 手牌恰好 1 张时白吃的那次 `cardRandomRng`（5）、
+  掘尸候选排除掘尸自己（52）、净化上限 `up ? 5 : 3`（40）、军备+ 的 `upgradeAllCardsInHand`（26）、
+  各开屏动作「候选恰好 1 个就不开屏」的捷径（军备 17 / 焚誓 18 / 秘密技巧 20 / 头槌 13）
 
 已确认**没有**覆盖到的，改动它们时对拍不会报警：
 
@@ -142,9 +186,25 @@ variant 2（全升级）补的是一个真实漏洞：在它之前，所有 trac
 - `upgradedExhausts` / `upgradedTargeted` 的升级覆盖分支（去掉后 0 例失败）——
   目前没有已登记卡牌会因此改变可观测状态，靠 `data-tables.test.ts` 的单测守着
   （变异后分别红 2 例和 1 例）。等 `limit_break` 之外更多带升级态差异的牌登记后会自然覆盖。
+- **那两次「白吃的 RNG」的 bound 本质上不可验证**：`WarcryAction` 的 `random(1)` 与
+  `DrawToHandAction` 的 `random(count - 1)` 结果都被丢掉，只有**调用次数**影响 counter。
+  把 bound 改成任何别的数都是 0 例失败。次数已经验证到了（368 / 5 例），bound 只能靠肉眼对齐参考。
+- **手牌满 10 张的两条分支**：`exhumeAction` 的「手牌满就整个跳过」与 `moveToHandHelper` 的
+  「满了改进弃牌堆」（各 0 例）。要在检索类效果结算的那一刻正好 10 张手牌，现有牌组够不到。
+- **`canUpgradeCard` 的诅咒/状态排除与灼热之刃例外**（各 0 例）。结构上不可达：覆盖面检查会
+  拒绝含未登记牌的牌组，而诅咒/状态牌与灼热之刃都还没登记。
+- **`playCard` / `endTurn` / `drinkPotion` 的「选牌屏没关不受理」三道门**（各 0 例）——
+  harness 永远不会在屏开着时打牌，所以 trace 看不到它们。改由
+  `sts-combat-wiring.test.ts` 的「屏没关之前都被拒」守着。
+- **三牌堆全空判负**（`executeActions` 的 can't-win check，0 例）。要把抽/弃/手三堆全清空，
+  现有牌组做不到。照参考写着是对的（`BattleContext.cpp:767`），但没有东西守着它。
+- **`chooseExhaustCards` 的空选择提前返回**——那是等价的死代码（空数组的循环本就什么都不做），
+  不算盲区。
 
-**第 3 批起替换 variant 1/2，不要再堆新的一对**：后一批的牌组是前一批的超集、本来就覆盖得住，
-再追加一对等于花约 20MB 重复验证同一批卡，几轮下去仓库过 100MB。
+**variant 只能追加，不能替换**（这条改了）：原先的规矩是「每批用当前全牌组替换 variant 1/2」，
+理由是后一批的牌组是前一批的超集。64 张上限让这条失效——第四批加进去就是 72 张，会写穿
+`fixed_list`。所以现在每批新开一对「起始 + 首批 11 + 本批」，并用更少的种子（第四批用 20 个
+而非 40 个）压住体积。当前 61MB / 3675 例。
 
 ### 参考侧补丁的打法：跟着登记一起打
 
@@ -206,6 +266,30 @@ release workflow 见到 tag 已存在就整体跳过，所以合并到 master �
   `if (!hasStatus<ARTIFACT>()) BuffEnemy<SHACKLED>(t, up?15:9)`。
   另外这张牌还依赖 `Monster::applyEndOfTurnTriggers`（`Monster.cpp:63-66`：SHACKLED 归还力量
   并清除），我们尚未实现（见 `applyEndOfRoundPowers` 里的 TODO）。
+
+- **`VIOLENCE` 暴力会把牌复制出来**（`Actions.cpp:614` `ViolenceAction`），故第四批跳过了它。
+  取牌的循环里那句提前退出写的是 `return` 而不是 `break`：
+
+  ```cpp
+  for (; i < count; ++i) {
+      if (attackIdxList.size()-i <= 0) {
+          return;                       // ← 跳过了下面「从抽牌堆移除」的整段
+      }
+      ...
+      bc.cards.moveToHand(c);           // 已经进手牌了
+  }
+  std::sort(removeIdxs, removeIdxs+i);
+  for (int x = i-1; x >= 0; --x) {
+      bc.cards.removeFromDrawPileAtIdx(removeIdxs[x]);
+  }
+  ```
+
+  抽牌堆里的攻击牌**少于 `count`（3，升级 4）张**时就会命中：已经搬进手牌的那几张仍然留在
+  抽牌堆里，凭空多出副本。真实游戏当然不会。牌组里攻击牌不足 3 张很常见（尤其打到后期
+  抽牌堆快空的时候），所以这不是边角情形。
+  修法：把那个 `return` 改成 `break`（`i` 已经是「实际搬了几张」，后面的移除段本来就按 `i` 收尾）。
+
+  ⚠ 登记 `violence` 之前必须先在参考侧改掉，否则重生成的 trace 会带着「牌被复制」的错值。
 
 另有 4 处性质不同，单独记：**`Cards.h:703 getEnergyCost` 以 `default: return 1` 收尾**，
 所以它对未列举的牌一律返回 1 费。`RAGE` 暴怒（红）、`SHIV` 飞刀、`SEEK` 搜寻、
