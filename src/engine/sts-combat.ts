@@ -560,6 +560,23 @@ function setMove(m: CombatMonster, move: string): void {
   m.currentMove = move;
 }
 
+/**
+ * 目标当前意图是否为攻击（对齐 Monster::isAttacking → isMoveAttack(moveHistory[0])）。
+ *
+ * ⚠ 参考用的是**招式 id 白名单**（MonsterMoves.h:414 的大 switch），这里改读数据表的
+ * intent 字段。已逐项核对：当前登记的四种怪（邪教徒 / 颚虫 / 红虱 / 绿虱）两边判定完全
+ * 一致——颚虫的乱抓虽然同时加格挡，白名单里也算攻击。新登记怪种时**必须**回白名单复核，
+ * 因为白名单里存在「带伤害却不算攻击」与反向的例外（如球状守卫的 HARDEN 被算作攻击）。
+ */
+function isMonsterAttacking(bc: BattleContext, idx: number): boolean {
+  const m = bc.monsters[idx];
+  if (m === undefined) {
+    return false;
+  }
+  const move = getEnemyDef(m.defId).moves.find((mv) => mv.id === m.currentMove);
+  return move?.intent === "attack";
+}
+
 // ============================================================================
 // 抽牌 / 洗牌（对齐 BattleContext::drawCards + CardManager 洗牌）
 //
@@ -595,6 +612,60 @@ function drawCards(bc: BattleContext, count: number): void {
   const n = Math.min(toDraw, bc.drawPile.length);
   for (let i = 0; i < n; i += 1) {
     bc.hand.push(bc.drawPile.pop()!);
+  }
+}
+
+/**
+ * 弃牌堆并入抽牌堆（对齐 CardManager::moveDiscardPileIntoToDrawPile）。
+ * 抽牌堆为空时直接接管整叠；非空时**逐张压到牌堆顶**（数组尾即顶）。
+ * 两条分支的结果牌序不同，不能统一成一种写法。
+ */
+function moveDiscardPileIntoDrawPile(bc: BattleContext): void {
+  if (bc.drawPile.length === 0) {
+    bc.drawPile = bc.discardPile;
+  } else {
+    for (const c of bc.discardPile) {
+      bc.drawPile.push(c);
+    }
+  }
+  bc.discardPile = [];
+}
+
+/**
+ * 洗牌触发点（对齐 BattleContext::onShuffle）。
+ * TODO(遗物PR): 算盘（+6 格挡）、日晷（每三次洗牌 +2 能量）、什锦。
+ * 目前无一登记，故是空实现——但保留这个调用点，免得将来漏掉时点。
+ */
+function onShuffle(): void {
+  // 无 RNG 消耗；日晷是跨洗牌计数器，需要玩家级状态，随遗物迁移一起做。
+}
+
+/**
+ * 消耗手牌中指定的一张（对齐 BattleContext::exhaustSpecificCardInHand）。
+ *
+ * ⚠ 参考的兜底查找有笔误：`for (i...) if (cards.hand[idx].uniqueId == uniqueId)` 比较的是
+ * `hand[idx]` 而非 `hand[i]`，条件在循环里恒定——快路径已经覆盖了它为真的情形，所以
+ * 兜底实际恒查不到、直接「card not found」返回。即：下标对不上就什么都不消耗。
+ * 照抄这个行为（调用方都是当场算好下标立刻消耗，走不到兜底）。
+ */
+function exhaustSpecificCardInHand(bc: BattleContext, idx: number, uid: number): void {
+  const card = bc.hand[idx];
+  if (card === undefined || card.uid !== uid) {
+    return;
+  }
+  bc.hand.splice(idx, 1);
+  bc.exhaustPile.push(card);
+}
+
+/** 随机消耗手牌若干张（对齐 Actions::ExhaustRandomCardInHand）。手牌空即提前返回。 */
+function exhaustRandomCardInHand(bc: BattleContext, count: number): void {
+  for (let i = 0; i < count; i += 1) {
+    if (bc.hand.length <= 0) {
+      return;
+    }
+    const idx = bc.rng.cardRandomRng.random(bc.hand.length - 1); // ★ 消耗一次 cardRandomRng
+    const [card] = bc.hand.splice(idx, 1);
+    bc.exhaustPile.push(card);
   }
 }
 
@@ -963,6 +1034,23 @@ function debuffEnemy(
   }
 }
 
+/**
+ * 对全体敌人施加减益（对齐 Actions::DebuffAllEnemy）。
+ *
+ * ⚠ 形状照抄：外层一个 addToBot，内层从**末尾往前** addToTop，于是最终按下标升序落到
+ * 各怪身上。改成正序 addToBot 在多怪场景下结算顺序就反了（参考的注释自嘲这是 workaround，
+ * 但它决定了可观察顺序，必须照抄）。
+ */
+function debuffAllEnemies(bc: BattleContext, power: string, amount: number): void {
+  addToBot(bc, (c) => {
+    for (let i = c.monsters.length - 1; i >= 0; i -= 1) {
+      if (c.monsters[i]?.alive === true) {
+        addToTop(c, (c2) => debuffEnemy(c2, i, power, amount, false));
+      }
+    }
+  });
+}
+
 /** 回合末递减一层减益，减到 0 则移除（对齐 decrementStatus + hasStatus 清零）。 */
 function decrementDebuff(m: CombatMonster, id: string): void {
   const p = m.powers.find((x) => x.id === id);
@@ -1145,6 +1233,348 @@ const CARD_RULES: Record<string, CardRule> = {
   // 燃烧：+2(升级 3) 力量（能力牌）。
   inflame: (bc, _item, up) =>
     addToBot(bc, (c) => addPower(c.player.powers, "strength", up ? 3 : 2)),
+
+  // ==========================================================================
+  // 铺量第二批 · 攻击牌（对齐 BattleContext::useAttackCard，BattleContext.cpp:966 起）
+  // ==========================================================================
+
+  // 撕咬：造成 7(升级 8) 点伤害，回复 2(升级 3) 点生命。对齐 BattleContext.cpp:986 BITE。
+  bite: (bc, item, up) => {
+    const dmg = calculateCardDamage(bc, item.target, up ? 8 : 7);
+    addToBot(bc, (c) => attackEnemy(c, item.target, dmg));
+    // HealPlayer 的 clearOnCombatVictory=false（Actions.cpp:117）：打出致命一击后战斗虽已
+    // 胜利，这口血照样要回。标 true 会让它被 clearPostCombatActions 吞掉。
+    addToBot(bc, (c) => healPlayer(c, up ? 3 : 2), false);
+  },
+
+  // 血肉巨兵：造成 32(升级 42) 点伤害。对齐 BattleContext.cpp:999 BLUDGEON。
+  bludgeon: (bc, item, up) => {
+    const dmg = calculateCardDamage(bc, item.target, up ? 42 : 32);
+    addToBot(bc, (c) => attackEnemy(c, item.target, dmg));
+  },
+
+  // 飞踢：造成 5(升级 8) 点伤害；若目标处于易伤，获得 1 点能量并抽 1 张牌。
+  // 对齐 BattleContext.cpp:1028 DROPKICK → Actions::DropkickAction（Actions.cpp:1035）。
+  //
+  // ⚠ 三处都要照抄：① 伤害在动作**执行时**才算（不同于绝大多数攻击牌在打牌时算好）；
+  // ② 易伤判定排在攻击**之前**，所以即便这一击打死目标，能量与抽牌照样兑现；
+  // ③ 三个 addToTop 的推入顺序是「抽牌 → 能量 → 攻击」，故实际执行顺序反过来：
+  //    先结算攻击，再回能量，最后抽牌。
+  dropkick: (bc, item, up) => {
+    addToBot(bc, (c) => {
+      const m = c.monsters[item.target];
+      if (m?.alive === true && getPower(m.powers, "vulnerable") > 0) {
+        addToTop(c, (c2) => drawCards(c2, 1));
+        addToTop(c, (c2) => {
+          c2.player.energy += 1;
+        });
+      }
+      const dmg = calculateCardDamage(c, item.target, up ? 8 : 5);
+      addToTop(c, (c2) => attackEnemy(c2, item.target, dmg));
+    });
+  },
+
+  // 进食：造成 10(升级 12) 点伤害；若这一击**击杀**目标，永久 +3(升级 4) 生命上限。消耗。
+  // 对齐 BattleContext.cpp:1032 FEED → Actions::FeedAction（Actions.cpp:1070）。
+  //
+  // ⚠ 不能复用 attackEnemy：FeedAction 自己判死活、自己 checkCombat，而「加生命上限」
+  // 夹在扣血与 checkCombat **之间**——顺序照抄。
+  // 参考的豁免条件还有小怪(MINION) / 半死(halfDead) / 重生(REGROW)，当前登记的四种怪
+  // 一个都不具备，故未转写；登记那些怪时必须补回来。
+  feed: (bc, item, up) => {
+    const dmg = calculateCardDamage(bc, item.target, up ? 12 : 10);
+    addToBot(bc, (c) => {
+      const m = c.monsters[item.target];
+      if (m === undefined || !m.alive) {
+        return;
+      }
+      monsterAttacked(c, m, dmg);
+      if (!m.alive) {
+        increasePlayerMaxHp(c, up ? 4 : 3);
+      }
+      checkCombat(c);
+    });
+  },
+
+  // 恶魔之火：消耗手中所有牌，每消耗一张造成 7(升级 10) 点伤害。自身也消耗。
+  // 对齐 BattleContext.cpp:1036 FIEND_FIRE → Actions::FiendFireAction（Actions.cpp:1091）。
+  //
+  // ⚠ 两个循环都是 addToTop，且**攻击先入队、消耗后入队**，于是执行顺序整个反过来：
+  // 先随机消耗 N 张，再打 N 次。N 是动作执行时的手牌数（本牌此时已被 useCard 移出手牌）。
+  // 伤害在打牌时算好一次，N 次攻击等值。
+  fiend_fire: (bc, item, up) => {
+    const dmg = calculateCardDamage(bc, item.target, up ? 10 : 7);
+    addToBot(bc, (c) => {
+      const n = c.hand.length;
+      for (let i = 0; i < n; i += 1) {
+        addToTop(c, (c2) => attackEnemy(c2, item.target, dmg));
+      }
+      for (let i = 0; i < n; i += 1) {
+        addToTop(c, (c2) => exhaustRandomCardInHand(c2, 1)); // ★ 每张消耗一次 cardRandomRng
+      }
+    });
+  },
+
+  // 精钢闪光：造成 3(升级 6) 点伤害，抽 1 张牌。对齐 BattleContext.cpp:1040 FLASH_OF_STEEL。
+  flash_of_steel: (bc, item, up) => {
+    const dmg = calculateCardDamage(bc, item.target, up ? 6 : 3);
+    addToBot(bc, (c) => attackEnemy(c, item.target, dmg));
+    addToBot(bc, (c) => drawCards(c, 1));
+  },
+
+  // 血液动力：自失 2 点生命，造成 15(升级 20) 点伤害。
+  // 对齐 BattleContext.cpp:1061 HEMOKINESIS。
+  //
+  // ⚠ 伤害在**打牌时**就算好，所以失血引起的加力量（破裂）不影响这一击——参考里那两行
+  // 注释正是作者自问自答确认了这一点。失血走 PlayerLoseHp，clearOnCombatVictory=false。
+  hemokinesis: (bc, item, up) => {
+    const dmg = calculateCardDamage(bc, item.target, up ? 20 : 15);
+    addToBot(bc, (c) => playerLoseHp(c, 2), false);
+    addToBot(bc, (c) => attackEnemy(c, item.target, dmg));
+  },
+
+  // 冲拳：造成 4(升级 5) 次 2 点伤害。消耗。对齐 BattleContext.cpp:1100 PUMMEL。
+  // 伤害只算一次，各击等值（与双重打击同款写法）。
+  pummel: (bc, item, up) => {
+    const dmg = calculateCardDamage(bc, item.target, 2);
+    const hits = up ? 5 : 4;
+    for (let i = 0; i < hits; i += 1) {
+      addToBot(bc, (c) => attackEnemy(c, item.target, dmg));
+    }
+  },
+
+  // 收割：对全体造成 4(升级 5) 点伤害，回复其中**未被格挡**的伤害总和。消耗。
+  // 对齐 BattleContext.cpp:1121 REAPER → Actions::ReaperAction（Actions.cpp:1130）。
+  //
+  // ⚠ 与顺劈斩那类 AttackAllEnemy 不同：ReaperAction **逐怪现算现打**，不预先算伤害矩阵。
+  // ⚠ 也**不调 checkCombat**——参考里那段被注释掉了（Actions.cpp:1148）。少了这一步，
+  // 收割打死最后一只怪时排队动作不会被清，回血因此仍会落地。照抄。
+  reaper: (bc, _item, up) => {
+    const base = (up ? 5 : 4) + getPower(bc.player.powers, "vigor");
+    addToBot(bc, (c) => {
+      let healAmount = 0;
+      for (let i = 0; i < c.monsters.length; i += 1) {
+        const m = c.monsters[i];
+        if (m === undefined || !m.alive) {
+          continue;
+        }
+        const hpBefore = m.hp;
+        monsterAttacked(c, m, calculateCardDamage(c, i, base));
+        healAmount += hpBefore - m.hp;
+      }
+      if (healAmount > 0) {
+        addToBot(c, (c2) => healPlayer(c2, healAmount), false);
+      }
+    });
+  },
+
+  // 断魂斩：消耗手中所有非攻击牌，造成 16(升级 22) 点伤害。
+  // 对齐 BattleContext.cpp:1143 SEVER_SOUL → Actions::SeverSoulExhaustAction（Actions.cpp:1201）。
+  //
+  // ⚠ 时序反直觉但照抄：消耗动作本身先入队，但它执行时又把逐张消耗 addToBot 到队尾，
+  // 于是排在攻击与 OnAfterCardUsed **之后**——实际是「先打伤害，再消耗那些非攻击牌」。
+  // 手牌下标按**降序**消耗，因此下标始终有效。伤害在打牌时算好（消耗之前）。
+  sever_soul: (bc, item, up) => {
+    const dmg = calculateCardDamage(bc, item.target, up ? 22 : 16);
+    addToBot(bc, (c) => {
+      for (let i = c.hand.length - 1; i >= 0; i -= 1) {
+        const card = c.hand[i];
+        if (getCardDef(card.defId).type !== "attack") {
+          const idx = i;
+          const uid = card.uid;
+          addToBot(c, (c2) => exhaustSpecificCardInHand(c2, idx, uid));
+        }
+      }
+    });
+    addToBot(bc, (c) => attackEnemy(c, item.target, dmg));
+  },
+
+  // 回旋镖：造成 3 点伤害，随机目标，重复 3(升级 4) 次。
+  // 对齐 BattleContext.cpp:1152 SWORD_BOOMERANG → Actions::SwordBoomerangAction（Actions.cpp:1212）。
+  //
+  // ⚠ 基础值（含精力）在**打牌时**取，但目标与最终伤害在每次动作**执行时**才算——参考
+  // 自己标注这是为了绕开「精力打完即清」的时序而刻意留的 hack，照抄。
+  // 攻击走 addToTop，故节奏是「掷目标 → 立刻结算这一击 → 再掷下一个目标」。
+  sword_boomerang: (bc, _item, up) => {
+    const base = 3 + getPower(bc.player.powers, "vigor");
+    const hits = up ? 4 : 3;
+    for (let i = 0; i < hits; i += 1) {
+      addToBot(bc, (c) => {
+        // 对齐 getRandomMonsterIdx(rng, aliveOnly=true) 的 -1 提前返回：全灭则不掷 RNG。
+        if (c.monstersAlive === 0) {
+          return;
+        }
+        const idx = getRandomMonsterIdx(c); // ★ 消耗一次 cardRandomRng
+        const dmg = calculateCardDamage(c, idx, base);
+        addToTop(c, (c2) => attackEnemy(c2, idx, dmg));
+      });
+    }
+  },
+
+  // 迅捷打击：造成 7(升级 10) 点伤害。对齐 BattleContext.cpp:1148 SWIFT_STRIKE。
+  swift_strike: (bc, item, up) => {
+    const dmg = calculateCardDamage(bc, item.target, up ? 10 : 7);
+    addToBot(bc, (c) => attackEnemy(c, item.target, dmg));
+  },
+
+  // ==========================================================================
+  // 铺量第二批 · 技能牌（对齐 BattleContext::useSkillCard，BattleContext.cpp:1209 起）
+  // ==========================================================================
+
+  // 包扎：回复 4(升级 6) 点生命。消耗。对齐 BattleContext.cpp:1234 BANDAGE_UP。
+  bandage_up: (bc, _item, up) => {
+    addToBot(bc, (c) => healPlayer(c, up ? 6 : 4), false);
+  },
+
+  // 致盲：给目标 2 层虚弱；升级后改为**全体** 2 层。对齐 BattleContext.cpp:1243 BLIND。
+  // 升级前后走的是两个不同 Action（DebuffEnemy vs DebuffAllEnemy），结算顺序不同，
+  // 不能合并成一句。
+  blind: (bc, item, up) => {
+    if (up) {
+      debuffAllEnemies(bc, "weak", 2);
+    } else {
+      addToBot(bc, (c) => debuffEnemy(c, item.target, "weak", 2, false));
+    }
+  },
+
+  // 放血：自失 3 点生命，获得 2(升级 3) 点能量。对齐 BattleContext.cpp:1251 BLOODLETTING。
+  bloodletting: (bc, _item, up) => {
+    addToBot(bc, (c) => playerLoseHp(c, 3), false);
+    addToBot(bc, (c) => {
+      c.player.energy += up ? 3 : 2;
+    });
+  },
+
+  // 深呼吸：把弃牌堆洗回抽牌堆，抽 1(升级 2) 张。对齐 BattleContext.cpp:1272 DEEP_BREATH。
+  //
+  // ⚠ 弃牌堆非空时消耗**两次** shuffleRng：EmptyDeckShuffle 先洗弃牌堆再并入抽牌堆，
+  // 紧接着 ShuffleDrawPile 把整个抽牌堆再洗一次。弃牌堆为空时两次都不做，只抽牌——
+  // 少判这个条件会白吃两次 shuffleRng，counter 立刻错位。
+  deep_breath: (bc, _item, up) => {
+    if (bc.discardPile.length > 0) {
+      onShuffle(); // 同步调用（参考在入队之前直接调），当前无副作用
+      addToBot(bc, (c) => {
+        shuffleCards(c, c.discardPile); // ★ 消耗一次 shuffleRng
+        moveDiscardPileIntoDrawPile(c);
+      });
+      addToBot(bc, (c) => {
+        shuffleCards(c, c.drawPile); // ★ 再消耗一次 shuffleRng
+      });
+    }
+    addToBot(bc, (c) => drawCards(c, up ? 2 : 1));
+  },
+
+  // 严阵以待：格挡翻倍。对齐 BattleContext.cpp:1302 ENTRENCH → Actions::EntrenchAction。
+  //
+  // ⚠ 两处与防御类卡不同：① 走 EntrenchAction 而非 GainBlock，故 clearOnCombatVictory 是
+  // **默认 true**（战斗已胜利时这份格挡会被清掉）；② **不过** calculateCardBlock，
+  // 敏捷/脆弱都不参与——它加的就是当前格挡值本身，且在动作执行时才读。
+  entrench: (bc) => {
+    addToBot(bc, (c) => gainBlock(c, c.player.block));
+  },
+
+  // 灵巧：获得 2(升级 4) 点格挡，抽 1 张牌。对齐 BattleContext.cpp:1310 FINESSE。
+  finesse: (bc, _item, up) => {
+    const blk = calculateCardBlock(bc, up ? 4 : 2);
+    addToBot(bc, (c) => gainBlock(c, blk), false);
+    addToBot(bc, (c) => drawCards(c, 1));
+  },
+
+  // 直觉：获得 6(升级 9) 点格挡。对齐 BattleContext.cpp:1333 GOOD_INSTINCTS。
+  good_instincts: (bc, _item, up) => {
+    const blk = calculateCardBlock(bc, up ? 9 : 6);
+    addToBot(bc, (c) => gainBlock(c, blk), false);
+  },
+
+  // 铜墙铁壁：获得 30(升级 40) 点格挡。消耗。对齐 BattleContext.cpp:1355 IMPERVIOUS。
+  impervious: (bc, _item, up) => {
+    const blk = calculateCardBlock(bc, up ? 40 : 30);
+    addToBot(bc, (c) => gainBlock(c, blk), false);
+  },
+
+  // 恐吓：给全体 1(升级 2) 层虚弱。消耗。对齐 BattleContext.cpp:1363 INTIMIDATE。
+  intimidate: (bc, _item, up) => debuffAllEnemies(bc, "weak", up ? 2 : 1),
+
+  // 杰克斯：自失 3 点生命，获得 2(升级 3) 点力量。对齐 BattleContext.cpp:1371 JAX。
+  jax: (bc, _item, up) => {
+    addToBot(bc, (c) => playerLoseHp(c, 3), false);
+    addToBot(bc, (c) => addPower(c.player.powers, "strength", up ? 3 : 2));
+  },
+
+  // 战略大师：抽 3(升级 4) 张牌。消耗。对齐 BattleContext.cpp:1384 MASTER_OF_STRATEGY。
+  master_of_strategy: (bc, _item, up) => {
+    addToBot(bc, (c) => drawCards(c, up ? 4 : 3));
+  },
+
+  // 献祭：自失 6 点生命，获得 2 点能量，抽 3(升级 5) 张牌。消耗。
+  // 对齐 BattleContext.cpp:1392 OFFERING。⚠ 能量恒为 2，升级只加抽牌数。
+  offering: (bc, _item, up) => {
+    addToBot(bc, (c) => playerLoseHp(c, 6), false);
+    addToBot(bc, (c) => {
+      c.player.energy += 2;
+    });
+    addToBot(bc, (c) => drawCards(c, up ? 5 : 3));
+  },
+
+  // 万灵药：获得 1(升级 2) 层神器。消耗。对齐 BattleContext.cpp:1398 PANACEA。
+  panacea: (bc, _item, up) => {
+    addToBot(bc, (c) => addPower(c.player.powers, "artifact", up ? 2 : 1));
+  },
+
+  // 再生之风：消耗手中所有非攻击牌，每张获得 5(升级 7) 点格挡。
+  // 对齐 BattleContext.cpp:1428 SECOND_WIND → Actions::SecondWindAction（Actions.cpp:1179）。
+  //
+  // ⚠ 两轮都是 addToTop：先按手牌下标**升序**推入 GainBlock（等值，顺序无所谓），再按
+  // 升序推入逐张消耗 → 实际执行是下标**降序**消耗，下标因此始终有效。写成正序消耗会
+  // 越消耗越错位。格挡额度在打牌时按当时的敏捷/脆弱算好一次。
+  second_wind: (bc, _item, up) => {
+    const blk = calculateCardBlock(bc, up ? 7 : 5);
+    addToBot(bc, (c) => {
+      const toExhaust: { idx: number; uid: number }[] = [];
+      for (let i = 0; i < c.hand.length; i += 1) {
+        const card = c.hand[i];
+        if (getCardDef(card.defId).type !== "attack") {
+          toExhaust.push({ idx: i, uid: card.uid });
+          addToTop(c, (c2) => gainBlock(c2, blk), false);
+        }
+      }
+      for (const t of toExhaust) {
+        addToTop(c, (c2) => exhaustSpecificCardInHand(c2, t.idx, t.uid));
+      }
+    });
+  },
+
+  // 冲击波：给全体 3(升级 5) 层虚弱与 3(升级 5) 层易伤。消耗。
+  // 对齐 BattleContext.cpp:1440 SHOCKWAVE。两次 DebuffAllEnemy 顺序固定：先虚弱后易伤。
+  shockwave: (bc, _item, up) => {
+    debuffAllEnemies(bc, "weak", up ? 5 : 3);
+    debuffAllEnemies(bc, "vulnerable", up ? 5 : 3);
+  },
+
+  // 觅敌之弱：若目标意图为攻击，获得 3(升级 4) 点力量。
+  // 对齐 BattleContext.cpp:1450 SPOT_WEAKNESS → Actions::SpotWeaknessAction（Actions.cpp:1225）。
+  // ⚠ 判定在动作**执行时**读目标当前意图，不是打牌时。
+  spot_weakness: (bc, item, up) => {
+    addToBot(bc, (c) => {
+      if (isMonsterAttacking(c, item.target)) {
+        addPower(c.player.powers, "strength", up ? 4 : 3);
+      }
+    });
+  },
+
+  // ==========================================================================
+  // 铺量第二批 · 能力牌（对齐 BattleContext::usePowerCard，BattleContext.cpp:1516 起）
+  // ==========================================================================
+
+  // 狂暴：每回合能量 +1，并给自己 2(升级 1) 层易伤。对齐 BattleContext.cpp:1522 BERSERK。
+  //
+  // ⚠ 两点都反直觉：① energyPerTurn 是**同步**自增（`++player.energyPerTurn`，不入队），
+  // 只有易伤走 addToBot；② 易伤传 isSourceMonster=false，故**不跳过**首次递减——
+  // 本回合末就掉一层。升级是把易伤从 2 减到 1（数值方向与其它牌相反）。
+  berserk: (bc, _item, up) => {
+    bc.player.energyPerTurn += 1;
+    addToBot(bc, (c) => debuffPlayer(c, "vulnerable", up ? 1 : 2, false));
+  },
 };
 
 /**
@@ -1372,6 +1802,30 @@ function healPlayer(bc: BattleContext, amount: number): void {
 }
 
 /**
+ * 玩家主动失血（对齐 Actions::PlayerLoseHp → Player::loseHp → hpWasLost）。
+ *
+ * ⚠ 与受击伤害是两条路：**不过格挡**、不触发荆棘，直接扣血。归零走同一个 wouldDie
+ * （瓶中仙灵仍能救回）。参考里 selfDamage 位只用来判定破裂（RUPTURE）加力量，
+ * 那张能力牌尚未登记，故这里不需要该参数。
+ * TODO(遗物PR): 钨钢棒减 1、百年拼图 / 鲁尼方块 / 自成型黏土的失血响应。
+ */
+function playerLoseHp(bc: BattleContext, amount: number): void {
+  if (amount <= 0) {
+    return;
+  }
+  bc.player.hp = Math.max(0, bc.player.hp - amount);
+  if (bc.player.hp <= 0) {
+    wouldDie(bc);
+  }
+}
+
+/** 提升生命上限（对齐 Player::increaseMaxHp：上限 +n 后再回复同样的量）。 */
+function increasePlayerMaxHp(bc: BattleContext, amount: number): void {
+  bc.player.maxHp += amount;
+  healPlayer(bc, amount);
+}
+
+/**
  * 非攻击伤害（对齐 Monster::damage，区别于 attacked）：同样先被格挡吸收，
  * 但**不**触发蜷缩 / 反甲等 onAttacked 链。
  */
@@ -1447,7 +1901,9 @@ export function playCard(bc: BattleContext, handIdx: number, target = 0): PlayCa
     return { ok: false, reason: `手牌下标越界: ${handIdx}` };
   }
   const def = getCardDef(card.defId);
-  const cost = def.cost ?? 0;
+  // 升级降费必须走 upgradedCost（对齐 Cards.h:703 getEnergyCost 里那几组 `upgraded ? a : b`）：
+  // 严阵以待 2→1、见红 1→0、全身撞击 1→0 等。此前只读 def.cost，升级态的能量会多扣。
+  const cost = (card.upgraded ? def.upgradedCost : undefined) ?? def.cost ?? 0;
   if (cost > bc.player.energy) {
     return { ok: false, reason: `能量不足：需要 ${cost}，剩余 ${bc.player.energy}` };
   }
@@ -1571,7 +2027,7 @@ function takeTurn(bc: BattleContext, m: CombatMonster): void {
       addToBot(bc, (c) => dealDamageToPlayer(c, dmg, idx));
     } else if (eff.kind === "apply_power" && eff.on === "target") {
       // 怪物给玩家上减益：isSourceMonster=true，故虚弱/易伤**跳过**首次递减。
-      addToBot(bc, (c) => debuffPlayer(c, eff.power, eff.amount));
+      addToBot(bc, (c) => debuffPlayer(c, eff.power, eff.amount, true));
     } else if (eff.kind === "gain_block") {
       // 对齐 addToBot(Actions::MonsterGainBlock)——排队，不能当场加。
       addToBot(bc, () => {
@@ -1599,10 +2055,17 @@ function calculateDamageToPlayer(bc: BattleContext, m: CombatMonster, baseDamage
 }
 
 /**
- * 怪物给玩家施加减益（对齐 Actions::DebuffPlayer，isSourceMonster=true）。
- * 与玩家打牌施加的减益相反，虚弱/易伤在此**跳过**首次递减。
+ * 给玩家施加减益（对齐 Actions::DebuffPlayer → Player::debuff）。
+ *
+ * isSourceMonster 决定虚弱/易伤是否**跳过**首次递减：怪物出招传 true（当回合不掉层），
+ * 玩家自己打出的牌传 false（狂暴给自己的易伤本回合末就掉一层）。
  */
-function debuffPlayer(bc: BattleContext, power: string, amount: number): void {
+function debuffPlayer(
+  bc: BattleContext,
+  power: string,
+  amount: number,
+  isSourceMonster = true,
+): void {
   // 神器优先抵消一层（古代药水等来源）。
   const artifact = bc.player.powers.find((p) => p.id === "artifact");
   if (artifact !== undefined && artifact.amount > 0) {
@@ -1617,7 +2080,11 @@ function debuffPlayer(bc: BattleContext, power: string, amount: number): void {
   // 不重置标志，因此当回合末照常递减。Monster::addDebuff 则没有这道 !hasStatus 判断。
   const had = bc.player.powers.some((x) => x.id === power && x.amount > 0);
   addPower(bc.player.powers, power, amount);
-  if (!had && (power === "weak" || power === "vulnerable" || power === "frail")) {
+  if (
+    isSourceMonster &&
+    !had &&
+    (power === "weak" || power === "vulnerable" || power === "frail")
+  ) {
     const p = bc.player.powers.find((x) => x.id === power);
     if (p !== undefined) {
       p.justApplied = true;
