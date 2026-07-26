@@ -170,8 +170,14 @@ release workflow 见到 tag 已存在就整体跳过，所以合并到 master �
 
 前两条是明显笔误，性质与已修的铁浪那条相同，适合走上游 PR；后两条是数据遗漏。
 
-另有 4 处**同类但只影响我们不打算铺量的颜色**，因此暂不处理，仅记录：
-`Cards.h:703 getEnergyCost` 的 `default: return 1` 使它对未列举的牌一律返回 1 费——
-`RAGE` 暴怒（红，0 费）、`SHIV` 飞刀（0 费）、`SEEK` 搜寻（0 费）、
-`THROUGH_VIOLENCE` 以暴制暴（0 费）都落进了这个兜底。其中 `RAGE` 是铁甲牌，
-铺量到它时同样要先在参考侧补上。
+另有 4 处性质不同，单独记：**`Cards.h:703 getEnergyCost` 以 `default: return 1` 收尾**，
+所以它对未列举的牌一律返回 1 费。`RAGE` 暴怒（红）、`SHIV` 飞刀、`SEEK` 搜寻、
+`THROUGH_VIOLENCE` 以暴制暴都落进这个兜底，实际都是 0 费。四张全在铁甲 + 无色的铺量范围内。
+
+与上表那 4 条的区别在于：上表是**显式写错**（`TRIP` 真的被列进了费用 1 组），这 4 张是
+**根本没被列举**。后者顺带说明一件事——`getEnergyCost` 不能当作全表的费用预言机，
+只有它显式列举的牌才算权威；而 `isCardInnate` / `doesCardExhaust` / `doesCardSelfRetain`
+都是「完整名单 + `default: return false`」，那三个是可以全表信任的。
+
+`SHIV` / `SEEK` / `THROUGH_VIOLENCE` 这三张参考项目三个 switch 里都没有 case，
+等于压根没实现，铺量到它们时只能以真实游戏为准。
