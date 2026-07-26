@@ -61,9 +61,20 @@ echo "→ 拆分"
 node --max-old-space-size=8192 "$REPO/tools/split-traces.mjs" "$WORK/traces.json" "$WORK/split"
 
 # —— 不变量 ①/② ——
+#
+# 校验范围由**模式**决定，不能靠行数猜。
+#
+#   --check   ：前提是「还没动 harness」，所以**整个文件**都该逐字节复现（不变量 ①）。
+#   --install ：前提是「本批故意改了 harness」，variant 0 之后的行本就该被重新生成，
+#               只能要求 variant 0 那一段不动（不变量 ②）。
+#
+# ⚠ 早先这里用「行数是否相同」来推断 harness 有没有改过。那个启发式是错的：trace 条数是
+# 种子数 × 楼层数 × variant 数，**与牌组大小无关**。在「每批替换 variant 1/2」的策略下
+# 行数逐批恒定，于是它每次都走「整文件比」这一支，把合法的 variant 1/2 重生成判成失败，
+# 还报成「variant 0 被扰动」——而 diff 实际落在 variant 1 的第一行。已用一次模拟第 5 批的
+# 实验复现过：下一批会被直接卡死，且诊断指向错误的原因。
 echo "→ 校验：已提交数据是否被扰动"
 fail=0
-harnessChanged=0
 for committed in "$TRACES"/*.jsonl; do
   name="$(basename "$committed")"
   fresh="$WORK/split/$name"
@@ -74,15 +85,17 @@ for committed in "$TRACES"/*.jsonl; do
   fi
   n="$(wc -l < "$committed" | tr -d ' ')"
   m="$(wc -l < "$fresh" | tr -d ' ')"
-  if [[ "$n" -eq "$m" ]]; then
-    # 行数一致 → harness 的牌组布局没动，那么**整个文件**都该逐字节复现（不变量 ①）。
+  if [[ "$MODE" == "--check" ]]; then
+    if [[ "$n" -ne "$m" ]]; then
+      echo "  ✗ $name 行数变了（$n → $m）——harness 已被改动，--check 的前提不成立，请用 --install"
+      fail=1
+      continue
+    fi
     cmpn="$n"
     label="全部 $cmpn 行"
   else
-    # 行数变了 → 本批换掉了 variant 0 之后的 variant。能且只能要求 variant 0 那段不动
-    # （不变量 ②）。行数不写死，由新生成的文件自己报——variant 0 的种子数一改，
+    # variant 0 的行数由新生成的文件自己报，不写死——variant 0 的种子数一改，
     # 写死的数字就会悄悄少校验。
-    harnessChanged=1
     cmpn="$(node "$REPO/tools/variant0-rows.mjs" "$fresh")"
     label="variant 0 的 $cmpn 行（其后 $((n - cmpn)) 行 → $((m - cmpn)) 行，本批重新生成）"
     if [[ "$n" -lt "$cmpn" ]]; then
@@ -108,13 +121,6 @@ if [[ "$MODE" == "--check" ]]; then
   if [[ $fail -ne 0 ]]; then
     echo ""
     echo "✗ 预言机不可复现。改 harness 前先弄清为什么——这说明已提交的背书数据失效了。"
-    exit 1
-  fi
-  if [[ $harnessChanged -ne 0 ]]; then
-    echo ""
-    echo "✗ harness 已被改动（行数变了），已提交数据只在 variant 0 范围内被复现。"
-    echo "  --check 的意义是「改 harness 之前」证明管道可信，所以这里算不过。"
-    echo "  要生成本批数据请用 --install。"
     exit 1
   fi
   echo ""
