@@ -137,6 +137,19 @@ const CARD: Record<string, string> = {
   SHOCKWAVE: "shockwave",
   SPOT_WEAKNESS: "spot_weakness",
   BERSERK: "berserk",
+  // —— 第三批 12 张（回合边界 Power 解锁的）——
+  UPPERCUT: "uppercut",
+  BATTLE_TRANCE: "battle_trance",
+  DISARM: "disarm",
+  FLEX: "flex",
+  IMPATIENCE: "impatience",
+  LIMIT_BREAK: "limit_break",
+  SEEING_RED: "seeing_red",
+  TRIP: "trip",
+  BARRICADE: "barricade",
+  COMBUST: "combust",
+  DEMON_FORM: "demon_form",
+  METALLICIZE: "metallicize",
 };
 const ENCOUNTER: Record<string, string> = {
   CULTIST: "cultist",
@@ -210,6 +223,17 @@ const POWER: Record<string, string> = {
   ARTIFACT: "artifact",
   THORNS: "thorns",
   VIGOR: "vigor",
+  // —— 回合边界 Power（第三批）——
+  METALLICIZE: "metallicize",
+  COMBUST: "combust",
+  DEMON_FORM: "demon_form",
+  // 灵活的「回合末归还力量」标记，打出灵活那一帧就可见。
+  LOSE_STRENGTH: "lose_strength",
+  // 战斗恍惚的封抽牌标记，同上。
+  NO_DRAW: "no_draw",
+  // 纯 bool 状态：参考只置 bit、从不写 statusMap，harness 按 1 输出（见 trace_dump 的
+  // playerStatusValue），我们这边也存 1。
+  BARRICADE: "barricade",
 };
 
 const mapPotion = (p: string): string | null => (p in POTION ? POTION[p]! : p);

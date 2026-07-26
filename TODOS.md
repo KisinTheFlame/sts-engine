@@ -106,11 +106,11 @@ harness 已支持选牌屏动作（`select_card` / `select_cards`），姿态 / 
 每条 trace 都自带**生成它的那副牌组**，重放端按行走。所以铺一批卡不是重生成，而是加一个
 deck variant，只追加行：
 
-| variant | 牌组              | 种子   | 升级 |
-| ------- | ----------------- | ------ | ---- |
-| 0       | 起始 + 首批 11 张 | 全 125 | 否   |
-| 1       | + 第二批 29 张    | 前 40  | 否   |
-| 2       | + 第二批 29 张    | 前 40  | 是   |
+| variant | 牌组                             | 种子   | 升级 |
+| ------- | -------------------------------- | ------ | ---- |
+| 0       | 起始 + 首批 11 张（21 张）       | 全 125 | 否   |
+| 1       | + 第二批 29 + 第三批 12（62 张） | 前 40  | 否   |
+| 2       | 同上                             | 前 40  | 是   |
 
 两条不变量（改 harness 后必须复验）：
 
@@ -125,6 +125,20 @@ variant 2（全升级）补的是一个真实漏洞：在它之前，所有 trac
 
 **登记了不等于有背书。** 策略只打手牌最左侧的可打出牌，一张卡可以躺在牌组里一次没被打出。
 每次重生成后要统计各卡的实际打出次数，0 次就是「有规则、没预言机」，属于本项目不接受的状态。
+
+**「对拍全绿」也不等于新代码被验证了，要用变异测试确认。** 删掉一段逻辑后对拍仍全绿，
+说明那段逻辑没有预言机看着。已确认覆盖到的（括号内为变异后的失败例数）：
+`upgradedCost`（230）、回合末弃牌顺序（1866）、燃烧失血量取 `combustHpLoss` 而非层数（130）、
+玩家 Power 的**枚举序**遍历（4）、灵活还债走 `DebuffPlayer` 因而被神器吃掉（3）。
+
+已确认**没有**覆盖到的，改动它们时对拍不会报警：
+
+- `applyEndOfTurnPowers` 里燃烧的 `bc.monstersAlive > 0` 门槛（去掉后 0 例失败）。
+  原因大概是怪在玩家回合内被打光就直接判胜、走不到回合末结算，这个分支近乎不可达。
+  照参考写着是对的，但没有东西守着它。
+- `upgradedExhausts` / `upgradedTargeted` 的升级覆盖分支（去掉后 0 例失败）——
+  目前没有已登记卡牌会因此改变可观测状态，靠 `data-tables.test.ts` 的单测守着
+  （变异后分别红 2 例和 1 例）。等 `limit_break` 之外更多带升级态差异的牌登记后会自然覆盖。
 
 **第 3 批起替换 variant 1/2，不要再堆新的一对**：后一批的牌组是前一批的超集、本来就覆盖得住，
 再追加一对等于花约 20MB 重复验证同一批卡，几轮下去仓库过 100MB。
@@ -156,29 +170,45 @@ release workflow 见到 tag 已存在就整体跳过，所以合并到 master �
 - **铁浪 `IRON_WAVE` 双重 `calculateCardBlock`**（敏捷算两次）。已向上游提 PR
   （gamerpuppy/sts_lightspeed#9），fork 的 `master` 已含修复。
 - **`Player::cc` 全项目无人赋值且无初始值**（UB，影响熵酿的药水池）。harness 里显式赋值规避。
+- **4 处卡牌属性与真实游戏不符**，随第三批登记一起修（fork 的 `sts-engine-harness` 分支
+  `4c3893a`）。修完复验过：这四张牌当时都不在任何 trace 牌组里，已提交数据逐字节未变。
+
+  | 卡                | 参考的错                                                                                         | 真实游戏               | 性质     |
+  | ----------------- | ------------------------------------------------------------------------------------------------ | ---------------------- | -------- |
+  | `DISARM` 缴械     | `BattleContext.cpp:1281` 只有 `DebuffEnemy<MS::STRENGTH>(t, -2, false)`，**完全不读 `up`**       | -2 / 升级 -3           | 笔误     |
+  | `IMPATIENCE` 急躁 | `:1341` 循环里找到攻击牌后写 `hasAttack = false;`（应为 `true`），于是恒假、退化成**无条件抽牌** | 「手里没有攻击牌才抽」 | 笔误     |
+  | `TRIP` 绊摔       | `Cards.h getEnergyCost` 把 TRIP 归入费用 **1** 组                                                | **0** 费               | 数据遗漏 |
+  | `SEEING_RED` 见红 | `Cards.h doesCardExhaust` 名单里**没有** SEEING_RED                                              | 消耗牌                 | 数据遗漏 |
+
+- **`setHasStatus` 从不写 `statusMap`，dump 纯 bool 状态会抛异常**（harness 侧规避）。
+  `Player.h:233` 只翻转 `statusBits`，于是 `getStatusRuntime` 的 default 分支对着不存在的 key
+  做 `statusMap.at(s)` → `std::out_of_range`。壁垒一上场整个生成就崩。harness 的
+  `playerStatusValue` 改为「`statusMap` 里没有就按 1 输出」，与我们把 bool 状态记为 1 层一致。
+  同类隐患还有 `CORRUPTION` / `CONFUSED` / `PEN_NIB` / `SURROUNDED` / `BLASPHEMER` /
+  `ELECTRO` / `MASTER_REALITY` / `WRATH_NEXT_TURN`，铺到它们时不必再改 harness。
 
 ### 已确认但尚未打补丁
-
-以下 4 条已逐条核对真实游戏确认是参考项目错、我们对，但**参考侧还没有改**。
-涉及的卡牌目前都未登记进 `CARD_RULES`，所以今天不影响任何 trace 数据。
 
 ⚠ **登记对应卡牌之前必须先在参考侧修掉**，否则重新生成的 trace 会带着错值，
 而我们的数据表是对的 —— 对拍会红在「我们错」的位置上，实际是预言机错。
 
-| 卡                | 参考的错                                                                                                                                        | 真实游戏               | 性质                                                  |
-| ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------- | ----------------------------------------------------- |
-| `DISARM` 缴械     | `BattleContext.cpp:1281-1282` 只有 `Actions::DebuffEnemy<MS::STRENGTH>(t, -2, false)`，**完全不读 `up`**，升级分支缺失                          | -2 / 升级 -3           | 笔误                                                  |
-| `IMPATIENCE` 急躁 | `BattleContext.cpp:1341-1348` 循环里找到攻击牌后写 `hasAttack = false;`（应为 `true`，见 1345 行），于是 `hasAttack` 恒假、退化成**无条件抽牌** | 「手里没有攻击牌才抽」 | 笔误（同一分支里紧跟着 `break`，说明本意就是 `true`） |
-| `TRIP` 绊摔       | `Cards.h:703 getEnergyCost` 把 TRIP 归入费用 **1** 组                                                                                           | **0** 费               | 数据遗漏                                              |
-| `SEEING_RED` 见红 | `Cards.h:534 doesCardExhaust` 的名单里**没有** SEEING_RED                                                                                       | 消耗牌                 | 数据遗漏                                              |
+- **`DARK_SHACKLES` 黑暗镣铐有两处错**（`BattleContext.cpp:1265-1270`），故第三批跳过了它：
+  1. **符号错**：写的是 `DebuffEnemy<MS::STRENGTH>(t, up ? 15 : 9)`，而
+     `Monster::addDebuff<MS::STRENGTH>`（`Monster.h:337`）是 `strength += amount` 不做取反
+     ——同项目 `Monster.cpp:394` / `:454` 的同款写法都传负数。所以这里是 **+9 力量**，
+     把削弱写成了增强。
+  2. **条件反了**：写成「目标**有**神器时才上 `SHACKLED`」，真实游戏是**没有**神器时才上。
 
-前两条是明显笔误，性质与已修的铁浪那条相同，适合走上游 PR；后两条是数据遗漏。
+  真实游戏 = `DebuffEnemy<STRENGTH>(t, -(up?15:9))` 再
+  `if (!hasStatus<ARTIFACT>()) BuffEnemy<SHACKLED>(t, up?15:9)`。
+  另外这张牌还依赖 `Monster::applyEndOfTurnTriggers`（`Monster.cpp:63-66`：SHACKLED 归还力量
+  并清除），我们尚未实现（见 `applyEndOfRoundPowers` 里的 TODO）。
 
 另有 4 处性质不同，单独记：**`Cards.h:703 getEnergyCost` 以 `default: return 1` 收尾**，
 所以它对未列举的牌一律返回 1 费。`RAGE` 暴怒（红）、`SHIV` 飞刀、`SEEK` 搜寻、
 `THROUGH_VIOLENCE` 以暴制暴都落进这个兜底，实际都是 0 费。四张全在铁甲 + 无色的铺量范围内。
 
-与上表那 4 条的区别在于：上表是**显式写错**（`TRIP` 真的被列进了费用 1 组），这 4 张是
+与已修的 `TRIP` 那条的区别在于：`TRIP` 是**显式写错**（真的被列进了费用 1 组），这 4 张是
 **根本没被列举**。后者顺带说明一件事——`getEnergyCost` 不能当作全表的费用预言机，
 只有它显式列举的牌才算权威；而 `isCardInnate` / `doesCardExhaust` / `doesCardSelfRetain`
 都是「完整名单 + `default: return false`」，那三个是可以全表信任的。
