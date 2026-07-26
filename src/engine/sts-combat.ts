@@ -1588,6 +1588,134 @@ const CARD_RULES: Record<string, CardRule> = {
     bc.player.energyPerTurn += 1;
     addToBot(bc, (c) => debuffPlayer(c, "vulnerable", up ? 1 : 2, false));
   },
+
+  // ==========================================================================
+  // 铺量第三批 · 攻击牌
+  // ==========================================================================
+
+  // 上勾拳：造成 13 点伤害，施加 1(升级 2) 层虚弱与 1(升级 2) 层易伤。
+  // 对齐 BattleContext.cpp:1172 UPPERCUT。⚠ 升级只加减益层数，伤害恒为 13。
+  // 顺序固定：伤害 → 虚弱 → 易伤。
+  uppercut: (bc, item, up) => {
+    const dmg = calculateCardDamage(bc, item.target, 13);
+    addToBot(bc, (c) => attackEnemy(c, item.target, dmg));
+    addToBot(bc, (c) => debuffEnemy(c, item.target, "weak", up ? 2 : 1, false));
+    addToBot(bc, (c) => debuffEnemy(c, item.target, "vulnerable", up ? 2 : 1, false));
+  },
+
+  // ==========================================================================
+  // 铺量第三批 · 技能牌
+  // ==========================================================================
+
+  // 战斗恍惚：抽 3(升级 4) 张牌，本回合无法再抽牌。
+  // 对齐 BattleContext.cpp:1238 BATTLE_TRANCE。
+  // ⚠ 顺序不能换：先抽牌、后上 NO_DRAW，否则自己把自己的抽牌堵死。
+  battle_trance: (bc, _item, up) => {
+    addToBot(bc, (c) => drawCards(c, up ? 4 : 3));
+    addToBot(bc, (c) => debuffPlayer(c, "no_draw", 1));
+  },
+
+  // 缴械：目标失去 2(升级 3) 点力量。消耗。对齐 BattleContext.cpp:1281 DISARM。
+  //
+  // ⚠ 参考此前完全没读 `up`（升级分支缺失），已在参考侧修正（sts_lightspeed 4c3893a）。
+  // 走 DebuffEnemy 而非 BuffEnemy(-n)，所以会被神器吃掉一层。
+  disarm: (bc, item, up) => {
+    addToBot(bc, (c) => debuffEnemy(c, item.target, "strength", up ? -3 : -2, false));
+  },
+
+  // 灵活：获得 2(升级 4) 点力量，本回合结束时失去这些力量。
+  // 对齐 BattleContext.cpp:1324 FLEX。
+  //
+  // ⚠ 加力量走 BuffPlayer、还债走 DebuffPlayer<LOSE_STRENGTH>——后者会被神器抵消，
+  // 于是「神器在手时打灵活，力量白拿不用还」。参考与真实游戏都是这个表现。
+  flex: (bc, _item, up) => {
+    addToBot(bc, (c) => addPower(c.player.powers, "strength", up ? 4 : 2));
+    addToBot(bc, (c) => debuffPlayer(c, "lose_strength", up ? 4 : 2));
+  },
+
+  // 急躁：若手中**没有攻击牌**，抽 2(升级 3) 张牌。
+  // 对齐 BattleContext.cpp:1341 IMPATIENCE。
+  //
+  // ⚠ 两处：① 手牌扫描是**同步**做的（打牌时当场扫），只有抽牌入队；② 此刻本牌尚未被
+  // useCard 移出手牌，但它是技能牌，不会被自己判成攻击牌。
+  // 参考原先在循环里写 `hasAttack = false;`（应为 true），条件恒假、退化成无条件抽牌，
+  // 已在参考侧修正（sts_lightspeed 4c3893a）。
+  impatience: (bc, _item, up) => {
+    const hasAttack = bc.hand.some((c) => getCardDef(c.defId).type === "attack");
+    if (!hasAttack) {
+      addToBot(bc, (c) => drawCards(c, up ? 3 : 2));
+    }
+  },
+
+  // 极限爆发：当前力量翻倍。消耗（升级后不消耗）。
+  // 对齐 BattleContext.cpp:1376 LIMIT_BREAK → Actions::LimitBreakAction（Actions.cpp:1124）。
+  //
+  // ⚠ 与严阵以待同款：翻倍量在动作**执行时**才读，且力量为 0 时 Player::buff 的
+  // `amount == 0` 提前返回什么都不做。负力量同样翻倍（-3 → -6）。
+  limit_break: (bc) => {
+    addToBot(bc, (c) => {
+      const strength = getPower(c.player.powers, "strength");
+      if (strength !== 0) {
+        addPower(c.player.powers, "strength", strength);
+      }
+    });
+  },
+
+  // 见红：获得 2 点能量。消耗。对齐 BattleContext.cpp:1432 SEEING_RED。
+  // ⚠ 参考的 doesCardExhaust 名单漏了它，已在参考侧修正（sts_lightspeed 4c3893a）。
+  // 升级只降费（1 → 0），能量恒为 2。
+  seeing_red: (bc) => {
+    addToBot(bc, (c) => {
+      c.player.energy += 2;
+    });
+  },
+
+  // 绊摔：给目标 2 层易伤；升级后改为**全体** 2 层。0 费。
+  // 对齐 BattleContext.cpp:1474 TRIP。
+  //
+  // ⚠ 与致盲同构：升级前后走的是两个不同 Action（DebuffEnemy vs DebuffAllEnemy），
+  // 多怪场景下结算顺序不同，不能合并成一句。
+  // 参考的 getEnergyCost 把它错列进费用 1 组，已在参考侧修正（sts_lightspeed 4c3893a）。
+  trip: (bc, item, up) => {
+    if (up) {
+      debuffAllEnemies(bc, "vulnerable", 2);
+    } else {
+      addToBot(bc, (c) => debuffEnemy(c, item.target, "vulnerable", 2, false));
+    }
+  },
+
+  // ==========================================================================
+  // 铺量第三批 · 能力牌（回合边界触发的那批，结算点见 callEndOfTurnActions /
+  // applyEndOfTurnPowers / applyStartOfTurnPostDrawPowers）
+  // ==========================================================================
+
+  // 壁垒：格挡不再于回合开始时清空。对齐 BattleContext.cpp:1518 BARRICADE。
+  //
+  // ⚠ **同步**生效（`player.setHasStatus<PS::BARRICADE>(true)`，不入队），与狂暴的
+  // energyPerTurn++ 同款。参考里它是个 bool 位、根本不进 statusMap，没有层数概念；
+  // 我们统一用 powers 表达，故记为 1 层，判定只看「有没有」。
+  barricade: (bc) => {
+    addPower(bc.player.powers, "barricade", 1);
+  },
+
+  // 燃烧：获得 5(升级 7) 层燃烧。对齐 BattleContext.cpp:1535 COMBUST。
+  //
+  // ⚠ `Player::buff<PS::COMBUST>` 除了累加层数还 `++combustHpLoss`，两个数各自独立：
+  // 层数决定每回合末对全体的伤害，combustHpLoss 决定失多少血（等于打过几张燃烧）。
+  // 叠两张未升级的燃烧 = 10 点伤害 + 失 2 血，不是失 1 血。
+  combust: (bc, _item, up) =>
+    addToBot(bc, (c) => {
+      c.player.combustHpLoss += 1;
+      addPower(c.player.powers, "combust", up ? 7 : 5);
+    }),
+
+  // 恶魔形态：获得 2(升级 3) 层恶魔形态。对齐 BattleContext.cpp:1539 DEMON_FORM。
+  demon_form: (bc, _item, up) =>
+    addToBot(bc, (c) => addPower(c.player.powers, "demon_form", up ? 3 : 2)),
+
+  // 金属化：获得 3(升级 4) 层金属化。对齐 BattleContext.cpp:1575 METALLICIZE。
+  metallicize: (bc, _item, up) =>
+    addToBot(bc, (c) => addPower(c.player.powers, "metallicize", up ? 4 : 3)),
 };
 
 /**
