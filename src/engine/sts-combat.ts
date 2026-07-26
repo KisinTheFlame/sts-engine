@@ -281,6 +281,12 @@ export type CombatPlayer = {
   cardDrawPerTurn: number;
   powers: PowerInstance[];
   cardsPlayedThisTurn: number;
+  /**
+   * 燃烧的失血量（对齐 Player::combustHpLoss）。**不是**燃烧的层数：
+   * `Player::buff<PS::COMBUST>` 每次调用都 `++combustHpLoss`，而层数按 5/7 累加，
+   * 所以「打了几张燃烧」和「对所有敌人打多少」是两个独立的数。
+   */
+  combustHpLoss: number;
 };
 
 // ============================================================================
@@ -592,6 +598,12 @@ function shuffleCards(bc: BattleContext, cards: CombatCard[]): void {
 function drawCards(bc: BattleContext, count: number): void {
   // 抽牌堆顶 = 数组尾（对齐 CardManager::popFromDrawPile = drawPile.back()+pop_back()）。
   const MAX_HAND = 10;
+  // 对齐 BattleContext::drawCards 顶部四条提前返回里的 NO_DRAW（战斗恍惚打完那一张牌
+  // 之后本回合就再也抽不到牌）。⚠ 位置在**最前面**：命中它连 reshuffle 都不做，
+  // 所以不会白吃一次 shuffleRng。
+  if (getPower(bc.player.powers, "no_draw") > 0) {
+    return;
+  }
   let toDraw = Math.min(MAX_HAND - bc.hand.length, count);
   if (toDraw <= 0) {
     return;
@@ -735,6 +747,7 @@ export function initCombat(input: CombatInitInput): BattleContext {
       cardDrawPerTurn: 5,
       powers: [],
       cardsPlayedThisTurn: 0,
+      combustHpLoss: 0,
     },
     monsters: [],
     monstersAlive: 0,
@@ -855,7 +868,7 @@ export function executeActions(bc: BattleContext): void {
 
 function playCardQueueItem(bc: BattleContext, item: CardQueueItem): void {
   if (item.isEndTurn) {
-    callEndOfTurnActions();
+    callEndOfTurnActions(bc);
     return;
   }
   if (item.randomTarget) {
@@ -1592,6 +1605,22 @@ function attackAllEnemies(bc: BattleContext, baseDamage: number): void {
   });
 }
 
+/**
+ * 对全体造成**非攻击**伤害（对齐 Actions::DamageAllEnemy）。
+ *
+ * ⚠ 与 attackAllEnemies 有三处不同：① 走 Monster::damage 而非 attacked，故不触发蜷缩等
+ * onAttacked 链；② 伤害值是调用方给的固定值，**不**逐怪过 calculateCardDamage（力量/易伤
+ * 都不参与）；③ checkCombat 在整个循环**之后**才调一次。
+ */
+function damageAllEnemiesNonAttack(bc: BattleContext, damage: number): void {
+  for (let i = 0; i < bc.monsters.length; i += 1) {
+    if (bc.monsters[i]?.alive === true) {
+      monsterDamage(bc, i, damage);
+    }
+  }
+  checkCombat(bc);
+}
+
 /** 对齐 BattleContext::useCard：分派效果入队 → OnAfterCardUsed → 移出手牌 + 扣能量。 */
 function useCard(bc: BattleContext, item: CardQueueItem): void {
   const card = bc.hand.find((c) => c.uid === item.cardUid);
@@ -1831,8 +1860,11 @@ function increasePlayerMaxHp(bc: BattleContext, amount: number): void {
 /**
  * 非攻击伤害（对齐 Monster::damage，区别于 attacked）：同样先被格挡吸收，
  * 但**不**触发蜷缩 / 反甲等 onAttacked 链。
+ *
+ * 不含 checkCombat——调用方决定何时调（Actions::DamageEnemy 每次都调，
+ * Actions::DamageAllEnemy 整个循环之后只调一次）。
  */
-function damageEnemyNonAttack(bc: BattleContext, idx: number, rawDamage: number): void {
+function monsterDamage(bc: BattleContext, idx: number, rawDamage: number): void {
   const m = bc.monsters[idx];
   if (m === undefined || !m.alive) {
     return;
@@ -1849,6 +1881,15 @@ function damageEnemyNonAttack(bc: BattleContext, idx: number, rawDamage: number)
     m.hp = 0;
     monsterDie(bc, m);
   }
+}
+
+/** 单体非攻击伤害（对齐 Actions::DamageEnemy = Monster::damage + checkCombat）。 */
+function damageEnemyNonAttack(bc: BattleContext, idx: number, rawDamage: number): void {
+  const m = bc.monsters[idx];
+  if (m === undefined || !m.alive) {
+    return;
+  }
+  monsterDamage(bc, idx, rawDamage);
   checkCombat(bc);
 }
 
@@ -1947,23 +1988,111 @@ export function endTurn(bc: BattleContext): void {
   executeActions(bc);
 }
 
-function callEndOfTurnActions(): void {
-  // TODO(后续PR): 回合末遗物/Power、手中 Burn/Decay 等 noTrigger 卡入队。骨架层无。
+/**
+ * 回合末动作（对齐 BattleContext::callEndOfTurnActions，BattleContext.cpp:2032）。
+ *
+ * 触发点是 cardQueue 里的 endTurn 项——所以它排在 onTurnEnding **之前**：先把
+ * 「回合末拿格挡」一类效果入队跑完，再进弃手牌与怪物回合。两者顺序反了的话金属化的
+ * 格挡会落到怪物已经打完之后。
+ */
+function callEndOfTurnActions(bc: BattleContext): void {
+  // —— 玩家遗物 OnPlayerEndTurn ——
+  // TODO(遗物PR): 斗篷夹扣（按手牌数加格挡）、冰核、尼尔的法典、山铜（无格挡时 addToTop
+  // 加 6 点）、石历（第 6 回合 52 点全体伤害）。⚠ 整组排在下面的 Power 之前，
+  // 且山铜那条是 addToTop 而非 addToBot。
+
+  // —— 玩家 Power AtEndOfTurnPreEndTurnCards ——
+  // 金属化：层数在**入队时**取，GainBlock 的 clearOnCombatVictory=false（打完这一回合
+  // 就赢了的话格挡照样加上）。
+  const metallicize = getPower(bc.player.powers, "metallicize");
+  if (metallicize > 0) {
+    addToBot(bc, (c) => gainBlock(c, metallicize), false);
+  }
+  // TODO(后续PR): 镀甲（PLATED_ARMOR，紧接金属化之后）、如水般（需姿态）、充能球回合末触发。
+  // TODO(后续PR): 手中灼伤 / 腐朽 / 怀疑 / 羞耻 / 悔恨按 noTrigger 入 cardQueue——
+  //   需要状态牌 / 诅咒牌生成机制，本批未实现。
+  // TODO(后续PR): 姿态 onEndOfTurn。
 }
 
-function onTurnEnding(bc: BattleContext): void {
-  // 弃掉手牌（保留牌/以太消失留后续），进入怪物回合。无 RNG，但**顺序要命**：
-  // 对齐 discardAtEndOfTurnHelper 的 `for (i = cardsInHand-1; i >= 0; --i)`——
-  // 从手牌末尾往前弃。弃牌堆的排列会成为下次 reshuffle 的洗牌输入，正序会洗出
-  // 另一副牌序。
+/**
+ * 玩家 Power 的回合末结算（对齐 Player::applyEndOfTurnPowers，Player.cpp:349），
+ * 由 onTurnEnding 同步调用。
+ *
+ * ⚠ 参考遍历的是 `std::map<PlayerStatus, int16_t> statusMap`，即按
+ * `PlayerStatusEffects.h` 的**枚举值升序**，与「先获得哪个 Power」无关。我们的 powers
+ * 是获得顺序的数组，所以这里按枚举顺序**逐项显式判断**，不能改成遍历数组。
+ * 本批命中的三项枚举序为：LOSE_STRENGTH(14) → NO_DRAW(16) → COMBUST(41)。
+ */
+function applyEndOfTurnPowers(bc: BattleContext): void {
+  // TODO(后续PR): 炸弹（THE_BOMB）排在整个循环**之前**，需要「N 回合后结算」的计数器。
+
+  // 灵活的还债：先扣力量，再摘掉标记。两条都走 addToBot。
+  // ⚠ 扣力量走的是 DebuffPlayer 而不是 BuffPlayer(-n)，所以会被神器吃掉一层——
+  // 神器在手时这 2 点力量就白送了（参考如此，真实游戏也如此）。
+  const loseStrength = getPower(bc.player.powers, "lose_strength");
+  if (loseStrength > 0) {
+    addToBot(bc, (c) => debuffPlayer(c, "strength", -loseStrength));
+    addToBot(bc, (c) => removePower(c.player.powers, "lose_strength"));
+  }
+
+  // 战斗恍惚的「本回合无法再抽牌」到此为止。
+  if (getPower(bc.player.powers, "no_draw") > 0) {
+    addToBot(bc, (c) => removePower(c.player.powers, "no_draw"));
+  }
+
+  // 燃烧：先失血再对全体造成伤害，两者都入队。
+  // ⚠ 三处照抄：① 「怪是不是已经全死了」在**入队时**判（areMonstersBasicallyDead 即
+  // monstersAlive <= 0），死绝了这一回合连血都不掉；② 失血量取 combustHpLoss（打过几张
+  // 燃烧），伤害取层数，两个数不一样；③ PlayerLoseHp 的 clearOnCombatVictory=false，
+  // DamageAllEnemy 是默认的 true。
+  const combust = getPower(bc.player.powers, "combust");
+  if (combust > 0 && bc.monstersAlive > 0) {
+    const hpLoss = bc.player.combustHpLoss;
+    addToBot(bc, (c) => playerLoseHp(c, hpLoss), false);
+    addToBot(bc, (c) => damageAllEnemiesNonAttack(c, combust));
+  }
+
+  // TODO(后续PR): 爆发 / 束缚 / 双重施法 / 缠绕 / 平衡 / 建立 / 敏捷流失 / 欧米茄 /
+  //   暴怒（红） / 反弹 / 再生 / 仪式（玩家侧） / 怨灵形态。
+}
+
+/**
+ * 弃掉手牌（对齐 BattleContext::discardAtEndOfTurn → discardAtEndOfTurnHelper）。
+ *
+ * ⚠ **顺序要命**：对齐 `for (i = cardsInHand-1; i >= 0; --i)`——从手牌末尾往前弃。
+ * 弃牌堆的排列会成为下次 reshuffle 的洗牌输入，正序会洗出另一副牌序。
+ * TODO(后续PR): 保留牌（自带保留 / 卢恩金字塔 / 平衡）与以太牌消失。
+ */
+function discardAtEndOfTurn(bc: BattleContext): void {
   for (let i = bc.hand.length - 1; i >= 0; i -= 1) {
     bc.discardPile.push(bc.hand[i]);
   }
   bc.hand = [];
-  bc.endTurnQueued = false;
-  bc.turnHasEnded = true;
-  bc.monsterTurnIdx = 0; // 从第一个怪开始行动
-  applyPreTurnLogic(bc);
+}
+
+/**
+ * 回合结束序列（对齐 BattleContext::onTurnEnding，BattleContext.cpp:2107）。
+ *
+ * ⚠ 除 applyEndOfTurnPowers 是同步调用外，其余三步全部 **addToBot**，顺序是
+ * 「Power 结算 → 清出牌队列 → 弃手牌 → 进怪物回合」。弃手牌必须走队列：燃烧的
+ * DamageAllEnemy 若打死了最后一只怪，clearPostCombatActions 会把后面这几条（都是
+ * 默认的 clearOnCombatVictory=true）一并清掉，于是手牌**留在手上**、回合也不推进。
+ * 写成同步弃牌就看不到这个表现了。
+ */
+function onTurnEnding(bc: BattleContext): void {
+  bc.endTurnQueued = false; // 参考在 executeActions 的该分支里、调本函数之前就置了假
+  applyEndOfTurnPowers(bc);
+  addToBot(bc, (c) => {
+    c.cardQueue.clear();
+  });
+  addToBot(bc, (c) => discardAtEndOfTurn(c));
+  // TODO(后续PR): cards.resetAttributesAtEndOfTurn()（费用修改 / 本回合免费等卡实例级状态）。
+  // UnnamedEndOfTurnAction：置 turnHasEnded，再入队怪物阶段开始，最后把游标归零。
+  addToBot(bc, (c) => {
+    c.turnHasEnded = true;
+    addToBot(c, (c2) => applyPreTurnLogic(c2));
+    c.monsterTurnIdx = 0; // 从第一个怪开始行动
+  });
 }
 
 /**
@@ -2149,6 +2278,20 @@ function addPower(powers: PowerInstance[], id: string, amount: number): void {
   }
 }
 
+/**
+ * 摘掉一个 Power（对齐 Actions::RemoveStatus → Player::setHasStatus(false)）。
+ *
+ * 参考只清 statusBits、把 statusMap 里的旧值留着不管；再次施加时走
+ * `hasStatus` 为假的分支 `statusMap[s] = amount`（覆盖而非累加），所以「整条删掉」
+ * 与它等价——而且我们这边删掉才不会在快照里留一个幽灵条目。
+ */
+function removePower(powers: PowerInstance[], id: string): void {
+  const idx = powers.findIndex((p) => p.id === id);
+  if (idx >= 0) {
+    powers.splice(idx, 1);
+  }
+}
+
 function dealDamageToPlayer(bc: BattleContext, amount: number, attackerIdx = -1): void {
   // 荆棘：对齐 Player::damage 的 addToTop(DamageEnemy(...))——排在队首，
   // 且走非攻击伤害路径（不触发蜷缩）。
@@ -2183,15 +2326,43 @@ function wouldDie(bc: BattleContext): void {
   bc.outcome = "player_loss";
 }
 
+/**
+ * 玩家 Power 的回合开始（抽牌之后）结算（对齐 Player::applyStartOfTurnPostDrawPowers，
+ * Player.cpp:674）。
+ *
+ * ⚠ 同 applyEndOfTurnPowers：参考遍历 statusMap，即按枚举值升序，与获得顺序无关。
+ * 本批只有恶魔形态（DEMON_FORM=44）命中。
+ */
+function applyStartOfTurnPostDrawPowers(bc: BattleContext): void {
+  // TODO(后续PR): 暴虐（BRUTALITY=39，排在恶魔形态**之前**）——卡牌本体升级后是固有牌，
+  //   缺「固有牌归位」机制，故整张牌尚未登记。
+  const demonForm = getPower(bc.player.powers, "demon_form");
+  if (demonForm > 0) {
+    addToBot(bc, (c) => addPower(c.player.powers, "strength", demonForm));
+  }
+  // TODO(后续PR): 虔诚 / 下回合抽牌 / 毒雾 等其余分支。
+}
+
 function afterMonsterTurns(bc: BattleContext): void {
   applyEndOfRoundPowers(bc); // 回合末怪物 Power（仪式涨力量等）
   bc.turnHasEnded = false;
   bc.monsterTurnIdx = 6; // 复位到「非怪物回合」
   bc.turn += 1;
+  // TODO(遗物PR): applyStartOfTurnRelics（战争艺术 / 硫磺石 / 船长之轮 …），排在清格挡之前。
+  // TODO(后续PR): applyStartOfTurnPowers（战斗圣歌 / 无限之刃 / 混乱 MAYHEM …）。
   // 新回合：清玩家格挡、抽牌、回能量。
-  bc.player.block = 0;
+  // ⚠ 清格挡是一条 if/else-if 链（对齐 BattleContext.cpp:2178）：壁垒 → 模糊 → 卡钳 →
+  // 归零，**只走第一个命中的分支**。壁垒那支是空的（格挡原样留着）。
+  if (getPower(bc.player.powers, "barricade") > 0) {
+    // 壁垒：格挡不清空。
+  } else {
+    // TODO(后续PR): 模糊（BLUR，递减一层并保留格挡）、卡钳遗物（只减 15 点）。
+    bc.player.block = 0;
+  }
   bc.player.cardsPlayedThisTurn = 0;
   drawCards(bc, bc.player.cardDrawPerTurn);
+  // TODO(后续PR): DRAW_REDUCTION 的 skipFirst 递减；applyStartOfTurnPostDrawRelics（怀表 / 扭曲钳）。
+  applyStartOfTurnPostDrawPowers(bc);
   bc.player.energy = bc.player.energyPerTurn;
   // 胜负检查（怪全灭）。
   if (livingMonsters(bc).length === 0) {
