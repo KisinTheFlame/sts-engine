@@ -88,22 +88,35 @@ tools/regen-traces.sh --check
 编辑 harness 的 `trace_dump.cpp`：
 
 - 在 `BATCH_N` 里加本批的 `CardId::XXX`（用**参考的枚举名**）
-- **每批新开一对 variant**（未升级 + 全升级），牌组是「起始 10 + 首批 11 + 本批」。
-  首批那 11 张是为了让牌堆有料（检索类效果才有得选），它们已有背书、不增加风险。
-  已有的 variant **一律不动**。
+- **variant 1/2 每批重新生成**（未升级 + 全升级各一个），牌组是**当前全牌组**：
+  起始 10 + 已登记的全部批次。**variant 0 一律不动。**
+- 为什么是「替换」而不是「每批新开一对」：一对 variant 约 12MB，几批下来仓库就过 100MB。
+  替换的真实代价是**覆盖密度**——牌组越大，单张卡出现在某一手牌里的概率越低，打出次数变稀。
+  这件事不靠推断，`--install` 打印的覆盖表就是量尺：73 张牌组下最薄的 `BLUDGEON` 是
+  41/41 次，离 0 还很远，所以替换成立。哪天覆盖表里真的出现 0，再考虑给那一批单开一对更
+  聚焦的牌组——理由写「覆盖密度」，不要写成内存上限。
+- ⚠ **覆盖表只看「卡被打出几次」，看不到分支级的退化。** 换布局之后要把 TODOS 里
+  **例数小的那些变异重量一遍**：换成 73 张全牌组时 `drawToHandAction` 的「候选恰好 1 张
+  就不开屏」捷径就从 20 例掉到 0——牌组一大，抽牌堆几乎永远有 ≥2 张匹配牌。
+  对拍全绿，覆盖表全非 0，唯一能发现它的是变异测试。
 
 三条不变量（改 harness 后必须复验，脚本会自动查前两条）：
 
-- ⚠ **牌组不得超过 64 张**（`CardManager::MAX_GROUP_SIZE`）。`CardManager::init` 直接
-  `drawPile.resize(gc.deck.size())`，而 `fixed_list` **没有任何越界检查**，65 张起写穿
-  `std::array<CardInstance, 64>`——静默内存破坏，不是 assert。这就是「每批新开一对」而不是
-  「用全牌组替换 variant 1/2」的原因：全牌组早就超了。harness 里有一道显式检查会先报错退出。
-- **variant 0 必须排在最前且不变**。`traceIdx` 驱动遗物/药水轮换，位置一动既有数据全部失效。
+- ⚠ **牌组不得超过 96 张**（`Deck::MAX_SIZE`）。上限来自**主牌组**：`Deck::cards` 是
+  `fixed_list<Card, 96>`，而 `fixed_list` **没有任何越界检查**，第 97 张就是静默内存破坏、
+  不是 assert（`CardManager::init` 的 `fixed_list<int, Deck::MAX_SIZE> idxs` 与
+  `isInnateMemo[Deck::MAX_SIZE]` 同源）。harness 里有一道显式检查会先报错退出。
+  ⚠ **不是 64**：三个牌堆声明成 `fixed_list<CardInstance, MAX_GROUP_SIZE=64>` 的那个分支在
+  `#ifdef sts_card_manager_use_fixed_list` 里（`CardManager.h:34`），而 `sts_common.h:12`
+  把那个 `#define` 注释掉了、构建命令也不带任何 `-D`——实际编译的是 `std::vector`，无上限。
+- **variant 0 必须排在最前且不变**。`traceIdx` 驱动遗物/药水轮换，位置一动它那几百例背书
+  全部失效。它之后的行是**允许被替换**的，脚本认这一点：行数一变就只比 variant 0 那一段。
 - **`deckUpgraded` 只在确有升级牌时输出**，故未升级的行与该字段存在之前的数据逐字节一致。
 
-`tools/split-traces.mjs` 按 **variant 在 harness 输出里的首次出现顺序**排，不是按牌组张数
-——张数排序的前提（「后一个 variant 更大」）已被 64 张上限打破，新 variant 更小，
-按张数会插到文件**中间**而不是追加。
+`tools/split-traces.mjs` 按 **variant 在 harness 输出里的首次出现顺序**排，不按牌组张数：
+张数排序其实是在**推断** harness 的声明顺序，多一层不必要的假设——哪一批的牌组比上一批小
+（换更聚焦的牌组、或临时砍几张）就会被插进 variant 0 中间去。首次出现顺序与牌组大小无关，
+是 harness 真正的输出顺序。（这个坑真踩到过：第一次 `--install` 就红在第 376 行。）
 
 **牌组要为「让新代码被走到」而设计，不只是「把新卡塞进去」。** 第四批加了第二张 `EXHUME`：
 `ExhumeAction` 会把消耗堆里的掘尸滤掉，而掘尸自己是在 `OnAfterCardUsed`（晚于 `ExhumeAction`）
@@ -136,7 +149,7 @@ tools/regen-traces.sh --install UPPERCUT DEMON_FORM METALLICIZE ...
 pnpm typecheck && pnpm lint && pnpm test && pnpm format
 ```
 
-全绿是**下限**，不是完成。`sts-combat-trace.test.ts` 现有 3675 例逐帧对拍，
+全绿是**下限**，不是完成。`sts-combat-trace.test.ts` 现有 3075 例逐帧对拍，
 其中一部分用**全升级牌组**——所以每条规则 `up ? x : y` 的两个分支都会被验证。
 
 改共享路径（`callEndOfTurnActions`、`drawCards`、`onTurnEnding`、`useCard` 之类）时，
@@ -206,8 +219,15 @@ cp /tmp/sc.bak src/engine/sts-combat.ts
   `out_of_range`。harness 的 `playerStatusValue` 已规避（按 1 输出），不必再改。
 - **玩家 Power 按 `PlayerStatus` 枚举序结算，不是获得顺序**（参考遍历 `std::map`）。
 - **`Player::cc` 全项目无人赋值**（UB，影响熵酿药水池），harness 里显式赋值规避。
-- **`fixed_list` 全项目无越界检查**（`include/data_structure/fixed_list.h`）。牌堆是
-  `fixed_list<CardInstance, 64>`，牌组超 64 张就是静默内存破坏。改 harness 牌组时先数数。
+- **`fixed_list` 全项目无越界检查**（`include/data_structure/fixed_list.h`：`push_back` 就是
+  `arr[list_size++] = t`，`resize` 就是 `list_size = size`）。但**牌组的上限不是 64 而是 96**：
+  卡住牌组的是主牌组 `Deck::cards`（`fixed_list<Card, Deck::MAX_SIZE=96>`），不是三个牌堆
+  ——牌堆那份 `fixed_list<CardInstance, 64>` 声明在 `#ifdef sts_card_manager_use_fixed_list`
+  里，而 `sts_common.h:12` 的 `#define` 是注释掉的，实际编译成 `std::vector`。
+  真正会被 64 卡住的是 `ViolenceAction` 的 `attackIdxList`（`Actions.cpp:616`），按
+  **抽牌堆里的攻击牌数**算——73 张牌组远够不到，但登记 `violence` 时要重新数一遍。
+  `UpgradeRandomCardAction` 的 `upgradeableHandIdxs`（`:942`）是 `fixed_list<int,10>`，
+  手牌上限本就是 10，安全。
 - **harness 的策略可以比 `enumerateCardSelectActions` 更聪明**。那个枚举器对多选屏
   （净化 / 赌博）只产出「一张都不选」，还自带注释 `just dont deal with this right now`——
   照它走的话 `chooseExhaustCards` 的非空路径永远没有预言机。枚举器只是搜索用的辅助，

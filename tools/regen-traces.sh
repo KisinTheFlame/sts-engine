@@ -7,10 +7,12 @@
 #
 # 三条不变量（任一条不过就退出、**不安装**）：
 #
-#   ① 预言机可复现  —— 未改动 harness 时，重跑必须逐字节复现已提交的数据。
+#   ① 预言机可复现  —— 未改动 harness 时，重跑必须逐字节复现已提交的数据（整个文件）。
 #                       先证明管道能复现旧数据，重生成的新数据才有理由可信。
-#   ② variant 0 不被扰动 —— 已提交数据的前 N 行必须逐字节不变。traceIdx 驱动遗物/药水
-#                       轮换，variant 0 的位置一动，既有的上千例背书就全部失效。
+#   ② variant 0 不被扰动 —— 改了 harness 之后，文件开头 variant 0 那一段仍须逐字节不变。
+#                       traceIdx 驱动遗物/药水轮换，variant 0 的位置一动，它那几百例背书
+#                       就全部失效。variant 0 之后的行是**允许被替换**的——布局策略是
+#                       「variant 0 冻结 + 其后每批用当前全牌组重生成」，见 split-traces.mjs。
 #   ③ 新卡真的被打出 —— 见 tools/check-coverage.mjs。
 #
 # 用法:
@@ -58,9 +60,10 @@ echo "→ 生成 trace"
 echo "→ 拆分"
 node --max-old-space-size=8192 "$REPO/tools/split-traces.mjs" "$WORK/traces.json" "$WORK/split"
 
-# —— 不变量 ②（--check 模式下即不变量 ①）——
-echo "→ 校验：已提交数据的前缀是否逐字节未变"
+# —— 不变量 ①/② ——
+echo "→ 校验：已提交数据是否被扰动"
 fail=0
+harnessChanged=0
 for committed in "$TRACES"/*.jsonl; do
   name="$(basename "$committed")"
   fresh="$WORK/split/$name"
@@ -70,20 +73,33 @@ for committed in "$TRACES"/*.jsonl; do
     continue
   fi
   n="$(wc -l < "$committed" | tr -d ' ')"
-  # 数据是**追加式**的：新 variant 的行只会排在已有行之后（见 tools/split-traces.mjs 的排序），
-  # 所以「已提交的全部行」必须逐字节等于「新生成文件的同长度前缀」。
-  # 取两者中较短的行数是为了给「新 variant 让文件变长」留位置——不是为了容忍旧行被改。
   m="$(wc -l < "$fresh" | tr -d ' ')"
-  cmpn=$(( n < m ? n : m ))
+  if [[ "$n" -eq "$m" ]]; then
+    # 行数一致 → harness 的牌组布局没动，那么**整个文件**都该逐字节复现（不变量 ①）。
+    cmpn="$n"
+    label="全部 $cmpn 行"
+  else
+    # 行数变了 → 本批换掉了 variant 0 之后的 variant。能且只能要求 variant 0 那段不动
+    # （不变量 ②）。行数不写死，由新生成的文件自己报——variant 0 的种子数一改，
+    # 写死的数字就会悄悄少校验。
+    harnessChanged=1
+    cmpn="$(node "$REPO/tools/variant0-rows.mjs" "$fresh")"
+    label="variant 0 的 $cmpn 行（其后 $((n - cmpn)) 行 → $((m - cmpn)) 行，本批重新生成）"
+    if [[ "$n" -lt "$cmpn" ]]; then
+      echo "  ✗ $name 已提交只有 $n 行，少于新生成的 variant 0（$cmpn 行）——variant 0 被改大了？"
+      fail=1
+      continue
+    fi
+  fi
   head -n "$cmpn" "$committed" > "$WORK/a"
   head -n "$cmpn" "$fresh"     > "$WORK/b"
   if cmp -s "$WORK/a" "$WORK/b"; then
-    echo "  ✓ $name 前 $cmpn 行一致"
+    echo "  ✓ $name $label —— 一致"
   else
     # `|| true` 是必需的：cmp 报不同就返回非 0，在 set -e + pipefail 下会让脚本当场退出，
     # 于是这条最关键的诊断信息永远打不出来。（这个 bug 是靠故意篡改数据、跑失败路径才发现的。）
     first_diff=$(cmp "$WORK/a" "$WORK/b" 2>&1 | head -1 || true)
-    echo "  ✗ $name 前 $cmpn 行**被扰动**：$first_diff"
+    echo "  ✗ $name $label —— **被扰动**：$first_diff"
     fail=1
   fi
 done
@@ -92,6 +108,13 @@ if [[ "$MODE" == "--check" ]]; then
   if [[ $fail -ne 0 ]]; then
     echo ""
     echo "✗ 预言机不可复现。改 harness 前先弄清为什么——这说明已提交的背书数据失效了。"
+    exit 1
+  fi
+  if [[ $harnessChanged -ne 0 ]]; then
+    echo ""
+    echo "✗ harness 已被改动（行数变了），已提交数据只在 variant 0 范围内被复现。"
+    echo "  --check 的意义是「改 harness 之前」证明管道可信，所以这里算不过。"
+    echo "  要生成本批数据请用 --install。"
     exit 1
   fi
   echo ""
@@ -107,7 +130,7 @@ fi
 if [[ $fail -ne 0 ]]; then
   echo ""
   echo "✗ variant 0 被扰动了，拒绝安装。"
-  echo "  几乎总是这个原因：新 variant 没排在 variant 0 之后，或 variant 0 的牌组/种子被改了。"
+  echo "  几乎总是这个原因：新 variant 排到了 variant 0 之前，或 variant 0 的牌组/种子被改了。"
   exit 1
 fi
 
