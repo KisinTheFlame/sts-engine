@@ -64,6 +64,13 @@ type Trace = {
   encounter: string;
   character: string;
   deck: string[];
+  /**
+   * 与 deck 等长的 0/1，标记每张牌是否升级。
+   *
+   * 仅在**确有**升级牌时由 harness 输出，所以未升级的 trace 行与这个字段存在之前提交的
+   * 数据逐字节一致——铺量因此是纯追加，不必重生成既有的几十 MB。
+   */
+  deckUpgraded?: number[];
   initial: Snapshot;
   steps: Step[];
 };
@@ -100,6 +107,36 @@ const CARD: Record<string, string> = {
   TWIN_STRIKE: "twin_strike",
   BODY_SLAM: "body_slam",
   INFLAME: "inflame",
+  // —— 第二批 29 张 ——
+  BITE: "bite",
+  BLUDGEON: "bludgeon",
+  DROPKICK: "dropkick",
+  FEED: "feed",
+  FIEND_FIRE: "fiend_fire",
+  FLASH_OF_STEEL: "flash_of_steel",
+  HEMOKINESIS: "hemokinesis",
+  PUMMEL: "pummel",
+  REAPER: "reaper",
+  SEVER_SOUL: "sever_soul",
+  SWORD_BOOMERANG: "sword_boomerang",
+  SWIFT_STRIKE: "swift_strike",
+  BANDAGE_UP: "bandage_up",
+  BLIND: "blind",
+  BLOODLETTING: "bloodletting",
+  DEEP_BREATH: "deep_breath",
+  ENTRENCH: "entrench",
+  FINESSE: "finesse",
+  GOOD_INSTINCTS: "good_instincts",
+  IMPERVIOUS: "impervious",
+  INTIMIDATE: "intimidate",
+  JAX: "jax",
+  MASTER_OF_STRATEGY: "master_of_strategy",
+  OFFERING: "offering",
+  PANACEA: "panacea",
+  SECOND_WIND: "second_wind",
+  SHOCKWAVE: "shockwave",
+  SPOT_WEAKNESS: "spot_weakness",
+  BERSERK: "berserk",
 };
 const ENCOUNTER: Record<string, string> = {
   CULTIST: "cultist",
@@ -180,10 +217,16 @@ const mapPotion = (p: string): string | null => (p in POTION ? POTION[p]! : p);
 const mapPowers = (p: Record<string, number>): Record<string, number> => {
   const out: Record<string, number> = {};
   for (const [k, v] of Object.entries(p)) {
-    const id = POWER[k];
-    if (id !== undefined && v !== 0) {
-      out[id] = v;
+    if (v === 0) {
+      continue;
     }
+    const id = POWER[k];
+    // 未映射的 power 必须**报错**，不能静默丢掉：丢掉的话「参考施加了某个我们没实现的
+    // power」两边都是空对象，测试反而变绿——正是这类静默通过最危险。
+    if (id === undefined) {
+      throw new Error(`trace 里出现未映射的 power: ${k}=${String(v)}（请补进 POWER 映射表）`);
+    }
+    out[id] = v;
   }
   return out;
 };
@@ -270,7 +313,10 @@ const start = (t: Trace): BattleContext =>
     floorNum: t.floor,
     ascension: 0,
     encounterId: ENCOUNTER[t.encounter]!,
-    deck: t.deck.map((c) => ({ defId: CARD[c] ?? c, upgraded: false })),
+    deck: t.deck.map((c, i) => ({
+      defId: CARD[c] ?? c,
+      upgraded: (t.deckUpgraded?.[i] ?? 0) === 1,
+    })),
     playerHp: t.initial.player.hp,
     playerMaxHp: t.initial.player.maxHp,
     character: "ironclad",
@@ -291,7 +337,10 @@ describe("sts-combat 逐帧重放参考项目真实战斗 trace", () => {
   for (const [encounter, list] of byEncounter) {
     describe(encounter, () => {
       for (const t of list) {
-        it(`seed "${t.seed}" @floor ${t.floor}（${t.steps.length} 步）`, () => {
+        // 牌组规格进标题：同一 (seed, floor) 现在有多条 trace（不同 deck variant），
+        // 不标出来失败时看不出是哪一副牌组翻的。
+        const variant = `${t.deck.length}张${t.deckUpgraded === undefined ? "" : "·升级"}`;
+        it(`seed "${t.seed}" @floor ${t.floor} [${variant}]（${t.steps.length} 步）`, () => {
           const bc = start(t);
           expect(shape(bc)).toEqual(shapeExpected(t.initial));
 
