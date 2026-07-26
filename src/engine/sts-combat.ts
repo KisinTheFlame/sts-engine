@@ -2427,6 +2427,100 @@ const CARD_RULES: Record<string, CardRule> = {
     addToBot(bc, (c) => drawCards(c, up ? 2 : 1));
     addToBot(bc, (c) => warcryAction(c));
   },
+
+  // ==========================================================================
+  // 铺量第五批 · 牌的生命周期（消耗触发 / 状态牌生成 / 以太 / 固有归位）
+  // ==========================================================================
+
+  // —— 消耗触发（结算点见 triggerAndMoveToExhaustPile）——
+
+  // 黑暗拥抱：每当一张牌被消耗，抽 1 张牌。对齐 BattleContext.cpp:1543 DARK_EMBRACE。
+  // ⚠ 层数恒为 1，升级只降费（2 → 1）；抽牌数读的是层数，所以叠两张就抽 2。
+  dark_embrace: (bc) => addToBot(bc, (c) => addPower(c.player.powers, "dark_embrace", 1)),
+
+  // 无痛之心：每当一张牌被消耗，获得 3(升级 4) 点格挡。对齐 BattleContext.cpp:1551 FEEL_NO_PAIN。
+  feel_no_pain: (bc, _item, up) =>
+    addToBot(bc, (c) => addPower(c.player.powers, "feel_no_pain", up ? 4 : 3)),
+
+  // —— 状态牌生成（结算点见 makeTempCardIn* 三个函数）——
+
+  // 献焰：对全体造成 21(升级 28) 点伤害，往**弃牌堆**塞一张灼伤。
+  // 对齐 BattleContext.cpp:1068 IMMOLATE。塞牌不消耗 RNG。
+  immolate: (bc, _item, up) => {
+    attackAllEnemies(bc, (up ? 28 : 21) + getPower(bc.player.powers, "vigor"));
+    addToBot(bc, (c) => makeTempCardInDiscard(c, "burn", 1));
+  },
+
+  // 鲁莽冲锋：造成 7(升级 10) 点伤害，把一张眩晕**洗入抽牌堆**。
+  // 对齐 BattleContext.cpp:1127 RECKLESS_CHARGE。★ 洗入消耗一次 cardRandomRng。
+  reckless_charge: (bc, item, up) => {
+    const dmg = calculateCardDamage(bc, item.target, up ? 10 : 7);
+    addToBot(bc, (c) => attackEnemy(c, item.target, dmg));
+    addToBot(bc, (c) => makeTempCardInDrawPile(c, "dazed", 1)); // ★ 消耗一次 cardRandomRng
+  },
+
+  // 狂野劈砍：造成 12(升级 17) 点伤害，把一张伤口**洗入抽牌堆**。
+  // 对齐 BattleContext.cpp:1187 WILD_STRIKE。★ 洗入消耗一次 cardRandomRng。
+  wild_strike: (bc, item, up) => {
+    const dmg = calculateCardDamage(bc, item.target, up ? 17 : 12);
+    addToBot(bc, (c) => attackEnemy(c, item.target, dmg));
+    addToBot(bc, (c) => makeTempCardInDrawPile(c, "wound", 1)); // ★ 消耗一次 cardRandomRng
+  },
+
+  // 强行突破：往**手牌**塞两张伤口，获得 15(升级 20) 点格挡。
+  // 对齐 BattleContext.cpp:1407 POWER_THROUGH。
+  //
+  // ⚠ 顺序反直觉但照抄：**先塞伤口、后加格挡**（两条都 addToBot）。塞牌走 moveToHandHelper，
+  // 所以手牌满 10 张时伤口改进弃牌堆。塞牌不消耗 RNG。
+  power_through: (bc, _item, up) => {
+    const blk = calculateCardBlock(bc, up ? 20 : 15);
+    addToBot(bc, (c) => makeTempCardInHand(c, "wound", 2));
+    addToBot(bc, (c) => gainBlock(c, blk), false);
+  },
+
+  // —— 以太（回合末未打出则消失，结算点见 discardAtEndOfTurn）——
+
+  // 杀戮：造成 20(升级 28) 点伤害。以太。对齐 BattleContext.cpp:1003 CARNAGE。
+  carnage: (bc, item, up) => {
+    const dmg = calculateCardDamage(bc, item.target, up ? 28 : 20);
+    addToBot(bc, (c) => attackEnemy(c, item.target, dmg));
+  },
+
+  // 幽灵护甲：获得 10(升级 13) 点格挡。以太。对齐 BattleContext.cpp:1329 GHOSTLY_ARMOR。
+  ghostly_armor: (bc, _item, up) => {
+    const blk = calculateCardBlock(bc, up ? 13 : 10);
+    addToBot(bc, (c) => gainBlock(c, blk), false);
+  },
+
+  // —— 固有牌（开局归位见 initCombat 的 cards.init 一段）——
+
+  // 戏剧性登场：对全体造成 8(升级 12) 点伤害。固有。消耗。
+  // 对齐 BattleContext.cpp:1022 DRAMATIC_ENTRANCE。
+  dramatic_entrance: (bc, _item, up) =>
+    attackAllEnemies(bc, (up ? 12 : 8) + getPower(bc.player.powers, "vigor")),
+
+  // 心灵冲击：造成等同于**抽牌堆张数**的伤害。固有。对齐 BattleContext.cpp:1081 MIND_BLAST。
+  // ⚠ 张数在**打牌时**取（本牌此刻还在手上，不影响抽牌堆）；升级只降费（2 → 1），
+  // 伤害公式两个分支相同。
+  //
+  // ⚠ 它的背书**只来自 23 张的聚焦牌组变体**（variant 3/4）：85 张全牌组里它是固有牌、
+  // 每条 trace 起手必有、抽牌堆约 80 张 → 一击 80 点会把邪教徒/颚虫第一回合打死，
+  // 1230 条 trace 从 ~40 步塌成 1 步。所以它**故意不在全牌组变体里**。
+  mind_blast: (bc, item) => {
+    const dmg = calculateCardDamage(bc, item.target, bc.drawPile.length);
+    addToBot(bc, (c) => attackEnemy(c, item.target, dmg));
+  },
+
+  // 暴虐：每回合开始时失去 1 点生命并抽 1 张牌。升级后**固有**。
+  // 对齐 BattleContext.cpp:1527 BRUTALITY。⚠ 层数恒为 1，升级只加固有位。
+  // 结算点见 applyStartOfTurnPostDrawPowers。
+  brutality: (bc) => addToBot(bc, (c) => addPower(c.player.powers, "brutality", 1)),
+
+  // —— 抽到状态牌时的触发 ——
+
+  // 进化：每当你抽到一张状态牌，抽 1(升级 2) 张牌。对齐 BattleContext.cpp:1547 EVOLVE。
+  // 结算点见 drawOneCard。
+  evolve: (bc, _item, up) => addToBot(bc, (c) => addPower(c.player.powers, "evolve", up ? 2 : 1)),
 };
 
 /**

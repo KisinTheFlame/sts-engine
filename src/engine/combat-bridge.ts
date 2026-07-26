@@ -59,10 +59,8 @@ export function stsCombatCoverage(state: GameState, encounterId: string): Combat
     if (!isCardSupported(card.defId)) {
       return no(`牌「${def.name}」尚未迁移`);
     }
-    // 固有牌需要开局归位，sts-combat 还没实现（见 initCombat 里的 TODO）。
-    if (card.innate === true || def.innate === true || (card.upgraded && def.upgradedInnate)) {
-      return no(`固有牌「${def.name}」的开局归位尚未迁移`);
-    }
+    // 固有牌的开局归位第五批已实现（sts-combat 的 cards.init 一段，含瓶装遗物的实例级
+    // innate 位），所以这里不再拦它——`isCardSupported` 那一道就够了。
   }
   for (const potion of state.potions) {
     if (potion !== null && !isPotionSupported(potion)) {
@@ -99,7 +97,13 @@ export function startCombat(state: GameState, encounterId: string): void {
     floorNum: state.floorNum,
     ascension: state.ascension,
     encounterId,
-    deck: state.deck.map((card) => ({ defId: card.defId, upgraded: card.upgraded })),
+    // innate 是**实例级**的固有位（瓶装遗物封入的那一张），必须逐实例带过去——
+    // 定义级的固有由 sts-combat 自己读数据表，实例级的它无从得知。
+    deck: state.deck.map((card) => ({
+      defId: card.defId,
+      upgraded: card.upgraded,
+      innate: card.innate,
+    })),
     playerHp: state.hp,
     playerMaxHp: state.maxHp,
     character: state.character,

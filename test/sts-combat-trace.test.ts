@@ -166,6 +166,24 @@ const CARD: Record<string, string> = {
   THINKING_AHEAD: "thinking_ahead",
   TRUE_GRIT: "true_grit",
   WARCRY: "warcry",
+  // —— 第五批 11 张（牌的生命周期：消耗触发 / 状态牌生成 / 以太 / 固有归位）——
+  DARK_EMBRACE: "dark_embrace",
+  FEEL_NO_PAIN: "feel_no_pain",
+  IMMOLATE: "immolate",
+  RECKLESS_CHARGE: "reckless_charge",
+  WILD_STRIKE: "wild_strike",
+  POWER_THROUGH: "power_through",
+  CARNAGE: "carnage",
+  GHOSTLY_ARMOR: "ghostly_armor",
+  DRAMATIC_ENTRANCE: "dramatic_entrance",
+  MIND_BLAST: "mind_blast",
+  BRUTALITY: "brutality",
+  EVOLVE: "evolve",
+  // 第五批凭空造出来的状态牌。三张都**不在牌组里**，只由卡效果生成，所以不进 CARD_RULES
+  // （打不出来，playCard 有一道 canUse 门拦着），但会出现在牌堆快照里，必须能映射。
+  BURN: "burn",
+  WOUND: "wound",
+  DAZED: "dazed",
 };
 const ENCOUNTER: Record<string, string> = {
   CULTIST: "cultist",
@@ -250,6 +268,11 @@ const POWER: Record<string, string> = {
   // 纯 bool 状态：参考只置 bit、从不写 statusMap，harness 按 1 输出（见 trace_dump 的
   // playerStatusValue），我们这边也存 1。
   BARRICADE: "barricade",
+  // —— 牌生命周期 Power（第五批）——
+  BRUTALITY: "brutality",
+  DARK_EMBRACE: "dark_embrace",
+  EVOLVE: "evolve",
+  FEEL_NO_PAIN: "feel_no_pain",
 };
 
 const mapPotion = (p: string): string | null => (p in POTION ? POTION[p]! : p);

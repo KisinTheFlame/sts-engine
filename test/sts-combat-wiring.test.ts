@@ -116,6 +116,25 @@ describe("接线：战斗由 sts-combat 承担", () => {
     expect(state.combat).toEqual(exportState(direct));
   });
 
+  it("固有牌开局归位：定义级与瓶装遗物封入的实例都进起手牌", () => {
+    // 第五批之前这里断言的是「固有牌 → 覆盖面检查抛错」。归位实现之后闸门撤了，
+    // 换成钉住真正的行为：固有牌被搬到抽牌堆**顶**，所以开局那 5 张必定含它们。
+    // 实例级的 innate（瓶装遗物）是桥必须逐实例带过去的位——杀戮本身不固有，
+    // 它出现在起手牌里只能来自那个位。
+    const state = runAtMap();
+    state.deck.push({ uid: 998, defId: "dramatic_entrance", upgraded: false });
+    state.deck.push({ uid: 999, defId: "carnage", upgraded: false, innate: true });
+    expect(stsCombatCoverage(state, "cultist")).toEqual({ supported: true });
+    startCombat(state, "cultist");
+    const hand = state.combat!.hand.map((c) => c.defId);
+    expect(hand).toHaveLength(5);
+    expect(hand).toContain("dramatic_entrance");
+    expect(hand).toContain("carnage");
+    const draw = state.combat!.drawPile.map((c) => c.defId);
+    expect(draw).not.toContain("dramatic_entrance");
+    expect(draw).not.toContain("carnage");
+  });
+
   it("玩家血量与药水槽写回 GameState", () => {
     const state = runAtMap();
     state.potions = ["block_potion", null, null];
@@ -373,12 +392,6 @@ describe("接线：尚未迁移的内容显式抛错", () => {
     state.deck.push({ uid: 999, defId: "whirlwind", upgraded: false });
     expect(reason(state, "cultist")).toContain("尚未迁移");
     expect(() => startCombat(state, "cultist")).toThrow();
-  });
-
-  it("固有牌（含瓶装遗物封入的实例）→ 抛错", () => {
-    const state = runAtMap();
-    state.deck[0].innate = true;
-    expect(reason(state, "cultist")).toContain("固有牌");
   });
 
   it("未迁移的药水 → 抛错", () => {

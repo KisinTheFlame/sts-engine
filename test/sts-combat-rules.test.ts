@@ -66,6 +66,40 @@ describe("sts-combat 非法动作的拒绝路径", () => {
     expect(drinkPotion(bc, 0).ok).toBe(false);
   });
 
+  it("状态牌打不出来——但报的是「打不出来」而不是「暂未登记」", () => {
+    // 第五批之后灼伤 / 伤口 / 眩晕真的会躺在手里。它们在 CARD_RULES 里**没有**条目
+    // （参考的 canUse 就不让打），所以少了这道门会一路走到「暂未登记卡牌行为」并抛错——
+    // 那个错会把「登记了但打不出来」误报成「没登记」，指错方向。
+    const bc = battle();
+    bc.hand.push({ uid: 900, defId: "wound", upgraded: false });
+    const before = probe(bc);
+    const r = playCard(bc, bc.hand.length - 1, 0);
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.reason).toContain("状态牌");
+    }
+    expect(probe(bc)).toEqual(before);
+  });
+
+  it("固有牌多于起手数时补抽差额（trace 牌组够不到这一支）", () => {
+    // 对齐 CardManager::init 末尾的 `if (innateCount > cardDrawPerTurn) DrawCards(差额)`。
+    // trace 牌组只有 2~3 张固有牌，永远走不到，所以这条分支只能在这里守。
+    const bc = initCombat({
+      seedLong: 138414915365391n,
+      floorNum: 1,
+      ascension: 0,
+      encounterId: "cultist",
+      // 8 张固有 + 2 张非固有：起手应该是 8 张（5 + 差额 3），且全是固有牌。
+      deck: [...new Array<string>(8).fill("dramatic_entrance"), "strike", "defend"].map(
+        (defId) => ({ defId, upgraded: false }),
+      ),
+      playerHp: 80,
+      playerMaxHp: 80,
+    });
+    expect(bc.hand.map((c) => c.defId)).toEqual(new Array<string>(8).fill("dramatic_entrance"));
+    expect(bc.drawPile).toHaveLength(2);
+  });
+
   it("未登记的怪物会显式抛错，不会静默错配 RNG", () => {
     expect(() =>
       initCombat({
