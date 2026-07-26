@@ -4,14 +4,22 @@ import { fileURLToPath } from "node:url";
 import { applyAction, newRun } from "../src/engine/engine.js";
 import type { GameAction } from "../src/engine/engine.js";
 import { costOf, getCardDef } from "../src/engine/cards/cards.js";
-import { startCombat, stsCombatCoverage, usePotion } from "../src/engine/combat-bridge.js";
+import {
+  pendingCardSelect,
+  startCombat,
+  stsCombatCoverage,
+  usePotion,
+} from "../src/engine/combat-bridge.js";
 import {
   SUPPORTED_ENCOUNTERS,
+  addToBot,
   exportState,
   importState,
   initCombat,
 } from "../src/engine/sts-combat.js";
 import { StsRandom } from "../src/engine/sts-rng.js";
+import { seedRng } from "../src/engine/rng.js";
+import { GreedyPolicy, RandomPolicy } from "../src/sim/policy.js";
 import type { GameState } from "../src/engine/types.js";
 
 // ============================================================================
@@ -35,9 +43,17 @@ function runAtMap(seed = 1): GameState {
 /**
  * sts 路径的下一步动作：能量够就打最右边那张（从右往左取，出牌不会让下标漂移），
  * 都打不动就结束回合。目标取第一只活着的怪。
+ *
+ * 选牌屏优先——屏没关之前打牌与结束回合都会被拒，不先处理它会死循环。
  */
 function nextAction(state: GameState): GameAction {
   const combat = state.combat!;
+  const selecting = pendingCardSelect(state);
+  if (selecting !== null) {
+    return selecting.mode === "single"
+      ? { type: "select_card", index: selecting.idxs[0] }
+      : { type: "select_cards", indices: [] };
+  }
   const targetIndex = combat.monsters.findIndex((m) => m.alive);
   for (let i = combat.hand.length - 1; i >= 0; i -= 1) {
     const card = combat.hand[i];
@@ -47,6 +63,23 @@ function nextAction(state: GameState): GameAction {
     }
   }
   return { type: "end_turn" };
+}
+
+/** 起一局并把牌组换成指定的（只用已登记的牌，否则 startCombat 会挡）。 */
+function runWithDeck(defIds: string[], seed = 5): GameState {
+  const state = runAtMap(seed);
+  state.deck = defIds.map((defId, i) => ({ uid: 1000 + i, defId, upgraded: false }));
+  return state;
+}
+
+/** 打一张焚誓开出「消耗一张手牌」的选牌屏，返回停在屏上的对局。 */
+function openExhaustOneScreen(): GameState {
+  // 全是焚誓：起手 5 张必然都是它，打第一张后手里还剩 4 张候选 → 必然开屏（≥2 张才开）。
+  const state = runWithDeck(new Array<string>(10).fill("burning_pact"));
+  startCombat(state, "cultist");
+  expect(applyAction(state, { type: "play_card", handIndex: 0 })).toEqual({ ok: true });
+  expect(state.combat!.inputState).toBe("card_select");
+  return state;
 }
 
 describe("接线：战斗由 sts-combat 承担", () => {
@@ -172,6 +205,151 @@ describe("接线：GameState 快照可 JSON 往返", () => {
       expect(live.screen).toBe(ending);
     });
   }
+});
+
+describe("接线：战斗内选牌屏", () => {
+  it("开屏后状态挂在 combat.cardSelect 上，屏幕仍是 combat", () => {
+    const state = openExhaustOneScreen();
+    expect(state.screen).toBe("combat");
+    expect(state.combat!.cardSelect).toEqual({ task: "exhaust_one", pickCount: 1 });
+    // 候选 = 剩下那 4 张手牌。
+    expect(pendingCardSelect(state)).toEqual({
+      mode: "single",
+      task: "exhaust_one",
+      idxs: [0, 1, 2, 3],
+    });
+  });
+
+  it("开屏时队列里的残留动作全部进档（否则读回来会少一次结算）", () => {
+    const state = openExhaustOneScreen();
+    // 焚誓是 addToBot(开屏) → addToBot(抽牌)，再由 useCard 追加「这张牌去哪个牌堆」。
+    // 开屏那一刻后两条还在队里，都必须能存下来。
+    expect(state.combat!.pendingActions).toEqual([
+      { kind: "draw_cards", count: 2 },
+      {
+        kind: "after_use_card",
+        card: { uid: expect.any(Number) as number, defId: "burning_pact", upgraded: false },
+        exhaustOnUse: false,
+      },
+    ]);
+  });
+
+  it("选牌屏上存档读盘，再选完，结果与不落盘完全相同", () => {
+    const live = openExhaustOneScreen();
+    const saved = JSON.parse(JSON.stringify(live)) as GameState;
+    expect(saved).toEqual(live);
+
+    const action: GameAction = { type: "select_card", index: 0 };
+    expect(applyAction(live, action)).toEqual({ ok: true });
+    expect(applyAction(saved, action)).toEqual({ ok: true });
+    expect(saved).toEqual(live);
+
+    const combat = live.combat!;
+    expect(combat.inputState).toBe("player_normal");
+    expect(combat.cardSelect).toBeNull();
+    expect(combat.pendingActions).toEqual([]);
+    // 选中的那张进消耗堆；打出的那张进弃牌堆（焚誓自己不消耗）；
+    // 手牌 4 → 消耗 1 → 3 → 排队的「抽 2 张」兑现 → 5。这就是残留动作没丢的证据。
+    expect(combat.exhaustPile.map((c) => c.defId)).toEqual(["burning_pact"]);
+    expect(combat.discardPile.map((c) => c.defId)).toEqual(["burning_pact"]);
+    expect(combat.hand).toHaveLength(5);
+  });
+
+  it("屏没关之前，打牌 / 结束回合 / 喝药水都被拒，且状态分毫不动", () => {
+    const state = openExhaustOneScreen();
+    state.potions = ["block_potion", null, null];
+    state.combat!.potions = ["block_potion", null, null];
+    const before = JSON.parse(JSON.stringify(state.combat)) as unknown;
+
+    for (const action of [
+      { type: "play_card", handIndex: 0 },
+      { type: "end_turn" },
+      { type: "use_potion", slotIndex: 0 },
+    ] satisfies GameAction[]) {
+      const result = applyAction(state, action);
+      expect(result.ok, `${action.type} 本该被拒`).toBe(false);
+      expect(result.ok ? "" : result.reason).toContain("正在选牌");
+    }
+    expect(state.combat).toEqual(before);
+  });
+
+  it("非法选择被拒：越界、不是候选、用错了单选/多选入口", () => {
+    const state = openExhaustOneScreen();
+    expect(applyAction(state, { type: "select_card", index: 9 }).ok).toBe(false);
+    expect(applyAction(state, { type: "select_card", index: -1 }).ok).toBe(false);
+    // exhaust_one 是单选，走多选入口要被拒。
+    expect(applyAction(state, { type: "select_cards", indices: [0] }).ok).toBe(false);
+    expect(state.combat!.inputState).toBe("card_select");
+  });
+
+  it("没开屏时选牌被拒", () => {
+    const state = runAtMap();
+    startCombat(state, "cultist");
+    expect(pendingCardSelect(state)).toBeNull();
+    expect(applyAction(state, { type: "select_card", index: 0 }).ok).toBe(false);
+  });
+
+  it("净化的多选屏：候选形状是「从手牌挑至多 N 张」", () => {
+    const state = runWithDeck(new Array<string>(10).fill("purity"));
+    startCombat(state, "cultist");
+    expect(applyAction(state, { type: "play_card", handIndex: 0 })).toEqual({ ok: true });
+    expect(pendingCardSelect(state)).toEqual({
+      mode: "multi",
+      task: "exhaust_many",
+      maxPick: 3,
+      handSize: 4,
+    });
+    // 超过上限、重复下标、越界都要挡住。
+    expect(applyAction(state, { type: "select_cards", indices: [0, 1, 2, 3] }).ok).toBe(false);
+    expect(applyAction(state, { type: "select_cards", indices: [0, 0] }).ok).toBe(false);
+    expect(applyAction(state, { type: "select_cards", indices: [4] }).ok).toBe(false);
+    expect(applyAction(state, { type: "select_cards", indices: [0, 2] })).toEqual({ ok: true });
+    // 按下标降序消耗，故消耗的是原来的第 0、2 张，手牌剩下原来的第 1、3 张。
+    expect(state.combat!.hand).toHaveLength(2);
+    expect(state.combat!.exhaustPile).toHaveLength(3); // 选中的 2 张 + 净化自己
+  });
+
+  // 自动对战策略必须能应付选牌屏，否则 `pnpm sim` 会在屏上原地死循环：
+  // sts-combat 在屏没关之前拒绝一切打牌 / 结束回合，策略若只在那两个里挑就永远推不动。
+  for (const [name, policy] of [
+    ["贪心", new GreedyPolicy()],
+    ["随机", new RandomPolicy(seedRng(7))],
+  ] as const) {
+    it(`${name}策略遇到选牌屏能推进到战斗结束（不死循环）`, () => {
+      // 一副全是「会开选牌屏」的牌，把这条路径踩满。
+      const state = runWithDeck([
+        "burning_pact",
+        "purity",
+        "warcry",
+        "thinking_ahead",
+        "headbutt",
+        "true_grit",
+        "armaments",
+        "exhume",
+        "secret_weapon",
+        "secret_technique",
+      ]);
+      startCombat(state, "cultist");
+      let steps = 0;
+      while (state.screen === "combat" && steps < 500) {
+        const result = applyAction(state, policy.decide(state));
+        expect(result.ok, `第 ${steps} 步被拒: ${result.ok ? "" : result.reason}`).toBe(true);
+        steps += 1;
+      }
+      expect(state.screen).not.toBe("combat");
+      expect(state.combat).toBeNull();
+    });
+  }
+
+  it("残留动作没有 ActionDesc 时 exportState 抛错（绝不静默丢弃）", () => {
+    // 这是整套 pendingActions 机制的安全网：将来某张牌在选牌屏后面排了一条没描述的动作，
+    // 必须当场炸掉，而不是存出一个「少一次结算」的档。
+    const bc = importState(openExhaustOneScreen().combat!);
+    addToBot(bc, () => {
+      /* 没有 desc 的动作 */
+    });
+    expect(() => exportState(bc)).toThrow(/ActionDesc/);
+  });
 });
 
 describe("接线：尚未迁移的内容显式抛错", () => {

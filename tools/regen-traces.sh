@@ -70,8 +70,9 @@ for committed in "$TRACES"/*.jsonl; do
     continue
   fi
   n="$(wc -l < "$committed" | tr -d ' ')"
-  # 已提交文件可能包含会被本批替换掉的 variant，所以只比对「共同前缀」：
-  # 取两者中较短的行数，逐字节比。variant 0 永远在最前，因此这一定覆盖到它。
+  # 数据是**追加式**的：新 variant 的行只会排在已有行之后（见 tools/split-traces.mjs 的排序），
+  # 所以「已提交的全部行」必须逐字节等于「新生成文件的同长度前缀」。
+  # 取两者中较短的行数是为了给「新 variant 让文件变长」留位置——不是为了容忍旧行被改。
   m="$(wc -l < "$fresh" | tr -d ' ')"
   cmpn=$(( n < m ? n : m ))
   head -n "$cmpn" "$committed" > "$WORK/a"

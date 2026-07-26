@@ -51,6 +51,36 @@ describe("migrateLoadedState", () => {
     expect(migrated.screen).toBe("map");
   });
 
+  it("战斗中的老档回填选牌屏三字段（老档必然停在 player_normal 且队列为空）", () => {
+    const migrated = migrateLoadedState({
+      runId: "r",
+      seed: 1,
+      screen: "combat",
+      combat: { encounterId: "cultist", turn: 2, hand: [] },
+    });
+    expect(migrated.combat).toMatchObject({
+      inputState: "player_normal",
+      cardSelect: null,
+      pendingActions: [],
+    });
+  });
+
+  it("已经停在选牌屏的档不被回填覆盖", () => {
+    const cardSelect = { task: "exhaust_one", pickCount: 1 };
+    const pendingActions = [{ kind: "draw_cards", count: 2 }];
+    const migrated = migrateLoadedState({
+      runId: "r",
+      seed: 1,
+      screen: "combat",
+      combat: { encounterId: "cultist", inputState: "card_select", cardSelect, pendingActions },
+    });
+    expect(migrated.combat).toMatchObject({
+      inputState: "card_select",
+      cardSelect,
+      pendingActions,
+    });
+  });
+
   it("不在战斗中的老档不动 screen", () => {
     const migrated = migrateLoadedState({ runId: "r", seed: 1, screen: "shop", combat: null });
     expect(migrated.screen).toBe("shop");

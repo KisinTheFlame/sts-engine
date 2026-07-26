@@ -7,6 +7,8 @@ import {
   endTurn,
   playCard,
   drinkPotion,
+  selectCard,
+  selectCards,
   type BattleContext,
 } from "../src/engine/sts-combat.js";
 import { StsRandom } from "../src/engine/sts-rng.js";
@@ -53,7 +55,10 @@ type Snapshot = {
   };
 };
 
-type Step = { action: { type: string; idx?: number; target?: number }; after: Snapshot };
+type Step = {
+  action: { type: string; idx?: number; target?: number; idxs?: number[] };
+  after: Snapshot;
+};
 
 type Trace = {
   seed: string;
@@ -150,6 +155,17 @@ const CARD: Record<string, string> = {
   COMBUST: "combust",
   DEMON_FORM: "demon_form",
   METALLICIZE: "metallicize",
+  // —— 第四批 10 张（选牌屏解锁的）——
+  ARMAMENTS: "armaments",
+  BURNING_PACT: "burning_pact",
+  EXHUME: "exhume",
+  HEADBUTT: "headbutt",
+  PURITY: "purity",
+  SECRET_TECHNIQUE: "secret_technique",
+  SECRET_WEAPON: "secret_weapon",
+  THINKING_AHEAD: "thinking_ahead",
+  TRUE_GRIT: "true_grit",
+  WARCRY: "warcry",
 };
 const ENCOUNTER: Record<string, string> = {
   CULTIST: "cultist",
@@ -379,8 +395,21 @@ describe("sts-combat 逐帧重放参考项目真实战斗 trace", () => {
               expect(r, `第 ${i + 1} 步喝药水被拒: ${JSON.stringify(step.action)}`).toEqual({
                 ok: true,
               });
+            } else if (step.action.type === "select_card") {
+              // 选牌屏单选。被拒**同样是失败**：说明我们这边压根没开屏、或开的是另一块屏、
+              // 或候选集算错了——静默跳过会让整块机制看着是绿的。
+              const r = selectCard(bc, step.action.idx!);
+              expect(r, `第 ${i + 1} 步选牌被拒: ${JSON.stringify(step.action)}`).toEqual({
+                ok: true,
+              });
+            } else if (step.action.type === "select_cards") {
+              const r = selectCards(bc, step.action.idxs!);
+              expect(r, `第 ${i + 1} 步多选被拒: ${JSON.stringify(step.action)}`).toEqual({
+                ok: true,
+              });
             } else {
-              endTurn(bc);
+              const r = endTurn(bc);
+              expect(r, `第 ${i + 1} 步结束回合被拒`).toEqual({ ok: true });
             }
             expect(
               shape(bc),
