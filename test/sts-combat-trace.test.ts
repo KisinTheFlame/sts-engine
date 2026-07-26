@@ -73,7 +73,7 @@ type Trace = {
    * 与 deck 等长的 0/1，标记每张牌是否升级。
    *
    * 仅在**确有**升级牌时由 harness 输出，所以未升级的 trace 行与这个字段存在之前提交的
-   * 数据逐字节一致——铺量因此是纯追加，不必重生成既有的几十 MB。
+   * 数据逐字节一致——冻结的 variant 0 因此不必随这个字段的引入重生成。
    */
   deckUpgraded?: number[];
   initial: Snapshot;
