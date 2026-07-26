@@ -333,8 +333,18 @@ export type CardDef = {
   costPlusHpLossCountThisCombat?: boolean;
   /** 需要选择一个敌人目标（攻击类多为 true；AoE / 自身增益为 false）。 */
   targeted: boolean;
+  /**
+   * 升级后是否需要选目标（省略=不变）；用于致盲+/绊摔+ 那类「升级后改为对所有敌人」。
+   * 对齐 Cards.h:673 cardTargetsEnemy 里 BLIND / TRIP 的 `!upgraded`。
+   */
+  upgradedTargeted?: boolean;
   /** 打出后进入消耗堆而非弃牌堆。 */
   exhausts: boolean;
+  /**
+   * 升级后是否消耗（省略=不变）；用于极限爆发+/发现+ 那类「升级后不再消耗」。
+   * 对齐 Cards.h:534 doesCardExhaust 里那组 `!upgraded`。
+   */
+  upgradedExhausts?: boolean;
   /** 保留：回合结束时不进弃牌堆，留在手中（观者部分卡）。 */
   retain?: boolean;
   /** 虚无：回合结束时若仍在手牌中，则被消耗（而非进弃牌堆）。 */

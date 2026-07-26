@@ -7,6 +7,8 @@ import {
   endTurn,
   playCard,
   drinkPotion,
+  selectCard,
+  selectCards,
   type BattleContext,
 } from "../src/engine/sts-combat.js";
 import { StsRandom } from "../src/engine/sts-rng.js";
@@ -53,7 +55,10 @@ type Snapshot = {
   };
 };
 
-type Step = { action: { type: string; idx?: number; target?: number }; after: Snapshot };
+type Step = {
+  action: { type: string; idx?: number; target?: number; idxs?: number[] };
+  after: Snapshot;
+};
 
 type Trace = {
   seed: string;
@@ -64,6 +69,13 @@ type Trace = {
   encounter: string;
   character: string;
   deck: string[];
+  /**
+   * 与 deck 等长的 0/1，标记每张牌是否升级。
+   *
+   * 仅在**确有**升级牌时由 harness 输出，所以未升级的 trace 行与这个字段存在之前提交的
+   * 数据逐字节一致——冻结的 variant 0 因此不必随这个字段的引入重生成。
+   */
+  deckUpgraded?: number[];
   initial: Snapshot;
   steps: Step[];
 };
@@ -100,6 +112,78 @@ const CARD: Record<string, string> = {
   TWIN_STRIKE: "twin_strike",
   BODY_SLAM: "body_slam",
   INFLAME: "inflame",
+  // —— 第二批 29 张 ——
+  BITE: "bite",
+  BLUDGEON: "bludgeon",
+  DROPKICK: "dropkick",
+  FEED: "feed",
+  FIEND_FIRE: "fiend_fire",
+  FLASH_OF_STEEL: "flash_of_steel",
+  HEMOKINESIS: "hemokinesis",
+  PUMMEL: "pummel",
+  REAPER: "reaper",
+  SEVER_SOUL: "sever_soul",
+  SWORD_BOOMERANG: "sword_boomerang",
+  SWIFT_STRIKE: "swift_strike",
+  BANDAGE_UP: "bandage_up",
+  BLIND: "blind",
+  BLOODLETTING: "bloodletting",
+  DEEP_BREATH: "deep_breath",
+  ENTRENCH: "entrench",
+  FINESSE: "finesse",
+  GOOD_INSTINCTS: "good_instincts",
+  IMPERVIOUS: "impervious",
+  INTIMIDATE: "intimidate",
+  JAX: "jax",
+  MASTER_OF_STRATEGY: "master_of_strategy",
+  OFFERING: "offering",
+  PANACEA: "panacea",
+  SECOND_WIND: "second_wind",
+  SHOCKWAVE: "shockwave",
+  SPOT_WEAKNESS: "spot_weakness",
+  BERSERK: "berserk",
+  // —— 第三批 12 张（回合边界 Power 解锁的）——
+  UPPERCUT: "uppercut",
+  BATTLE_TRANCE: "battle_trance",
+  DISARM: "disarm",
+  FLEX: "flex",
+  IMPATIENCE: "impatience",
+  LIMIT_BREAK: "limit_break",
+  SEEING_RED: "seeing_red",
+  TRIP: "trip",
+  BARRICADE: "barricade",
+  COMBUST: "combust",
+  DEMON_FORM: "demon_form",
+  METALLICIZE: "metallicize",
+  // —— 第四批 10 张（选牌屏解锁的）——
+  ARMAMENTS: "armaments",
+  BURNING_PACT: "burning_pact",
+  EXHUME: "exhume",
+  HEADBUTT: "headbutt",
+  PURITY: "purity",
+  SECRET_TECHNIQUE: "secret_technique",
+  SECRET_WEAPON: "secret_weapon",
+  THINKING_AHEAD: "thinking_ahead",
+  TRUE_GRIT: "true_grit",
+  WARCRY: "warcry",
+  // —— 第五批 11 张（牌的生命周期：消耗触发 / 状态牌生成 / 以太 / 固有归位）——
+  DARK_EMBRACE: "dark_embrace",
+  FEEL_NO_PAIN: "feel_no_pain",
+  IMMOLATE: "immolate",
+  RECKLESS_CHARGE: "reckless_charge",
+  WILD_STRIKE: "wild_strike",
+  POWER_THROUGH: "power_through",
+  CARNAGE: "carnage",
+  GHOSTLY_ARMOR: "ghostly_armor",
+  DRAMATIC_ENTRANCE: "dramatic_entrance",
+  MIND_BLAST: "mind_blast",
+  BRUTALITY: "brutality",
+  EVOLVE: "evolve",
+  // 第五批凭空造出来的状态牌。三张都**不在牌组里**，只由卡效果生成，所以不进 CARD_RULES
+  // （打不出来，playCard 有一道 canUse 门拦着），但会出现在牌堆快照里，必须能映射。
+  BURN: "burn",
+  WOUND: "wound",
+  DAZED: "dazed",
 };
 const ENCOUNTER: Record<string, string> = {
   CULTIST: "cultist",
@@ -173,6 +257,22 @@ const POWER: Record<string, string> = {
   ARTIFACT: "artifact",
   THORNS: "thorns",
   VIGOR: "vigor",
+  // —— 回合边界 Power（第三批）——
+  METALLICIZE: "metallicize",
+  COMBUST: "combust",
+  DEMON_FORM: "demon_form",
+  // 灵活的「回合末归还力量」标记，打出灵活那一帧就可见。
+  LOSE_STRENGTH: "lose_strength",
+  // 战斗恍惚的封抽牌标记，同上。
+  NO_DRAW: "no_draw",
+  // 纯 bool 状态：参考只置 bit、从不写 statusMap，harness 按 1 输出（见 trace_dump 的
+  // playerStatusValue），我们这边也存 1。
+  BARRICADE: "barricade",
+  // —— 牌生命周期 Power（第五批）——
+  BRUTALITY: "brutality",
+  DARK_EMBRACE: "dark_embrace",
+  EVOLVE: "evolve",
+  FEEL_NO_PAIN: "feel_no_pain",
 };
 
 const mapPotion = (p: string): string | null => (p in POTION ? POTION[p]! : p);
@@ -180,10 +280,16 @@ const mapPotion = (p: string): string | null => (p in POTION ? POTION[p]! : p);
 const mapPowers = (p: Record<string, number>): Record<string, number> => {
   const out: Record<string, number> = {};
   for (const [k, v] of Object.entries(p)) {
-    const id = POWER[k];
-    if (id !== undefined && v !== 0) {
-      out[id] = v;
+    if (v === 0) {
+      continue;
     }
+    const id = POWER[k];
+    // 未映射的 power 必须**报错**，不能静默丢掉：丢掉的话「参考施加了某个我们没实现的
+    // power」两边都是空对象，测试反而变绿——正是这类静默通过最危险。
+    if (id === undefined) {
+      throw new Error(`trace 里出现未映射的 power: ${k}=${String(v)}（请补进 POWER 映射表）`);
+    }
+    out[id] = v;
   }
   return out;
 };
@@ -270,7 +376,10 @@ const start = (t: Trace): BattleContext =>
     floorNum: t.floor,
     ascension: 0,
     encounterId: ENCOUNTER[t.encounter]!,
-    deck: t.deck.map((c) => ({ defId: CARD[c] ?? c, upgraded: false })),
+    deck: t.deck.map((c, i) => ({
+      defId: CARD[c] ?? c,
+      upgraded: (t.deckUpgraded?.[i] ?? 0) === 1,
+    })),
     playerHp: t.initial.player.hp,
     playerMaxHp: t.initial.player.maxHp,
     character: "ironclad",
@@ -291,7 +400,10 @@ describe("sts-combat 逐帧重放参考项目真实战斗 trace", () => {
   for (const [encounter, list] of byEncounter) {
     describe(encounter, () => {
       for (const t of list) {
-        it(`seed "${t.seed}" @floor ${t.floor}（${t.steps.length} 步）`, () => {
+        // 牌组规格进标题：同一 (seed, floor) 现在有多条 trace（不同 deck variant），
+        // 不标出来失败时看不出是哪一副牌组翻的。
+        const variant = `${t.deck.length}张${t.deckUpgraded === undefined ? "" : "·升级"}`;
+        it(`seed "${t.seed}" @floor ${t.floor} [${variant}]（${t.steps.length} 步）`, () => {
           const bc = start(t);
           expect(shape(bc)).toEqual(shapeExpected(t.initial));
 
@@ -306,8 +418,21 @@ describe("sts-combat 逐帧重放参考项目真实战斗 trace", () => {
               expect(r, `第 ${i + 1} 步喝药水被拒: ${JSON.stringify(step.action)}`).toEqual({
                 ok: true,
               });
+            } else if (step.action.type === "select_card") {
+              // 选牌屏单选。被拒**同样是失败**：说明我们这边压根没开屏、或开的是另一块屏、
+              // 或候选集算错了——静默跳过会让整块机制看着是绿的。
+              const r = selectCard(bc, step.action.idx!);
+              expect(r, `第 ${i + 1} 步选牌被拒: ${JSON.stringify(step.action)}`).toEqual({
+                ok: true,
+              });
+            } else if (step.action.type === "select_cards") {
+              const r = selectCards(bc, step.action.idxs!);
+              expect(r, `第 ${i + 1} 步多选被拒: ${JSON.stringify(step.action)}`).toEqual({
+                ok: true,
+              });
             } else {
-              endTurn(bc);
+              const r = endTurn(bc);
+              expect(r, `第 ${i + 1} 步结束回合被拒`).toEqual({ ok: true });
             }
             expect(
               shape(bc),

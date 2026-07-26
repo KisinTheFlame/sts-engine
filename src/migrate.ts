@@ -64,5 +64,14 @@ export function migrateLoadedState(raw: unknown): GameState {
   }
   backfill(state, "combat", null);
 
+  // 战斗内选牌屏（第四批）的三个后加字段。老档只可能停在当时唯一的可操作态
+  // player_normal，且那时动作队列必空——所以这三条回填是**无损**的，不是猜测。
+  const live = asRecord(state["combat"]);
+  if (live) {
+    backfill(live, "inputState", "player_normal");
+    backfill(live, "cardSelect", null);
+    backfill(live, "pendingActions", []);
+  }
+
   return state as unknown as GameState;
 }
