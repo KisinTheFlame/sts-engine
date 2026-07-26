@@ -4,6 +4,7 @@ import { getEncounterDef } from "./enemies/enemies.js";
 import { getRelicDef } from "./relics/relics.js";
 import { getPotionDef } from "./potions/potions.js";
 import {
+  cardSelectOptions,
   drinkPotion,
   endTurn as stsEndTurn,
   exportState,
@@ -13,8 +14,13 @@ import {
   isEncounterSupported,
   isPotionSupported,
   playCard as stsPlayCard,
+  selectCard as stsSelectCard,
+  selectCards as stsSelectCards,
   type BattleContext,
+  type CardSelectOptions,
+  type EndTurnResult,
   type PlayCardResult,
+  type SelectCardResult,
 } from "./sts-combat.js";
 import { StsRandom } from "./sts-rng.js";
 import { grantBossVictory } from "./post-combat.js";
@@ -181,13 +187,57 @@ export function playCard(
   return result;
 }
 
-export function endTurn(state: GameState): void {
+export function endTurn(state: GameState): EndTurnResult {
   if (state.combat === null) {
-    return;
+    return { ok: false, reason: "现在不在战斗中。" };
   }
   const bc = importState(state.combat);
-  stsEndTurn(bc);
-  settleCombat(state, bc);
+  const result = stsEndTurn(bc);
+  // 被拒时 bc 是丢弃的副本，GameState 自然分毫未动（同 playCard）。
+  if (result.ok) {
+    settleCombat(state, bc);
+  }
+  return result;
+}
+
+// ============================================================================
+// 选牌屏（战斗内）
+//
+// ⚠ 与 run 层的 `screen === "card_select"`（图书馆 / 复制器 / 和平烟斗那套）是两回事：
+// 那个走 applyChoose，改的是大牌组；这里是战斗内的一次输入，屏幕仍停在 "combat"，
+// 状态挂在 `state.combat.cardSelect` 上。合成一个屏幕会让两套完全不同的动作语义打架。
+// ============================================================================
+
+/** 当前是否在等玩家选牌；顺带给出合法候选（null = 没开屏）。 */
+export function pendingCardSelect(state: GameState): CardSelectOptions | null {
+  if (state.combat === null) {
+    return null;
+  }
+  return cardSelectOptions(state.combat);
+}
+
+export function selectCard(state: GameState, index: number): SelectCardResult {
+  if (state.combat === null) {
+    return { ok: false, reason: "现在不在战斗中。" };
+  }
+  const bc = importState(state.combat);
+  const result = stsSelectCard(bc, index);
+  if (result.ok) {
+    settleCombat(state, bc);
+  }
+  return result;
+}
+
+export function selectCards(state: GameState, indices: readonly number[]): SelectCardResult {
+  if (state.combat === null) {
+    return { ok: false, reason: "现在不在战斗中。" };
+  }
+  const bc = importState(state.combat);
+  const result = stsSelectCards(bc, indices);
+  if (result.ok) {
+    settleCombat(state, bc);
+  }
+  return result;
 }
 
 export function usePotion(

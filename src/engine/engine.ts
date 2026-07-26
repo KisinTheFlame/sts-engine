@@ -2,7 +2,7 @@ import type { CardInstance, CharacterId, GameState } from "./types.js";
 import { getCharacterConfig } from "./characters/characters.js";
 import { seedRng } from "./rng.js";
 import { seedStringToLong } from "./sts-rng.js";
-import { endTurn, playCard, usePotion } from "./combat-bridge.js";
+import { endTurn, playCard, selectCard, selectCards, usePotion } from "./combat-bridge.js";
 import { TOTAL_ACTS, advanceToNextAct, applyChoose, buildMap, generateReward } from "./run/run.js";
 import { POTION_SLOTS } from "./potions/potions.js";
 import { NEOW_EVENT_ID } from "./events/events.js";
@@ -15,6 +15,11 @@ export type GameAction =
   | { type: "play_card"; handIndex: number; targetIndex?: number | null }
   | { type: "end_turn" }
   | { type: "use_potion"; slotIndex: number; targetIndex?: number | null }
+  // 战斗内选牌屏（军备 / 焚誓 / 头槌 …）。合法候选由 combat-bridge 的 pendingCardSelect
+  // 给出；下标是**相对该任务的源牌堆**的（见 sts-combat 的 cardSelectSource）。
+  // 与 `choose` 无关——那个是 run 层屏幕（奖励 / 事件 / 商店 / 大牌组选牌）的通用选项。
+  | { type: "select_card"; index: number }
+  | { type: "select_cards"; indices: number[] }
   | { type: "choose"; optionIndex: number };
 
 export type ActionResult = { ok: true } | { ok: false; reason: string };
@@ -96,9 +101,25 @@ export function applyAction(state: GameState, action: GameAction): ActionResult 
       if (state.screen !== "combat") {
         return { ok: false, reason: "现在不在战斗中，无法结束回合。" };
       }
-      endTurn(state);
-      settleAfterCombat(state);
-      return { ok: true };
+      const result = endTurn(state);
+      if (result.ok) {
+        settleAfterCombat(state);
+      }
+      return result;
+    }
+    case "select_card": {
+      const result = selectCard(state, action.index);
+      if (result.ok) {
+        settleAfterCombat(state);
+      }
+      return result;
+    }
+    case "select_cards": {
+      const result = selectCards(state, action.indices);
+      if (result.ok) {
+        settleAfterCombat(state);
+      }
+      return result;
     }
     case "use_potion": {
       const result = usePotion(state, action.slotIndex, action.targetIndex ?? null);

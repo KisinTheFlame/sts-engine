@@ -35,8 +35,73 @@ import type { CharacterId } from "./types.js";
 
 export type Outcome = "undecided" | "player_victory" | "player_loss";
 
-/** 输入状态机（对齐 InputState 的子集）。EXECUTING 时抽干队列，PLAYER_NORMAL 时把控制权还给玩家。 */
-export type InputState = "executing" | "player_normal";
+/**
+ * 输入状态机（对齐 InputState 的子集）。EXECUTING 时抽干队列，PLAYER_NORMAL 时把控制权
+ * 还给玩家，CARD_SELECT 时等玩家从某个牌堆里选牌。
+ *
+ * ⚠ 参考的 executeActions 主循环**顶部**就是 `if (inputState != EXECUTING_ACTIONS) break;`
+ * （BattleContext.cpp:740）。所以开屏的那条动作执行完，循环立刻退出，**队列里剩下的动作
+ * 原样留着**——选完牌再接着抽。这条是选牌屏一切时序的根，写漏了会把后续动作提前跑掉。
+ */
+export type InputState = "executing" | "player_normal" | "card_select";
+
+/** 玩家可操作的两个时点（即允许取档的 inputState）。 */
+export type PlayerInputState = "player_normal" | "card_select";
+
+// ============================================================================
+// 选牌屏（对齐 include/combat/CardSelectInfo.h + BattleContext::inputState）
+//
+// 参考的 CardSelectTask 有 21 项，这里只登记已转写的那些；未登记的开屏路径压根不存在，
+// 所以不会出现「屏开了但不知道怎么处理」的状态。
+// ============================================================================
+
+/** 选牌任务（对齐 CardSelectTask 的已转写子集，命名保持一致便于回查）。 */
+export type CardSelectTask =
+  | "armaments"
+  | "exhaust_one"
+  | "exhaust_many"
+  | "exhume"
+  | "headbutt"
+  | "secret_technique"
+  | "secret_weapon"
+  | "warcry";
+
+/**
+ * 选牌屏状态（对齐 CardSelectInfo 的已用字段）。
+ *
+ * ⚠ 只存 task 与 pickCount。参考的 `canPickZero` / `canPickAnyNumber` / `data0` 在本批
+ * 登记的这些 task 上都无人读取：
+ *   * `openSimpleCardSelectScreen` 把前两者恒置 false；
+ *   * `ExhaustMany` / `ExhumeAction` / `WarcryAction` / `DrawToHandAction` **不走**它，
+ *     直接改 `cardSelectTask` + `inputState`，于是那两个 bool 是**上一次开屏留下的残值**——
+ *     正因为没人读才无害。`data0` 只有发现 / 双持用（两张都未登记）。
+ * pickCount 同理：单选类 task 的校验（`isValidSingleCardSelectAction`）不读它，我们统一记 1。
+ */
+export type CardSelectInfo = {
+  task: CardSelectTask;
+  /** 多选上限（只对 exhaust_many 有意义；单选类恒 1）。 */
+  pickCount: number;
+};
+
+/** 某个选牌任务从哪个牌堆里选（供 UI / 策略定位候选，参考里散在各 case 的隐含约定）。 */
+export function cardSelectSource(
+  task: CardSelectTask,
+): "hand" | "draw_pile" | "discard_pile" | "exhaust_pile" {
+  switch (task) {
+    case "armaments":
+    case "exhaust_one":
+    case "exhaust_many":
+    case "warcry":
+      return "hand";
+    case "headbutt":
+      return "discard_pile";
+    case "exhume":
+      return "exhaust_pile";
+    case "secret_technique":
+    case "secret_weapon":
+      return "draw_pile";
+  }
+}
 
 // ============================================================================
 // 动作队列（对齐 include/combat/ActionQueue.h）
@@ -51,14 +116,36 @@ export type InputState = "executing" | "player_normal";
 
 export type ActionFn = (bc: BattleContext) => void;
 
+/**
+ * 排队动作的**数据描述**——用来跨存档往返重建它。
+ *
+ * 为什么需要：选牌屏是一个新的「玩家可操作」时点，而它打开时动作队列**必然非空**。
+ * `useCard` 把 `onAfterUseCard`（这张牌去哪个牌堆）排在卡效果之后，开屏的动作一执行、
+ * executeActions 就在下一轮循环顶部退出，那条 onAfterUseCard 还躺在队里。焚誓更明显：
+ * `addToBot(ChooseExhaustOne)` → `addToBot(DrawCards)`，开屏时抽牌还没结算。
+ *
+ * 队列存的是闭包，序列化不了，所以凡是**可能跨越选牌屏存活**的动作都要带一个描述。
+ * 漏带的后果是 `exportState` **抛错**而不是静默丢掉它——丢一条排队动作会让读回来的档少
+ * 一次结算（少抽两张牌、牌凭空消失），正是这个项目最不能容忍的静默错。
+ */
+export type ActionDesc =
+  | { kind: "after_use_card"; card: CombatCard; exhaustOnUse: boolean }
+  | { kind: "draw_cards"; count: number };
+
 export type Action = {
   fn: ActionFn;
   /** 战斗胜利结算时是否连同清除（对齐 Action::clearOnCombatVictory，默认 true）。 */
   clearOnCombatVictory: boolean;
+  /** 可存档描述；null = 这条动作不可能跨越选牌屏存活（见 ActionDesc）。 */
+  desc: ActionDesc | null;
 };
 
-export function makeAction(fn: ActionFn, clearOnCombatVictory = true): Action {
-  return { fn, clearOnCombatVictory };
+export function makeAction(
+  fn: ActionFn,
+  clearOnCombatVictory = true,
+  desc: ActionDesc | null = null,
+): Action {
+  return { fn, clearOnCombatVictory, desc };
 }
 
 export class ActionQueue {
@@ -96,6 +183,16 @@ export class ActionQueue {
    */
   clearOnCombatVictory(): void {
     this.items = this.items.filter((a) => !a.clearOnCombatVictory);
+  }
+
+  /** 队列里各动作的数据描述（供 exportState）；不可存档的位置为 null。 */
+  descriptors(): (ActionDesc | null)[] {
+    return this.items.map((a) => a.desc);
+  }
+
+  /** 整体替换（供 importState 用描述重建）。 */
+  replaceAll(actions: Action[]): void {
+    this.items = [...actions];
   }
 
   get size(): number {
@@ -313,6 +410,13 @@ export type BattleContext = {
 
   outcome: Outcome;
   inputState: InputState;
+  /**
+   * 选牌屏状态（对齐 BattleContext::cardSelectInfo）；null ⟺ inputState 不是 card_select。
+   *
+   * 参考那边它是个常驻结构、关屏后残值留着；我们用 null 表达「没开屏」，这样存档往返有个
+   * 明确不变量可查，也不会在快照里留一份看着像真的残值。
+   */
+  cardSelect: CardSelectInfo | null;
   turn: number;
 
   actionQueue: ActionQueue;
@@ -337,13 +441,23 @@ export type BattleContext = {
   nextUid: number;
 };
 
-/** 便捷入队（对齐 addToTop / addToBot）。 */
-export function addToTop(bc: BattleContext, fn: ActionFn, clearOnVictory = true): void {
-  bc.actionQueue.pushFront(makeAction(fn, clearOnVictory));
+/** 便捷入队（对齐 addToTop / addToBot）。desc 见 ActionDesc：只有能跨选牌屏存活的才需要。 */
+export function addToTop(
+  bc: BattleContext,
+  fn: ActionFn,
+  clearOnVictory = true,
+  desc: ActionDesc | null = null,
+): void {
+  bc.actionQueue.pushFront(makeAction(fn, clearOnVictory, desc));
 }
 
-export function addToBot(bc: BattleContext, fn: ActionFn, clearOnVictory = true): void {
-  bc.actionQueue.pushBack(makeAction(fn, clearOnVictory));
+export function addToBot(
+  bc: BattleContext,
+  fn: ActionFn,
+  clearOnVictory = true,
+  desc: ActionDesc | null = null,
+): void {
+  bc.actionQueue.pushBack(makeAction(fn, clearOnVictory, desc));
 }
 
 function livingMonsters(bc: BattleContext): CombatMonster[] {
@@ -597,14 +711,13 @@ function shuffleCards(bc: BattleContext, cards: CombatCard[]): void {
 
 function drawCards(bc: BattleContext, count: number): void {
   // 抽牌堆顶 = 数组尾（对齐 CardManager::popFromDrawPile = drawPile.back()+pop_back()）。
-  const MAX_HAND = 10;
   // 对齐 BattleContext::drawCards 顶部四条提前返回里的 NO_DRAW（战斗恍惚打完那一张牌
   // 之后本回合就再也抽不到牌）。⚠ 位置在**最前面**：命中它连 reshuffle 都不做，
   // 所以不会白吃一次 shuffleRng。
   if (getPower(bc.player.powers, "no_draw") > 0) {
     return;
   }
-  let toDraw = Math.min(MAX_HAND - bc.hand.length, count);
+  let toDraw = Math.min(MAX_HAND_SIZE - bc.hand.length, count);
   if (toDraw <= 0) {
     return;
   }
@@ -652,6 +765,56 @@ function onShuffle(): void {
   // 无 RNG 消耗；日晷是跨洗牌计数器，需要玩家级状态，随遗物迁移一起做。
 }
 
+/** 手牌上限（对齐 CardManager::MAX_HAND_SIZE）。 */
+const MAX_HAND_SIZE = 10;
+
+/**
+ * 进消耗堆（对齐 BattleContext::triggerAndMoveToExhaustPile）。
+ *
+ * 参考在压入消耗堆**之前**先跑一串消耗触发；本批一个都没登记，所以现在只剩压栈。
+ * 保留这个调用点是为了将来补触发时只改一处、不至于漏掉某条消耗路径。
+ * TODO(遗物PR): 卡戎的骨灰（addToTop DamageAllEnemy 3）、枯枝（随机牌入手）。
+ * TODO(后续PR): 黑暗拥抱（抽牌）、无痛之心（加格挡）、死灵诅咒、哨兵（**同步**回能量）。
+ */
+function triggerAndMoveToExhaustPile(bc: BattleContext, card: CombatCard): void {
+  bc.exhaustPile.push(card);
+}
+
+/**
+ * 一张牌进手牌（对齐 BattleContext::moveToHandHelper）：手牌满了就改进弃牌堆。
+ * TODO(后续PR): 腐化把进手的技能牌费用改 -9（需要逐实例的 costForTurn）。
+ */
+function moveToHandHelper(bc: BattleContext, card: CombatCard): void {
+  if (bc.hand.length < MAX_HAND_SIZE) {
+    bc.hand.push(card);
+  } else {
+    bc.discardPile.push(card);
+  }
+}
+
+/**
+ * 这张牌能不能升级（对齐 CardInstance::canUpgrade，CardInstance.cpp:55）。
+ *
+ * ⚠ 照抄两处反直觉：① **不**检查这张牌是否真有升级形态，只看「还没升级」；
+ * ② 灼热之刃可以反复升级。灼热之刃的层数（specialData）我们还没建模，但它未登记进
+ * CARD_RULES，覆盖面检查会把带它的牌组整个挡在门外，所以这一支不可达。
+ */
+function canUpgradeCard(card: CombatCard): boolean {
+  if (card.upgraded && card.defId !== "searing_blow") {
+    return false;
+  }
+  const type = getCardDef(card.defId).type;
+  return type !== "curse" && type !== "status";
+}
+
+/**
+ * 升级一张战斗内的牌实例（对齐 CardInstance::upgrade 的通用分支）。
+ * 费用随 `upgraded` 由 `costOf` 派生，故不必像参考那样手动同步 cost/costForTurn。
+ */
+function upgradeCard(card: CombatCard): void {
+  card.upgraded = true;
+}
+
 /**
  * 消耗手牌中指定的一张（对齐 BattleContext::exhaustSpecificCardInHand）。
  *
@@ -666,7 +829,7 @@ function exhaustSpecificCardInHand(bc: BattleContext, idx: number, uid: number):
     return;
   }
   bc.hand.splice(idx, 1);
-  bc.exhaustPile.push(card);
+  triggerAndMoveToExhaustPile(bc, card);
 }
 
 /** 随机消耗手牌若干张（对齐 Actions::ExhaustRandomCardInHand）。手牌空即提前返回。 */
@@ -677,7 +840,7 @@ function exhaustRandomCardInHand(bc: BattleContext, count: number): void {
     }
     const idx = bc.rng.cardRandomRng.random(bc.hand.length - 1); // ★ 消耗一次 cardRandomRng
     const [card] = bc.hand.splice(idx, 1);
-    bc.exhaustPile.push(card);
+    triggerAndMoveToExhaustPile(bc, card);
   }
 }
 
@@ -733,6 +896,7 @@ export function initCombat(input: CombatInitInput): BattleContext {
     potionCapacity: input.potionCapacity ?? 3,
     outcome: "undecided",
     inputState: "executing",
+    cardSelect: null,
     // 对齐 BattleContext::turn——初值 0，afterMonsterTurns 里才 ++。玩家的第一个回合
     // turn 为 0；getMonsterTurnNumber() 那类「第几回合」语义要另行 +1，别混用。
     turn: 0,
@@ -821,6 +985,14 @@ export function executeActions(bc: BattleContext): void {
     if (++guard > LOOP_GUARD) {
       throw new Error("executeActions 循环熔断（可能死循环）");
     }
+    // ⓪ 不再是「执行中」就立刻退出——**这一条必须排在最前**（对齐 BattleContext.cpp:740
+    // 的 `if (inputState != InputState::EXECUTING_ACTIONS) break;`）。选牌屏就是靠它生效：
+    // 开屏的动作把 inputState 改成 card_select，下一轮循环顶部退出，**队列里剩下的动作
+    // 原样留着**，等玩家选完牌由 selectCard 重新进来接着抽。
+    // 少了这一条，焚誓会在玩家还没选要消耗哪张牌之前就先把牌抽了。
+    if (bc.inputState !== "executing") {
+      break;
+    }
     // ① 玩家阵亡立刻跳出——**排在抽干队列之前**（对齐参考主循环把 PLAYER_LOSS
     // 判断放在 actionQueue.pop 之前）。放到后面的话，怪物这一击打死玩家后，
     // 它排在后面的加格挡 / RollMove 还会继续执行。
@@ -843,6 +1015,16 @@ export function executeActions(bc: BattleContext): void {
     if (!bc.cardQueue.isEmpty()) {
       playCardQueueItem(bc, bc.cardQueue.popFront());
       continue;
+    }
+    // ③b 「打不赢了」检查（对齐 BattleContext.cpp:767）：三个牌堆全空且没有不靠牌的伤害
+    // 来源，直接判负。位置必须在出牌队列**之后**、怪物回合**之前**。
+    // 净化 / 恶魔之火 / 断魂斩那类清手牌的牌能把牌全消耗掉，命中这条就该输而不是空转。
+    // TODO(后续PR): 欧米茄、炸弹三格、短暂（TRANSIENT，那只怪自己会跑）也算「不靠牌」。
+    if (bc.hand.length + bc.discardPile.length + bc.drawPile.length === 0) {
+      if (getPower(bc.player.powers, "thorns") <= 0) {
+        bc.outcome = "player_loss";
+        break;
+      }
     }
     // ④ 怪物回合。
     if (bc.monsterTurnIdx < bc.monsters.length) {
@@ -1139,6 +1321,246 @@ function initRelicsAtBattleStart(bc: BattleContext): void {
   for (const id of bc.relics) {
     RELIC_AT_BATTLE_START[id]?.(bc);
   }
+}
+
+// ============================================================================
+// 选牌屏：开屏动作 + 选定处理
+//
+// 每个任务都是一对：
+//   ① 开屏动作（Actions::XxxAction）——**先算候选数**，0 个就什么都不做，1 个就当场
+//      替玩家选掉、根本不开屏，≥2 个才开屏。这条「1 个自动选」的捷径不是优化，它决定了
+//      动作序列的长度（trace 里少一步 select_card），漏了两边就对不上。
+//   ② 选定处理（BattleContext::chooseXxxCard）——真正搬牌。
+// ============================================================================
+
+/** 对齐 BattleContext::openSimpleCardSelectScreen。 */
+function openSimpleCardSelectScreen(bc: BattleContext, task: CardSelectTask, count: number): void {
+  bc.inputState = "card_select";
+  bc.cardSelect = { task, pickCount: count };
+}
+
+/**
+ * 对齐 BattleContext::chooseArmamentsCard。
+ *
+ * ⚠ 它顺手把手牌**重排**了：先是「其余可升级的牌」，然后是被选中的那张（已升级），
+ * 最后是「其余不可升级的牌」。参考自己标了 `// todo cleaner solution`，但这个顺序是
+ * 可观察的（trace 记手牌顺序），必须照抄。
+ */
+function chooseArmamentsCard(bc: BattleContext, handIdx: number): void {
+  const valid: CombatCard[] = [];
+  const invalid: CombatCard[] = [];
+  for (let i = 0; i < bc.hand.length; i += 1) {
+    if (i === handIdx) {
+      continue;
+    }
+    const c = bc.hand[i];
+    if (canUpgradeCard(c)) {
+      valid.push(c);
+    } else {
+      invalid.push(c);
+    }
+  }
+  const cardToUpgrade = bc.hand[handIdx];
+  upgradeCard(cardToUpgrade);
+  bc.hand = [...valid, cardToUpgrade, ...invalid];
+}
+
+/** 对齐 Actions::ArmamentsAction（军备的未升级分支）。 */
+function armamentsAction(bc: BattleContext): void {
+  let canUpgradeCount = 0;
+  let lastUpgradeIdx = 0;
+  for (let i = 0; i < bc.hand.length; i += 1) {
+    if (canUpgradeCard(bc.hand[i])) {
+      canUpgradeCount += 1;
+      lastUpgradeIdx = i;
+    }
+  }
+  if (canUpgradeCount === 0) {
+    return;
+  }
+  if (canUpgradeCount === 1) {
+    // ⚠ 只有一张可升级时**不走** chooseArmamentsCard，所以手牌也不重排——两条路径的
+    // 可观察结果不同，不能合并。
+    upgradeCard(bc.hand[lastUpgradeIdx]);
+    return;
+  }
+  openSimpleCardSelectScreen(bc, "armaments", 1);
+}
+
+/** 对齐 Actions::UpgradeAllCardsInHand（军备的升级分支）。 */
+function upgradeAllCardsInHand(bc: BattleContext): void {
+  // ⚠ 参考这里**不**过 canUpgrade，直接对每张牌调 upgrade()；upgrade() 自己有
+  // `if (!isUpgraded())` 兜底，所以已升级的牌原样不动。诅咒 / 状态牌会被真的标成升级，
+  // 但它们没有升级形态、也没有任何规则读这个位，故不可观察。
+  for (const card of bc.hand) {
+    upgradeCard(card);
+  }
+}
+
+/** 对齐 BattleContext::chooseExhaustOneCard。 */
+function chooseExhaustOneCard(bc: BattleContext, handIdx: number): void {
+  const [card] = bc.hand.splice(handIdx, 1);
+  triggerAndMoveToExhaustPile(bc, card);
+}
+
+/** 对齐 Actions::ChooseExhaustOne（焚誓 / 坚毅+）。 */
+function chooseExhaustOneAction(bc: BattleContext): void {
+  if (bc.hand.length === 0) {
+    return;
+  }
+  if (bc.hand.length === 1) {
+    chooseExhaustOneCard(bc, 0);
+    return;
+  }
+  openSimpleCardSelectScreen(bc, "exhaust_one", 1);
+}
+
+/**
+ * 对齐 BattleContext::chooseExhaustCards（净化的多选）。
+ * 按下标**降序**消耗，故下标始终有效——正序会越消耗越错位。
+ */
+function chooseExhaustCards(bc: BattleContext, idxs: number[]): void {
+  if (idxs.length === 0) {
+    return;
+  }
+  for (const handIdx of [...idxs].sort((a, b) => b - a)) {
+    const [card] = bc.hand.splice(handIdx, 1);
+    triggerAndMoveToExhaustPile(bc, card);
+  }
+}
+
+/**
+ * 对齐 Actions::ExhaustMany（净化）。
+ *
+ * ⚠ **无条件开屏**——手牌为空也开，与其它任务的「0 个候选就跳过」不同。照抄。
+ */
+function exhaustManyAction(bc: BattleContext, limit: number): void {
+  bc.inputState = "card_select";
+  bc.cardSelect = { task: "exhaust_many", pickCount: limit };
+}
+
+/** 对齐 BattleContext::chooseExhumeCard：消耗堆 → 手牌。 */
+function chooseExhumeCard(bc: BattleContext, exhaustIdx: number): void {
+  const [card] = bc.exhaustPile.splice(exhaustIdx, 1);
+  // TODO(后续PR): 参考标了「game handles corruption here」，腐化尚未登记。
+  moveToHandHelper(bc, card);
+}
+
+/**
+ * 对齐 Actions::ExhumeAction（掘尸）。
+ *
+ * ⚠ 三处照抄：① 消耗堆空**或手牌已满 10 张**就整个跳过（不是搬进弃牌堆）；
+ * ② 候选里排除掘尸自己——参考标了 `// todo this is bugged because the selected card
+ * cannot be exhume`，认为真实游戏能选到自己，但没改；这里以参考为准（预言机就是它）；
+ * ③ 不走 openSimpleCardSelectScreen，直接改两个字段。
+ */
+function exhumeAction(bc: BattleContext): void {
+  if (bc.exhaustPile.length === 0 || bc.hand.length === MAX_HAND_SIZE) {
+    return;
+  }
+  let nonExhumeCards = 0;
+  let lastNonExhumeIdx = -1;
+  for (let i = 0; i < bc.exhaustPile.length; i += 1) {
+    if (bc.exhaustPile[i].defId !== "exhume") {
+      nonExhumeCards += 1;
+      lastNonExhumeIdx = i;
+    }
+  }
+  if (nonExhumeCards === 0) {
+    return;
+  }
+  if (nonExhumeCards === 1) {
+    chooseExhumeCard(bc, lastNonExhumeIdx);
+    return;
+  }
+  bc.cardSelect = { task: "exhume", pickCount: 1 };
+  bc.inputState = "card_select";
+}
+
+/**
+ * 对齐 BattleContext::chooseHeadbuttCard：弃牌堆 → 抽牌堆**顶**（数组尾）。
+ * ⚠ 顺序照抄：先 moveToDrawPileTop 再 removeFromDiscard。两步都不消耗 RNG，
+ * 但反过来写会在「牌堆顶」与「弃牌堆下标」之间产生一次错位。
+ */
+function chooseHeadbuttCard(bc: BattleContext, discardIdx: number): void {
+  bc.drawPile.push(bc.discardPile[discardIdx]);
+  bc.discardPile.splice(discardIdx, 1);
+}
+
+/** 对齐 Actions::HeadbuttAction（头槌）。 */
+function headbuttAction(bc: BattleContext): void {
+  if (bc.discardPile.length === 0) {
+    return;
+  }
+  if (bc.discardPile.length === 1) {
+    chooseHeadbuttCard(bc, 0);
+    return;
+  }
+  openSimpleCardSelectScreen(bc, "headbutt", 1);
+}
+
+/** 对齐 BattleContext::chooseWarcryCard：手牌 → 抽牌堆顶。 */
+function chooseWarcryCard(bc: BattleContext, handIdx: number): void {
+  bc.drawPile.push(bc.hand[handIdx]);
+  bc.hand.splice(handIdx, 1);
+}
+
+/**
+ * 对齐 Actions::WarcryAction（战吼 / 未雨绸缪）。
+ *
+ * ⚠ 只有「手牌恰好 1 张」那一支会**白吃一次 cardRandomRng**（`bc.cardRandomRng.random(1)`）。
+ * 手牌 0 张或 ≥2 张都不掷。这一次消耗看不出任何用途、结果被丢掉，但它真实改了 counter，
+ * 漏掉之后每一次 cardRandomRng 都错位。
+ */
+function warcryAction(bc: BattleContext): void {
+  if (bc.hand.length === 0) {
+    return;
+  }
+  if (bc.hand.length === 1) {
+    bc.rng.cardRandomRng.random(1); // ★ 消耗一次 cardRandomRng（结果不用，照抄）
+    chooseWarcryCard(bc, 0);
+    return;
+  }
+  bc.inputState = "card_select";
+  bc.cardSelect = { task: "warcry", pickCount: 1 };
+}
+
+/** 对齐 BattleContext::chooseDrawToHandCards 的单张形态：抽牌堆某张 → 手牌。 */
+function chooseDrawToHandCard(bc: BattleContext, drawIdx: number): void {
+  const [card] = bc.drawPile.splice(drawIdx, 1);
+  moveToHandHelper(bc, card);
+}
+
+/**
+ * 对齐 Actions::DrawToHandAction（秘密技巧 / 秘密武器）。
+ *
+ * ⚠ 扫描循环里藏着 RNG：每找到**第 2 张及以后**的匹配牌，就掷一次
+ * `cardRandomRng.random(count - 1)`（count 是此前已找到的张数），结果丢掉。参考的注释说
+ * 这是为了「keeping rng consistent with game」——真实游戏建了个临时列表并随机插入。
+ * 所以匹配 n 张就消耗 n-1 次；n≤1 时一次都不掷。这是本批最容易漏、也最直接被 trace 的
+ * cardRandom counter 抓住的一点。
+ */
+function drawToHandAction(bc: BattleContext, task: CardSelectTask, cardType: string): void {
+  let count = 0;
+  let idx = 0;
+  for (let i = 0; i < bc.drawPile.length; i += 1) {
+    if (getCardDef(bc.drawPile[i].defId).type === cardType) {
+      if (count > 0) {
+        bc.rng.cardRandomRng.random(count - 1); // ★ 消耗一次 cardRandomRng（结果不用）
+      }
+      idx = i;
+      count += 1;
+    }
+  }
+  if (count === 0) {
+    return;
+  }
+  if (count === 1) {
+    chooseDrawToHandCard(bc, idx);
+    return;
+  }
+  bc.cardSelect = { task, pickCount: 1 };
+  bc.inputState = "card_select";
 }
 
 type CardRule = (bc: BattleContext, item: CardQueueItem, upgraded: boolean) => void;
@@ -1716,6 +2138,95 @@ const CARD_RULES: Record<string, CardRule> = {
   // 金属化：获得 3(升级 4) 层金属化。对齐 BattleContext.cpp:1575 METALLICIZE。
   metallicize: (bc, _item, up) =>
     addToBot(bc, (c) => addPower(c.player.powers, "metallicize", up ? 4 : 3)),
+
+  // ==========================================================================
+  // 铺量第四批 · 选牌屏解锁的那批（开屏逻辑见上方「选牌屏」一节）
+  // ==========================================================================
+
+  // 军备：获得 5 点格挡，升级一张手牌（升级后改为升级**全部**手牌）。
+  // 对齐 BattleContext.cpp:1217 ARMAMENTS。
+  //
+  // ⚠ 格挡恒为 5，升级只改第二项效果——两条分支走的是完全不同的 Action
+  //（ArmamentsAction 会开选牌屏，UpgradeAllCardsInHand 不会），不能合并。
+  armaments: (bc, _item, up) => {
+    const blk = calculateCardBlock(bc, 5);
+    addToBot(bc, (c) => gainBlock(c, blk), false);
+    if (up) {
+      addToBot(bc, (c) => upgradeAllCardsInHand(c));
+    } else {
+      addToBot(bc, (c) => armamentsAction(c));
+    }
+  },
+
+  // 焚誓：消耗一张手牌，然后抽 2(升级 3) 张牌。对齐 BattleContext.cpp:1256 BURNING_PACT。
+  //
+  // ⚠ 这是本批唯一「开屏时后面还排着动作」的牌：ChooseExhaustOne 开屏后 DrawCards 仍在
+  // 队里，等选完才抽。故抽牌那条必须带 ActionDesc，否则选牌屏上取档会把它丢掉。
+  burning_pact: (bc, _item, up) => {
+    addToBot(bc, (c) => chooseExhaustOneAction(c));
+    const count = up ? 3 : 2;
+    addToBot(bc, (c) => drawCards(c, count), true, { kind: "draw_cards", count });
+  },
+
+  // 头槌：造成 9(升级 12) 点伤害，把弃牌堆里选一张置于抽牌堆顶。
+  // 对齐 BattleContext.cpp:1049 HEADBUTT。
+  headbutt: (bc, item, up) => {
+    const dmg = calculateCardDamage(bc, item.target, up ? 12 : 9);
+    addToBot(bc, (c) => attackEnemy(c, item.target, dmg));
+    addToBot(bc, (c) => headbuttAction(c));
+  },
+
+  // 净化：消耗手牌中至多 3(升级 5) 张。消耗。对齐 BattleContext.cpp:1412 PURITY。
+  //
+  // ⚠ ExhaustMany 无条件开屏（手牌为空也开），且是本批唯一的**多选**屏。
+  purity: (bc, _item, up) => {
+    addToBot(bc, (c) => exhaustManyAction(c, up ? 5 : 3));
+  },
+
+  // 秘密技巧：从抽牌堆检索一张**技能**牌进手牌。消耗（升级后不消耗）。
+  // 对齐 BattleContext.cpp:1420 SECRET_TECHNIQUE。
+  secret_technique: (bc) => {
+    addToBot(bc, (c) => drawToHandAction(c, "secret_technique", "skill"));
+  },
+
+  // 秘密武器：同上，检索**攻击**牌。对齐 BattleContext.cpp:1424 SECRET_WEAPON。
+  secret_weapon: (bc) => {
+    addToBot(bc, (c) => drawToHandAction(c, "secret_weapon", "attack"));
+  },
+
+  // 未雨绸缪：抽 2 张牌，把一张手牌置于抽牌堆顶。消耗（升级后不消耗）。
+  // 对齐 BattleContext.cpp:1458 THINKING_AHEAD（参考注释：与升级版战吼同构）。
+  // ⚠ 抽牌数恒为 2，升级只影响是否消耗。
+  thinking_ahead: (bc) => {
+    addToBot(bc, (c) => drawCards(c, 2));
+    addToBot(bc, (c) => warcryAction(c));
+  },
+
+  // 坚毅：获得 7(升级 9) 点格挡，消耗一张手牌——未升级是**随机**消耗，升级后**由你选**。
+  // 对齐 BattleContext.cpp:1482 TRUE_GRIT。
+  //
+  // ⚠ 两条分支的 RNG 消耗完全不同：随机那支走 cardRandomRng，选牌那支不掷 RNG 而是开屏。
+  true_grit: (bc, _item, up) => {
+    const blk = calculateCardBlock(bc, up ? 9 : 7);
+    addToBot(bc, (c) => gainBlock(c, blk), false);
+    if (up) {
+      addToBot(bc, (c) => chooseExhaustOneAction(c));
+    } else {
+      addToBot(bc, (c) => exhaustRandomCardInHand(c, 1)); // ★ 消耗一次 cardRandomRng
+    }
+  },
+
+  // 掘尸：从消耗堆取回一张牌到手牌。消耗。对齐 BattleContext.cpp:1306 EXHUME。
+  exhume: (bc) => {
+    addToBot(bc, (c) => exhumeAction(c));
+  },
+
+  // 战吼：抽 1(升级 2) 张牌，把一张手牌置于抽牌堆顶。消耗。
+  // 对齐 BattleContext.cpp:1495 WARCRY。
+  warcry: (bc, _item, up) => {
+    addToBot(bc, (c) => drawCards(c, up ? 2 : 1));
+    addToBot(bc, (c) => warcryAction(c));
+  },
 };
 
 /**
@@ -1771,7 +2282,18 @@ function useCard(bc: BattleContext, item: CardQueueItem): void {
 
   // clearOnCombatVictory=false（对齐 Actions::OnAfterCardUsed 的第二参数）：
   // 打出致命一击后战斗虽已胜利，这张牌仍要落进弃牌堆。标 true 会让它凭空消失。
-  addToBot(bc, (c) => onAfterUseCard(c, card, item), false);
+  //
+  // desc 是必须的：开选牌屏的牌（军备 / 焚誓 / 头槌 …）开屏时这条动作**还在队里**，
+  // 存档必须能把它带过去，否则读回来那张牌凭空消失。
+  // exhaustOnUse 在此刻取值而非执行时取——它在 rule() 之前就定了，之后无人改动；
+  // 且 playCard 只在 player_normal 才受理，选牌屏期间不可能有第二张牌进来覆盖它
+  //（参考读的是成员 curCardQueueItem，同理不会变）。
+  const exhaustOnUse = item.exhaustOnUse;
+  addToBot(bc, (c) => onAfterUseCard(c, card, exhaustOnUse), false, {
+    kind: "after_use_card",
+    card,
+    exhaustOnUse,
+  });
 
   // 移出手牌 + 扣能量（对齐 useCard 尾部）。
   const handIdx = bc.hand.indexOf(card);
@@ -1784,15 +2306,34 @@ function useCard(bc: BattleContext, item: CardQueueItem): void {
 }
 
 /** 对齐 onAfterUseCard 的卡去向：消耗 or 进弃牌堆。 */
-function onAfterUseCard(bc: BattleContext, card: CombatCard, item: CardQueueItem): void {
+function onAfterUseCard(bc: BattleContext, card: CombatCard, exhaustOnUse: boolean): void {
   // 能力牌打出后**直接离场**，不进任何牌堆（参考里是把 c.id 置为 INVALID 后 return）。
   if (getCardDef(card.defId).type === "power") {
     return;
   }
-  if (item.exhaustOnUse) {
-    bc.exhaustPile.push(card);
+  if (exhaustOnUse) {
+    triggerAndMoveToExhaustPile(bc, card);
   } else {
     bc.discardPile.push(card);
+  }
+}
+
+/** 把可存档描述还原成一条排队动作（importState 用）。 */
+function actionFromDesc(desc: ActionDesc): Action {
+  switch (desc.kind) {
+    case "after_use_card": {
+      const card = { ...desc.card };
+      const exhaustOnUse = desc.exhaustOnUse;
+      return makeAction((c) => onAfterUseCard(c, card, exhaustOnUse), false, {
+        kind: "after_use_card",
+        card,
+        exhaustOnUse,
+      });
+    }
+    case "draw_cards": {
+      const count = desc.count;
+      return makeAction((c) => drawCards(c, count), true, { kind: "draw_cards", count });
+    }
   }
 }
 
@@ -2031,6 +2572,10 @@ export function drinkPotion(bc: BattleContext, idx: number, target = 0): DrinkPo
   if (bc.outcome !== "undecided") {
     return { ok: false, reason: "战斗已结束" };
   }
+  // 对齐 isValidPotionAction 的第一道门（Action.cpp:67）：选牌屏没关之前不能喝药水。
+  if (bc.inputState === "card_select") {
+    return { ok: false, reason: "正在选牌，先完成选择" };
+  }
   const potionId = bc.potions[idx];
   if (potionId === null || potionId === undefined) {
     return { ok: false, reason: `药水槽 ${idx} 为空` };
@@ -2067,6 +2612,10 @@ export type PlayCardResult = { ok: true } | { ok: false; reason: string };
 export function playCard(bc: BattleContext, handIdx: number, target = 0): PlayCardResult {
   if (bc.outcome !== "undecided") {
     return { ok: false, reason: "战斗已结束" };
+  }
+  // 对齐 isValidCardAction 的第一道门（Action.cpp:100）：选牌屏没关之前不能打牌。
+  if (bc.inputState === "card_select") {
+    return { ok: false, reason: "正在选牌，先完成选择" };
   }
   const card = bc.hand[handIdx];
   if (card === undefined) {
@@ -2105,15 +2654,171 @@ export function playCard(bc: BattleContext, handIdx: number, target = 0): PlayCa
 }
 
 // ============================================================================
+// 选牌屏公开入口（对齐 search::Action::execute 的 SINGLE/MULTI_CARD_SELECT 两支）
+// ============================================================================
+
+export type SelectCardResult = { ok: true } | { ok: false; reason: string };
+
+/**
+ * 当前选牌屏的合法候选（对齐 search::Action::enumerateCardSelectActions +
+ * isValidSingleCardSelectAction / isValidMultiCardSelectAction）。
+ *
+ * 入参写成结构子集，故 `BattleContext` 与 `StsCombatState`（纯数据快照）都能直接传进来——
+ * 策略层只有快照，不该为了枚举候选先 importState 一遍。
+ */
+export type CardSelectView = {
+  cardSelect: CardSelectInfo | null;
+  hand: readonly CombatCard[];
+  drawPile: readonly CombatCard[];
+  discardPile: readonly CombatCard[];
+  exhaustPile: readonly CombatCard[];
+};
+
+export type CardSelectOptions =
+  /** 单选：合法下标（相对 cardSelectSource(task) 指出的那个牌堆）。 */
+  | { mode: "single"; task: CardSelectTask; idxs: number[] }
+  /** 多选：从手牌里挑 0..maxPick 张，任意组合都合法。 */
+  | { mode: "multi"; task: CardSelectTask; maxPick: number; handSize: number };
+
+export function cardSelectOptions(v: CardSelectView): CardSelectOptions | null {
+  const info = v.cardSelect;
+  if (info === null) {
+    return null;
+  }
+  const single = (idxs: number[]): CardSelectOptions => ({
+    mode: "single",
+    task: info.task,
+    idxs,
+  });
+  const idxsWhere = (pile: readonly CombatCard[], p: (c: CombatCard) => boolean): number[] =>
+    pile.flatMap((c, i) => (p(c) ? [i] : []));
+  const isType = (c: CombatCard, t: string): boolean => getCardDef(c.defId).type === t;
+
+  switch (info.task) {
+    case "armaments":
+      return single(idxsWhere(v.hand, canUpgradeCard));
+    case "exhaust_one":
+    case "warcry":
+      return single(idxsWhere(v.hand, () => true));
+    case "headbutt":
+      return single(idxsWhere(v.discardPile, () => true));
+    case "exhume":
+      // 排除掘尸自己（对齐 isValidSingleCardSelectAction 的 EXHUME 分支）。
+      return single(idxsWhere(v.exhaustPile, (c) => c.defId !== "exhume"));
+    case "secret_technique":
+      return single(idxsWhere(v.drawPile, (c) => isType(c, "skill")));
+    case "secret_weapon":
+      return single(idxsWhere(v.drawPile, (c) => isType(c, "attack")));
+    case "exhaust_many":
+      return { mode: "multi", task: info.task, maxPick: info.pickCount, handSize: v.hand.length };
+  }
+}
+
+/** 单选（对齐 executeSingleCardSelectActionHelper）。 */
+export function selectCard(bc: BattleContext, idx: number): SelectCardResult {
+  if (bc.outcome !== "undecided") {
+    return { ok: false, reason: "战斗已结束" };
+  }
+  const info = bc.cardSelect;
+  if (bc.inputState !== "card_select" || info === null) {
+    return { ok: false, reason: "现在没有选牌屏" };
+  }
+  const options = cardSelectOptions(bc);
+  if (options === null || options.mode !== "single") {
+    return { ok: false, reason: `任务「${info.task}」是多选，请用 selectCards` };
+  }
+  if (!options.idxs.includes(idx)) {
+    return { ok: false, reason: `下标 ${idx} 不是「${info.task}」的合法候选` };
+  }
+
+  // 关屏放在派发之前：本批登记的 choose* 没有一个再读 cardSelectInfo（参考里读它的只有
+  // 发现 / 双持 / 液态记忆，那三个都未登记），所以先关后派发与参考等价，而且不会让
+  // choose* 里新开的第二块屏被误关。
+  bc.cardSelect = null;
+  switch (info.task) {
+    case "armaments":
+      chooseArmamentsCard(bc, idx);
+      break;
+    case "exhaust_one":
+      chooseExhaustOneCard(bc, idx);
+      break;
+    case "exhume":
+      chooseExhumeCard(bc, idx);
+      break;
+    case "headbutt":
+      chooseHeadbuttCard(bc, idx);
+      break;
+    case "secret_technique":
+    case "secret_weapon":
+      chooseDrawToHandCard(bc, idx);
+      break;
+    case "warcry":
+      chooseWarcryCard(bc, idx);
+      break;
+    case "exhaust_many":
+      // 不可达：上面已按 mode 拦下。
+      break;
+  }
+  // 对齐 search::Action::execute 的收尾：置 EXECUTING_ACTIONS 后继续抽干队列。
+  bc.inputState = "executing";
+  executeActions(bc);
+  return { ok: true };
+}
+
+/** 多选（对齐 executeMultiCardSelectActionHelper）。 */
+export function selectCards(bc: BattleContext, idxs: readonly number[]): SelectCardResult {
+  if (bc.outcome !== "undecided") {
+    return { ok: false, reason: "战斗已结束" };
+  }
+  const info = bc.cardSelect;
+  if (bc.inputState !== "card_select" || info === null) {
+    return { ok: false, reason: "现在没有选牌屏" };
+  }
+  const options = cardSelectOptions(bc);
+  if (options === null || options.mode !== "multi") {
+    return { ok: false, reason: `任务「${info.task}」是单选，请用 selectCard` };
+  }
+  // 对齐 isValidMultiCardSelectAction 的 EXHAUST_MANY 分支：张数不超上限、下标都在手牌内。
+  // ⚠ 参考用 10 位 bitmask 表达选择，因此天然去重、天然升序；这里显式校验重复。
+  if (idxs.length > options.maxPick) {
+    return { ok: false, reason: `最多只能选 ${options.maxPick} 张` };
+  }
+  if (new Set(idxs).size !== idxs.length) {
+    return { ok: false, reason: "选择里有重复下标" };
+  }
+  if (idxs.some((i) => i < 0 || i >= options.handSize)) {
+    return { ok: false, reason: "选择里有越界下标" };
+  }
+
+  bc.cardSelect = null;
+  if (info.task === "exhaust_many") {
+    chooseExhaustCards(bc, [...idxs]);
+  }
+  bc.inputState = "executing";
+  executeActions(bc);
+  return { ok: true };
+}
+
+// ============================================================================
 // 回合结束 → 怪物回合 → 新回合（对齐 endTurn/callEndOfTurnActions/onTurnEnding/afterMonsterTurns）
 // ============================================================================
 
+export type EndTurnResult = { ok: true } | { ok: false; reason: string };
+
 /** 玩家点「结束回合」：入队 endTurn 项并驱动执行。 */
-export function endTurn(bc: BattleContext): void {
+export function endTurn(bc: BattleContext): EndTurnResult {
+  if (bc.outcome !== "undecided") {
+    return { ok: false, reason: "战斗已结束" };
+  }
+  // 对齐 isValidAction 的 END_TURN 分支：只在 PLAYER_NORMAL 受理。
+  if (bc.inputState === "card_select") {
+    return { ok: false, reason: "正在选牌，先完成选择" };
+  }
   bc.cardQueue.pushBack(endTurnItem());
   bc.endTurnQueued = true;
   bc.inputState = "executing";
   executeActions(bc);
+  return { ok: true };
 }
 
 /**
@@ -2502,8 +3207,13 @@ function afterMonsterTurns(bc: BattleContext): void {
 // 可序列化快照（供 GameState 存档；接线用）
 //
 // BattleContext 里只有两处不是纯数据：6 条 StsRandom（有 toState/fromState）与
-// 两条队列（存的是闭包）。队列**只在 executeActions 抽干后才被观察**——那时玩家
-// 重获控制权（inputState=player_normal）、两队列必空，故快照不需要它们。
+// 两条队列（存的是闭包）。
+//
+// 出牌队列在两个可取档时点都必空，故不入档。
+// **动作队列不再必空**：选牌屏是第四批新增的可操作时点，开屏时队列里至少还压着
+// onAfterUseCard（那张牌去哪个牌堆），焚誓还多压一条抽牌。所以动作队列按 ActionDesc
+// 逐条入档，读回来重建。没有描述的残留动作会让 exportState **抛错**——静默丢弃一条排队
+// 动作等于让读回来的档少一次结算，比直接失败危险得多。
 // 结局已定的战斗不入档（战斗当场结算掉），所以 player_loss 时残留的动作队列也不用管。
 // ============================================================================
 
@@ -2522,6 +3232,18 @@ export type StsCombatState = {
   potionCount: number;
   potionCapacity: number;
   outcome: Outcome;
+  /**
+   * 取档时玩家处于哪个可操作时点。第四批新增——老档没有这个字段，migrate.ts 回填
+   * `"player_normal"`（当时唯一的可操作态）。
+   */
+  inputState: PlayerInputState;
+  /** 选牌屏；null ⟺ inputState 为 player_normal。第四批新增，老档回填 null。 */
+  cardSelect: CardSelectInfo | null;
+  /**
+   * 取档瞬间动作队列里的残留动作（按出队顺序）。第四批新增，老档回填 `[]`。
+   * player_normal 时恒为空；card_select 时至少有一条（见本节顶部注释）。
+   */
+  pendingActions: ActionDesc[];
   turn: number;
   player: CombatPlayer;
   monsters: CombatMonster[];
@@ -2540,13 +3262,25 @@ const copyPowers = (powers: PowerInstance[]): PowerInstance[] => powers.map((p) 
 const copyCards = (cards: CombatCard[]): CombatCard[] => cards.map((c) => ({ ...c }));
 
 /**
- * 导出快照。要求两条队列已抽干——非空说明调用方在动作执行中途取档，那样的档
- * 复原后会丢掉排队动作，宁可当场炸掉也不留一个静默错的存档。
+ * 导出快照。只能在玩家可操作时取档（player_normal / card_select），且动作队列里的残留
+ * 动作必须都带 ActionDesc——否则那条动作复原不出来，宁可当场炸掉也不留一个静默错的存档。
  */
 export function exportState(bc: BattleContext): StsCombatState {
-  if (!bc.actionQueue.isEmpty() || !bc.cardQueue.isEmpty()) {
-    throw new Error("exportState: 队列未抽干（只能在玩家可操作时取档）");
+  if (bc.inputState !== "player_normal" && bc.inputState !== "card_select") {
+    throw new Error(`exportState: 不在玩家可操作态（inputState=${bc.inputState}），不能取档`);
   }
+  if (!bc.cardQueue.isEmpty()) {
+    throw new Error("exportState: 出牌队列未抽干（只能在玩家可操作时取档）");
+  }
+  const pendingActions = bc.actionQueue.descriptors().map((desc, i) => {
+    if (desc === null) {
+      throw new Error(
+        `exportState: 动作队列第 ${i} 条没有 ActionDesc，存档会丢掉它。` +
+          `给对应的 addToBot/addToTop 补一个描述（见 ActionDesc 注释）。`,
+      );
+    }
+    return desc;
+  });
   return {
     seedLong: bc.seedLong.toString(),
     floorNum: bc.floorNum,
@@ -2558,6 +3292,9 @@ export function exportState(bc: BattleContext): StsCombatState {
     potionCount: bc.potionCount,
     potionCapacity: bc.potionCapacity,
     outcome: bc.outcome,
+    inputState: bc.inputState,
+    cardSelect: bc.cardSelect === null ? null : { ...bc.cardSelect },
+    pendingActions,
     turn: bc.turn,
     player: { ...bc.player, powers: copyPowers(bc.player.powers) },
     monsters: bc.monsters.map((m) => ({
@@ -2586,6 +3323,8 @@ export function exportState(bc: BattleContext): StsCombatState {
 
 /** 从快照复原。RNG 走 fromState（O(1) 直接装回 seed0/seed1 与 counter，不重放）。 */
 export function importState(s: StsCombatState): BattleContext {
+  const actionQueue = new ActionQueue();
+  actionQueue.replaceAll(s.pendingActions.map(actionFromDesc));
   return {
     rng: {
       aiRng: StsRandom.fromState(s.rng.aiRng),
@@ -2605,10 +3344,11 @@ export function importState(s: StsCombatState): BattleContext {
     potionCount: s.potionCount,
     potionCapacity: s.potionCapacity,
     outcome: s.outcome,
-    // 存档点必然是玩家可操作态（见上方注释）。
-    inputState: "player_normal",
+    // 存档点必然是玩家可操作态（见上方注释）：player_normal 或 card_select。
+    inputState: s.inputState,
+    cardSelect: s.cardSelect === null ? null : { ...s.cardSelect },
     turn: s.turn,
-    actionQueue: new ActionQueue(),
+    actionQueue,
     cardQueue: new CardQueue(),
     player: { ...s.player, powers: copyPowers(s.player.powers) },
     monsters: s.monsters.map((m) => ({
