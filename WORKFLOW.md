@@ -51,8 +51,9 @@
 
 ### 参考项目错了怎么办
 
-北极星是**真实游戏**，参考项目只是目前最好的预言机。参考自己有 bug（已发现 5 处，
-见 TODOS「已知偏离参考项目之处」）。
+北极星是**真实游戏**，参考项目只是目前最好的预言机。参考自己有 bug（已发现 6 处，
+见 TODOS「已知偏离参考项目之处」）——不只是卡牌数值抄错，第五批还挖出一处**数据结构级**的：
+`clearPostCombatActions` 压缩动作环形缓冲时不修 `back`，胜利之后再 `addToBot` 就会丢动作。
 
 判据：
 
@@ -99,11 +100,17 @@ tools/regen-traces.sh --check
 - 在 `BATCH_N` 里加本批的 `CardId::XXX`（用**参考的枚举名**）
 - **variant 1/2 每批重新生成**（未升级 + 全升级各一个），牌组是**当前全牌组**：
   起始 10 + 已登记的全部批次。**variant 0 一律不动。**
-- 为什么是「替换」而不是「每批新开一对」：一对 variant 约 12MB，几批下来仓库就过 100MB。
+- 为什么是「替换」而不是「每批新开一对」：一对全牌组 variant 约 12MB，几批下来仓库就过 100MB。
   替换的真实代价是**覆盖密度**——牌组越大，单张卡出现在某一手牌里的概率越低，打出次数变稀。
-  这件事不靠推断，`--install` 打印的覆盖表就是量尺：73 张牌组下最薄的 `BLUDGEON` 是
-  41/41 次，离 0 还很远，所以替换成立。哪天覆盖表里真的出现 0，再考虑给那一批单开一对更
-  聚焦的牌组——理由写「覆盖密度」，不要写成内存上限。
+  这件事不靠推断，`--install` 打印的覆盖表就是量尺：85 张牌组下最薄的 `SEVER_SOUL` 是
+  25/19 次，离 0 还很远，所以替换成立。
+- **聚焦小牌组这个逃生口已经用过一次**：第五批加了 variant 3/4（起始 + 本批 + `mind_blast`
+  = 23 张）。触发它的不是「某张卡 0 次」，而是**两条分支在全牌组下结构性不可达**：灼伤要靠
+  洗牌才能从弃牌堆回到手里（85 张的抽牌堆一场仗轮不完，实测手牌 0 帧），
+  而 `mind_blast` 的伤害等于抽牌堆张数、它又是固有牌（80 点一击把邪教徒/颚虫第一回合打死，
+  1230 条 trace 从 ~40 步塌成 1 步）。加聚焦变体前**先量**（覆盖表 + 该分支的变异例数），
+  确认是全牌组导致的，再加；理由一律写「覆盖密度」，不要写成内存上限。
+  variant 3/4 与 1/2 一样每批重新生成，只有 variant 0 是冻结的。
 - ⚠ **覆盖表只看「卡被打出几次」，看不到分支级的退化。** 换布局之后要把 TODOS 里
   **例数小的那些变异重量一遍**：换成 73 张全牌组时 `drawToHandAction` 的「候选恰好 1 张
   就不开屏」捷径就从 20 例掉到 0——牌组一大，抽牌堆几乎永远有 ≥2 张匹配牌。
@@ -158,7 +165,7 @@ tools/regen-traces.sh --install UPPERCUT DEMON_FORM METALLICIZE ...
 pnpm typecheck && pnpm lint && pnpm test && pnpm format
 ```
 
-全绿是**下限**，不是完成。`sts-combat-trace.test.ts` 现有 3075 例逐帧对拍，
+全绿是**下限**，不是完成。`sts-combat-trace.test.ts` 现有 4275 例逐帧对拍，
 其中一部分用**全升级牌组**——所以每条规则 `up ? x : y` 的两个分支都会被验证。
 
 改共享路径（`callEndOfTurnActions`、`drawCards`、`onTurnEnding`、`useCard` 之类）时，
@@ -223,6 +230,9 @@ cp /tmp/sc.bak src/engine/sts-combat.ts
 ## 附：踩过的坑
 
 - **`whirlwind` 必须保持未登记**：`sts-combat-wiring.test.ts` 用它当「未迁移卡牌」的样本。
+- **参考的 `ActionQueue` 是手写环形缓冲，`clearPostCombatActions` 只修 `size` 不修 `back`**。
+  于是「胜利清扫之后又 `addToBot`」会取到残留的旧动作、新动作永远轮不到。第五批已打补丁。
+  凡是**胜负已定之后**还会入队的东西（消耗触发、`onAfterUseCard` 之后的连锁）都会踩到它。
 - **`setHasStatus` 从不写 `statusMap`**（`Player.h:233`），所以纯 bool 状态
   （壁垒 / 腐化 / 困惑 / 笔尖 …）在参考侧 `getStatusRuntime` 会 `statusMap.at()` 抛
   `out_of_range`。harness 的 `playerStatusValue` 已规避（按 1 输出），不必再改。
@@ -234,7 +244,7 @@ cp /tmp/sc.bak src/engine/sts-combat.ts
   ——牌堆那份 `fixed_list<CardInstance, 64>` 声明在 `#ifdef sts_card_manager_use_fixed_list`
   里，而 `sts_common.h:12` 的 `#define` 是注释掉的，实际编译成 `std::vector`。
   真正会被 64 卡住的是 `ViolenceAction` 的 `attackIdxList`（`Actions.cpp:616`），按
-  **抽牌堆里的攻击牌数**算——73 张牌组远够不到，但登记 `violence` 时要重新数一遍。
+  **抽牌堆里的攻击牌数**算——85 张牌组远够不到，但登记 `violence` 时要重新数一遍。
   `UpgradeRandomCardAction` 的 `upgradeableHandIdxs`（`:942`）是 `fixed_list<int,10>`，
   手牌上限本就是 10，安全。
 - **harness 的策略可以比 `enumerateCardSelectActions` 更聪明**。那个枚举器对多选屏
