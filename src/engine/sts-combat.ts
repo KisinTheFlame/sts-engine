@@ -25,7 +25,7 @@
 import { StsRandom, JavaRandom, javaShuffle } from "./sts-rng.js";
 import type { RandomState } from "./sts-rng.js";
 import { getEnemyDef, getEncounterDef } from "./enemies/enemies.js";
-import { getCardDef } from "./cards/cards.js";
+import { exhaustsOf, getCardDef, targetedOf } from "./cards/cards.js";
 import { getPotionDef } from "./potions/potions.js";
 import type { CharacterId } from "./types.js";
 
@@ -1604,7 +1604,10 @@ function useCard(bc: BattleContext, item: CardQueueItem): void {
     throw new Error(`sts-combat 暂未登记卡牌行为: ${card.defId}`);
   }
 
-  item.exhaustOnUse ||= def.exhausts === true;
+  // 消耗与否是**升级相关**属性：极限爆发/发现/未雨绸缪/秘密武器/秘密技巧升级后不再消耗
+  // （对齐 Cards.h:534 doesCardExhaust 那组 `!upgraded`）。此前恒取 def.exhausts，
+  // 升级态会把牌错误地送进消耗堆。
+  item.exhaustOnUse ||= exhaustsOf(def, card.upgraded);
   bc.player.cardsPlayedThisTurn += 1;
 
   rule(bc, item, card.upgraded);
@@ -1907,7 +1910,9 @@ export function playCard(bc: BattleContext, handIdx: number, target = 0): PlayCa
   if (cost > bc.player.energy) {
     return { ok: false, reason: `能量不足：需要 ${cost}，剩余 ${bc.player.energy}` };
   }
-  if (def.targeted) {
+  // 指向性同样是**升级相关**属性：致盲+/绊摔+ 改为对所有敌人，不再需要选目标
+  // （对齐 Cards.h:673 cardTargetsEnemy 里 BLIND / TRIP 的 `!upgraded`）。
+  if (targetedOf(def, card.upgraded)) {
     const t = bc.monsters[target];
     if (t === undefined || !t.alive) {
       return { ok: false, reason: `目标无效: ${target}` };

@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { ALL_CARDS, cardPoolOf, getCardDef, rewardCardPoolOf } from "../src/engine/cards/cards.js";
+import {
+  ALL_CARDS,
+  cardPoolOf,
+  exhaustsOf,
+  getCardDef,
+  rewardCardPoolOf,
+  targetedOf,
+} from "../src/engine/cards/cards.js";
 import {
   ALL_RELICS,
   bossRelicPool,
@@ -15,7 +22,7 @@ import {
 } from "../src/engine/potions/potions.js";
 import { ALL_EVENTS, getEventDef } from "../src/engine/events/events.js";
 import { getEnemyDef, getEncounterDef } from "../src/engine/enemies/enemies.js";
-import type { CharacterId } from "../src/engine/types.js";
+import type { CardDef, CharacterId } from "../src/engine/types.js";
 
 // ============================================================================
 // 数据表不变量。
@@ -90,6 +97,210 @@ describe("卡表", () => {
       for (const rarity of ["common", "uncommon", "rare"] as const) {
         expect(cardPoolOf(color, rarity).length, `${color}/${rarity} 池为空`).toBeGreaterThan(0);
       }
+    }
+  });
+});
+
+// ============================================================================
+// 「升级会改变的属性」不变量。
+//
+// 参考项目把费用/消耗/指向性/固有全做成 f(id, upgraded)，我们的数据表则是「恒定字段
+// + upgradedXxx 覆盖」。这组不变量守的是覆盖字段本身填错——它没有第二处数据可以对拍，
+// 一旦填反（或该填而没填）就会被两代实现照着复现。
+//
+// 今天正是靠逐张对参考才发现：上勾拳费用 1（应为 2）、心灵冲击漏了固有、炸弹被标成消耗、
+// 秘密武器/秘密技巧凭空多了保留、混乱/神化漏了升级降费、残暴漏了升级固有。
+// ============================================================================
+
+describe("卡表 · 升级相关属性", () => {
+  /** 可升级判据取自参考 CardInstance::canUpgrade：status / curse 不可升级。 */
+  const canUpgrade = (card: CardDef): boolean => card.type !== "status" && card.type !== "curse";
+
+  it("升级相关字段只出现在可升级的牌上", () => {
+    const upgradeOnly = [
+      "upgradedCost",
+      "upgradedExhausts",
+      "upgradedTargeted",
+      "upgradedInnate",
+      "upgradedOnDiscard",
+    ] as const;
+    for (const card of ALL_CARDS) {
+      if (canUpgrade(card)) {
+        continue;
+      }
+      for (const field of upgradeOnly) {
+        expect(card[field], `${card.id} 是 ${card.type} 却带着 ${field}`).toBeUndefined();
+      }
+    }
+  });
+
+  it("upgradedXxx 必须真的改变属性（同值即填错）", () => {
+    for (const card of ALL_CARDS) {
+      if (card.upgradedCost !== undefined) {
+        expect(card.upgradedCost, `${card.id} 的 upgradedCost 与 cost 同值`).not.toBe(card.cost);
+      }
+      if (card.upgradedExhausts !== undefined) {
+        expect(card.upgradedExhausts, `${card.id} 的 upgradedExhausts 与 exhausts 同值`).not.toBe(
+          card.exhausts,
+        );
+      }
+      if (card.upgradedTargeted !== undefined) {
+        expect(card.upgradedTargeted, `${card.id} 的 upgradedTargeted 与 targeted 同值`).not.toBe(
+          card.targeted,
+        );
+      }
+      if (card.upgradedInnate === true) {
+        expect(card.innate, `${card.id} 本就固有，upgradedInnate 是多余的`).not.toBe(true);
+      }
+    }
+  });
+
+  it("upgradedTargeted 为 false 时，原形态必须需要目标", () => {
+    // 致盲+/绊摔+ 那类「升级后改为对所有敌人」。原形态本就不指向的话这个字段没有意义。
+    for (const card of ALL_CARDS) {
+      if (card.upgradedTargeted === false) {
+        expect(card.targeted, `${card.id} 升级后取消指向，但原形态也不指向`).toBe(true);
+      }
+    }
+  });
+
+  it("升级后效果从 target 变成 all_enemies 的牌，必须填 upgradedTargeted: false", () => {
+    // 致盲 / 绊摔就是这一形状：漏填这个字段会让升级态还要求选一个活着的目标。
+    const hasScope = (effects: readonly CardDef["effects"][number][], on: string): boolean =>
+      effects.some((effect) => "on" in effect && effect.on === on);
+    for (const card of ALL_CARDS) {
+      const widened =
+        hasScope(card.effects, "target") &&
+        !hasScope(card.upgradedEffects, "target") &&
+        hasScope(card.upgradedEffects, "all_enemies");
+      if (widened) {
+        expect(card.upgradedTargeted, `${card.id} 升级后改为全体，却没填 upgradedTargeted`).toBe(
+          false,
+        );
+      }
+    }
+  });
+
+  it('effects 里出现 on:"target" 的形态必须是指向性的', () => {
+    // 与上一条互为夹逼：若把 upgradedTargeted 填成 false 却忘了把 upgradedEffects
+    // 从 target 改成 all_enemies（或反之），这里当场失败。
+    for (const card of ALL_CARDS) {
+      for (const upgraded of [false, true]) {
+        const effects = upgraded ? card.upgradedEffects : card.effects;
+        if (!effects.some((effect) => "on" in effect && effect.on === "target")) {
+          continue;
+        }
+        expect(
+          targetedOf(card, upgraded),
+          `${card.id}（升级=${String(upgraded)}）效果指向 target 却不是指向性牌`,
+        ).toBe(true);
+      }
+    }
+  });
+
+  it("固有牌不是状态牌；诅咒里只有「扭曲」是固有的", () => {
+    // 原版唯一的固有诅咒是扭曲（Writhe），参考 isCardInnate 也把 WRITHE 列为 true。
+    const INNATE_CURSES = new Set(["writhe"]);
+    for (const card of ALL_CARDS) {
+      if (card.innate !== true && card.upgradedInnate !== true) {
+        continue;
+      }
+      expect(card.type, `${card.id} 是状态牌却标了固有`).not.toBe("status");
+      if (card.type === "curse") {
+        expect(INNATE_CURSES, `${card.id} 是诅咒却标了固有`).toContain(card.id);
+      }
+    }
+  });
+
+  it("「固有」文案与 innate / upgradedInnate 双向一致", () => {
+    // 心灵冲击漏 innate 正是文案里也没写「固有」——两边一起漏，所以这条只能挡住单侧漏填；
+    // 真正的对拍在参考项目那边（isCardInnate），这里挡的是「改了一处忘改另一处」。
+    const mentionsInnate = (text: string): boolean => /(^|。)固有(。|——)/.test(text);
+    for (const card of ALL_CARDS) {
+      expect(mentionsInnate(card.description), `${card.id} 卡面与 innate 不符`).toBe(
+        card.innate === true,
+      );
+      expect(mentionsInnate(card.upgradedDescription), `${card.id} 升级卡面与固有不符`).toBe(
+        card.innate === true || card.upgradedInnate === true,
+      );
+    }
+  });
+
+  it("升级文案写了「费用降为 N」就必须有对应的 upgradedCost", () => {
+    for (const card of ALL_CARDS) {
+      const matched = /^费用降为 (\d+)。/.exec(card.upgradedDescription);
+      if (matched === null) {
+        continue;
+      }
+      expect(card.upgradedCost, `${card.id} 文案写了降费却没有 upgradedCost`).toBe(
+        Number(matched[1]),
+      );
+    }
+  });
+
+  it("描述写了「无法打出」的牌，cost 必须是 null", () => {
+    for (const card of ALL_CARDS) {
+      if (card.description.includes("无法打出")) {
+        expect(card.cost, `${card.id} 文案说无法打出却有费用`).toBeNull();
+      }
+    }
+  });
+
+  // 卡面关键词 ↔ 布尔字段的夹逼。范围限定 red + colorless：这是 TODOS 里铺量的范围，
+  // 也是本轮逐张对过参考的范围。其余颜色目前有 4 处已知不符（尚未审计，不在本轮范围）：
+  //   deva_form（升级卡面写「消耗（升级）」，且 exhausts 疑为「虚无」误标）、
+  //   slimed（原版是 1 费可打出的消耗牌，我们记成不可打出）、
+  //   worship（原版是升级后才「保留」，缺 upgradedRetain 字段无法表达）、
+  //   storm（原版没有「保留」）。
+  // 审计到那些颜色时把 AUDITED_COLORS 放开即可。
+  const AUDITED_COLORS = new Set<CardDef["color"]>(["red", "colorless"]);
+  const auditedCards = ALL_CARDS.filter((card) => AUDITED_COLORS.has(card.color));
+
+  it("「消耗」文案与实际消耗与否一致（含升级后不再消耗）", () => {
+    // 本轮抓到的：炸弹凭空多了「消耗」，极限爆发+/发现+/未雨绸缪+/秘密武器+/秘密技巧+
+    // 升级后不再消耗但卡面还写着「消耗」。
+    for (const card of auditedCards) {
+      const trailing = (text: string): boolean => /(^|。)消耗。$/.test(text);
+      expect(trailing(card.description), `${card.id} 卡面与 exhausts 不符`).toBe(
+        exhaustsOf(card, false),
+      );
+      expect(trailing(card.upgradedDescription), `${card.id} 升级卡面与消耗与否不符`).toBe(
+        exhaustsOf(card, true),
+      );
+    }
+  });
+
+  it("「保留」文案与 retain 一致", () => {
+    // 本轮抓到的：秘密武器 / 秘密技巧凭空多了「保留」（原版两张都没有）。
+    const mentionsRetain = (text: string): boolean => /(^|。)保留。/.test(text);
+    for (const card of auditedCards) {
+      for (const text of [card.description, card.upgradedDescription]) {
+        expect(mentionsRetain(text), `${card.id} 卡面与 retain 不符：${text}`).toBe(
+          card.retain === true,
+        );
+      }
+    }
+  });
+
+  it("取值器按 upgraded 走覆盖字段", () => {
+    // sts-combat 的 useCard / playCard 就是靠这两个取值器读表的；它们要是退回读恒定字段，
+    // 极限爆发+ 会被错误消耗、致盲+ 会被要求选一个活着的目标。
+    expect(exhaustsOf(getCardDef("limit_break"), false)).toBe(true);
+    expect(exhaustsOf(getCardDef("limit_break"), true)).toBe(false);
+    expect(exhaustsOf(getCardDef("shiv"), true)).toBe(true); // 无覆盖字段 → 沿用 exhausts
+    expect(targetedOf(getCardDef("blind"), false)).toBe(true);
+    expect(targetedOf(getCardDef("blind"), true)).toBe(false);
+    expect(targetedOf(getCardDef("trip"), true)).toBe(false);
+    expect(targetedOf(getCardDef("strike"), true)).toBe(true); // 无覆盖字段 → 沿用 targeted
+  });
+
+  it("effects 与 upgradedEffects 的「空 / 非空」一致", () => {
+    // 有 effects 却漏写 upgradedEffects 的牌升级后会变成空牌。
+    for (const card of ALL_CARDS) {
+      expect(
+        card.upgradedEffects.length === 0,
+        `${card.id} 的 effects 与 upgradedEffects 一个空一个非空`,
+      ).toBe(card.effects.length === 0);
     }
   });
 });

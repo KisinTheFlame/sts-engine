@@ -242,7 +242,7 @@ const CARD_LIST: CardDef[] = [
     type: "attack",
     rarity: "uncommon",
     color: "red",
-    cost: 1,
+    cost: 2,
     targeted: true,
     exhausts: false,
     effects: [
@@ -1193,10 +1193,11 @@ const CARD_LIST: CardDef[] = [
     cost: 1,
     targeted: false,
     exhausts: true,
+    upgradedExhausts: false,
     effects: [{ kind: "double_strength" }],
     upgradedEffects: [{ kind: "double_strength" }],
     description: "使当前力量翻倍。消耗。",
-    upgradedDescription: "使当前力量翻倍。消耗。",
+    upgradedDescription: "使当前力量翻倍。",
   },
 
   // —— 静默猎手（绿）补全批次 ——
@@ -1628,6 +1629,7 @@ const CARD_LIST: CardDef[] = [
     color: "colorless",
     cost: 0,
     targeted: true,
+    upgradedTargeted: false, // 升级后改为对所有敌人，不再需要选目标。
     exhausts: false,
     effects: [{ kind: "apply_power", power: "weak", amount: 2, on: "target" }],
     upgradedEffects: [{ kind: "apply_power", power: "weak", amount: 2, on: "all_enemies" }],
@@ -1642,6 +1644,7 @@ const CARD_LIST: CardDef[] = [
     color: "colorless",
     cost: 0,
     targeted: true,
+    upgradedTargeted: false, // 升级后改为对所有敌人，不再需要选目标。
     exhausts: false,
     effects: [{ kind: "apply_power", power: "vulnerable", amount: 2, on: "target" }],
     upgradedEffects: [{ kind: "apply_power", power: "vulnerable", amount: 2, on: "all_enemies" }],
@@ -1762,12 +1765,13 @@ const CARD_LIST: CardDef[] = [
     rarity: "rare",
     color: "red",
     cost: 0,
+    upgradedInnate: true,
     targeted: false,
     exhausts: false,
     effects: [{ kind: "apply_power", power: "brutality", amount: 1, on: "self" }],
     upgradedEffects: [{ kind: "apply_power", power: "brutality", amount: 1, on: "self" }],
     description: "每个回合开始时，失去 1 点生命并抽 1 张牌。",
-    upgradedDescription: "每个回合开始时，失去 1 点生命并抽 1 张牌。",
+    upgradedDescription: "固有。每个回合开始时，失去 1 点生命并抽 1 张牌。",
   },
   {
     id: "barricade",
@@ -1935,12 +1939,13 @@ const CARD_LIST: CardDef[] = [
     color: "colorless",
     cost: 2,
     upgradedCost: 1,
+    innate: true,
     targeted: true,
     exhausts: false,
     effects: [{ kind: "deal_damage_draw_pile_count" }],
     upgradedEffects: [{ kind: "deal_damage_draw_pile_count" }],
-    description: "对一个敌人造成等同于抽牌堆张数的伤害。",
-    upgradedDescription: "费用降为 1。对一个敌人造成等同于抽牌堆张数的伤害。",
+    description: "固有。对一个敌人造成等同于抽牌堆张数的伤害。",
+    upgradedDescription: "固有。费用降为 1。对一个敌人造成等同于抽牌堆张数的伤害。",
   },
   {
     id: "spirit_shield",
@@ -3651,12 +3656,13 @@ const CARD_LIST: CardDef[] = [
     color: "colorless",
     cost: 0,
     targeted: false,
+    // 秘密武器没有「保留」（原版卡面只有「消耗」，升级后去掉消耗）。
     exhausts: true,
-    retain: true,
+    upgradedExhausts: false,
     effects: [{ kind: "fetch_from_draw", cardType: "attack" }],
     upgradedEffects: [{ kind: "fetch_from_draw", cardType: "attack" }],
-    description: "保留。从抽牌堆检索一张攻击牌加入手牌。消耗。",
-    upgradedDescription: "保留。从抽牌堆检索一张攻击牌加入手牌。消耗。",
+    description: "从抽牌堆检索一张攻击牌加入手牌。消耗。",
+    upgradedDescription: "从抽牌堆检索一张攻击牌加入手牌。",
   },
   {
     id: "secret_technique",
@@ -3666,12 +3672,13 @@ const CARD_LIST: CardDef[] = [
     color: "colorless",
     cost: 0,
     targeted: false,
+    // 秘密技巧同理：无「保留」，升级后去掉消耗。
     exhausts: true,
-    retain: true,
+    upgradedExhausts: false,
     effects: [{ kind: "fetch_from_draw", cardType: "skill" }],
     upgradedEffects: [{ kind: "fetch_from_draw", cardType: "skill" }],
-    description: "保留。从抽牌堆检索一张技能牌加入手牌。消耗。",
-    upgradedDescription: "保留。从抽牌堆检索一张技能牌加入手牌。消耗。",
+    description: "从抽牌堆检索一张技能牌加入手牌。消耗。",
+    upgradedDescription: "从抽牌堆检索一张技能牌加入手牌。",
   },
   {
     id: "seek",
@@ -3847,10 +3854,11 @@ const CARD_LIST: CardDef[] = [
     cost: 0,
     targeted: false,
     exhausts: true,
+    upgradedExhausts: false,
     effects: [{ kind: "draw", amount: 2 }, { kind: "put_hand_card_on_top" }],
     upgradedEffects: [{ kind: "draw", amount: 2 }, { kind: "put_hand_card_on_top" }],
     description: "抽 2 张牌。将一张手牌置于抽牌堆顶。消耗。",
-    upgradedDescription: "抽 2 张牌。将一张手牌置于抽牌堆顶。消耗。",
+    upgradedDescription: "抽 2 张牌。将一张手牌置于抽牌堆顶。",
   },
   {
     id: "violence",
@@ -3884,10 +3892,11 @@ const CARD_LIST: CardDef[] = [
     cost: 1,
     targeted: false,
     exhausts: true,
+    upgradedExhausts: false,
     effects: [{ kind: "add_random_colorless", count: 1 }],
     upgradedEffects: [{ kind: "add_random_colorless", count: 1 }],
     description: "将 1 张随机无色卡加入手牌。消耗。",
-    upgradedDescription: "将 1 张随机无色卡加入手牌。消耗。",
+    upgradedDescription: "将 1 张随机无色卡加入手牌。",
   },
 
   // —— 机器人收尾（循环/全息影像/递归）——
@@ -5512,12 +5521,13 @@ const CARD_LIST: CardDef[] = [
     rarity: "rare",
     color: "colorless",
     cost: 2,
+    upgradedCost: 1,
     targeted: false,
     exhausts: false,
     effects: [{ kind: "apply_power", power: "mayhem", amount: 1, on: "self" }],
     upgradedEffects: [{ kind: "apply_power", power: "mayhem", amount: 1, on: "self" }],
     description: "每个回合开始时，打出你抽牌堆顶的那张牌。",
-    upgradedDescription: "每个回合开始时，打出你抽牌堆顶的那张牌。",
+    upgradedDescription: "费用降为 1。每个回合开始时，打出你抽牌堆顶的那张牌。",
   },
   {
     id: "transmutation",
@@ -5661,12 +5671,13 @@ const CARD_LIST: CardDef[] = [
     rarity: "rare",
     color: "colorless",
     cost: 2,
+    upgradedCost: 1,
     targeted: false,
     exhausts: true,
     effects: [{ kind: "upgrade_all_cards" }],
     upgradedEffects: [{ kind: "upgrade_all_cards" }],
     description: "本场战斗剩余时间内，升级你所有的牌。消耗。",
-    upgradedDescription: "本场战斗剩余时间内，升级你所有的牌。消耗。",
+    upgradedDescription: "费用降为 1。本场战斗剩余时间内，升级你所有的牌。消耗。",
   },
   {
     id: "panic_button",
@@ -5696,11 +5707,13 @@ const CARD_LIST: CardDef[] = [
     color: "colorless",
     cost: 2,
     targeted: false,
-    exhausts: true,
+    // 炸弹**不消耗**（原版卡面无「消耗」，可反复打出叠多枚）。
+    // 参考 Cards.h:534 doesCardExhaust 的名单里也没有 THE_BOMB。
+    exhausts: false,
     effects: [{ kind: "schedule_bomb", turns: 3, damage: 40 }],
     upgradedEffects: [{ kind: "schedule_bomb", turns: 3, damage: 50 }],
-    description: "3 个回合后，对所有敌人造成 40 点伤害。消耗。",
-    upgradedDescription: "3 个回合后，对所有敌人造成 50 点伤害。消耗。",
+    description: "3 个回合后，对所有敌人造成 40 点伤害。",
+    upgradedDescription: "3 个回合后，对所有敌人造成 50 点伤害。",
   },
   {
     id: "foreign_influence",
@@ -6051,4 +6064,26 @@ export function costOf(def: CardDef, upgraded: boolean): number | null {
     return def.upgradedCost;
   }
   return def.cost;
+}
+
+/**
+ * 取一张牌当前是否消耗（升级后不再消耗的牌用 upgradedExhausts）。
+ * 对齐参考项目 CardInstance::doesExhaust → doesCardExhaust(id, upgraded)。
+ */
+export function exhaustsOf(def: CardDef, upgraded: boolean): boolean {
+  if (upgraded && def.upgradedExhausts !== undefined) {
+    return def.upgradedExhausts;
+  }
+  return def.exhausts;
+}
+
+/**
+ * 取一张牌当前是否需要选目标（升级后变全体的牌用 upgradedTargeted）。
+ * 对齐参考项目 CardInstance::requiresTarget → cardTargetsEnemy(id, upgraded)。
+ */
+export function targetedOf(def: CardDef, upgraded: boolean): boolean {
+  if (upgraded && def.upgradedTargeted !== undefined) {
+    return def.upgradedTargeted;
+  }
+  return def.targeted;
 }

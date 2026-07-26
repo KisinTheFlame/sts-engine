@@ -1,6 +1,6 @@
 import type { GameState } from "../engine/types.js";
 import type { GameAction } from "../engine/engine.js";
-import { costOf, getCardDef } from "../engine/cards/cards.js";
+import { costOf, getCardDef, targetedOf } from "../engine/cards/cards.js";
 import { getEventDef } from "../engine/events/events.js";
 import { nextInt } from "../engine/rng.js";
 import { availableNext } from "../engine/map/map.js";
@@ -55,7 +55,7 @@ function legalActions(state: GameState): GameAction[] {
         actions.push({
           type: "play_card",
           handIndex,
-          targetIndex: def.targeted ? combat.target : null,
+          targetIndex: targetedOf(def, instance.upgraded) ? combat.target : null,
         });
       }
     });
@@ -152,7 +152,7 @@ export class GreedyPolicy implements Policy {
           return {
             type: "play_card",
             handIndex,
-            targetIndex: def.targeted ? combat.target : null,
+            targetIndex: targetedOf(def, combat.hand[handIndex].upgraded) ? combat.target : null,
           };
         }
       }
