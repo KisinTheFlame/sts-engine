@@ -24,6 +24,17 @@ import { StsRandom } from "../src/engine/sts-rng.js";
 type Snapshot = {
   turn: number;
   outcome: string;
+  /**
+   * 本场战斗**赚到的**金币（第十一批新增，贪婪之手的击杀奖励）。
+   *
+   * harness 输出的是**增量**而不是绝对值，且只在非零时才输出——参考那边战斗内金币的入场值
+   * 是 GameContext 的 99，直接 dump 绝对值会重写每一个文件的每一行（含**冻结的 variant 0**），
+   * 而 `regen-traces.sh` 正是拒绝这件事的。这与 `deckUpgraded` 用的是同一招。
+   *
+   * 我们这边的 `initCombat` 因此**故意不传 gold**（从 0 起算），于是 `player.gold`
+   * 直接就是这个增量。差个常数没有任何影响：这五个编队里没有一样东西**读**金币。
+   */
+  goldGained?: number;
   player: {
     hp: number;
     maxHp: number;
@@ -208,30 +219,34 @@ const CARD: Record<string, string> = {
   // —— 第八批：**从战斗内卡池随机取出来**、但尚未登记行为的牌 ——
   //
   // 蜕变 / 变形 / 发现 / 多面手 / 地狱之刃 会从 CardPools.h 的三个战斗内卡池里随机取牌
-  // 定义，那三个池一共点名 104 张牌，其中 18 张 `CARD_RULES` 里没有。它们**只会躺在牌堆
-  // 快照里**（harness 的 isReplayableCard 不让策略打出未登记的牌），但既然出现在快照里就
-  // 必须能映射——漏一个会在重放时报「未知卡牌」而不是静默错。
+  // 定义，那三个池一共点名 104 张牌，其中当时有 18 张 `CARD_RULES` 里没有。它们**只会躺在
+  // 牌堆快照里**（harness 的 isReplayableCard 不让策略打出未登记的牌），但既然出现在快照里
+  // 就必须能映射——漏一个会在重放时报「未知卡牌」而不是静默错。
   //
-  // ⚠ 出现在这张表里**不等于**登记了行为：真去打它们仍然会抛「暂未登记卡牌行为」。
-  // 各自卡在哪个机制上见 TODOS 的分批清单（第九/十/十一/十二批，以及参考自己没实现好的）。
-  APOTHEOSIS: "apotheosis",
-  CLASH: "clash",
+  // 下面这 7 张仍属这一类（真去打它们会抛「暂未登记卡牌行为」）：`dark_shackles` /
+  // `violence` 是第十二批（两张都要先修参考侧的 bug），`forethought` 的升级分支在参考侧
+  // 整段被注释掉，剩下四张是别的机制。第九~十一批的 11 张已经登记，分组列在其后。
   DARK_SHACKLES: "dark_shackles",
-  DOUBLE_TAP: "double_tap",
-  DUAL_WIELD: "dual_wield",
   ENLIGHTENMENT: "enlightenment",
   FORETHOUGHT: "forethought",
-  HAND_OF_GREED: "hand_of_greed",
-  HAVOC: "havoc",
   MAGNETISM: "magnetism",
-  MAYHEM: "mayhem",
   PANACHE: "panache",
-  PERFECTED_STRIKE: "perfected_strike",
   SADISTIC_NATURE: "sadistic_nature",
-  THE_BOMB: "the_bomb",
-  TRANSMUTATION: "transmutation",
   VIOLENCE: "violence",
+  // —— 第九批 4 张（出牌队列嵌套）——
+  HAVOC: "havoc",
+  MAYHEM: "mayhem",
+  DOUBLE_TAP: "double_tap",
+  DUAL_WIELD: "dual_wield",
+  // —— 第十批 3 张（X 费）——
   WHIRLWIND: "whirlwind",
+  TRANSMUTATION: "transmutation",
+  APOTHEOSIS: "apotheosis",
+  // —— 第十一批 4 张（打击计数 / 打出门槛 / 回合计时器 / 战斗内金币）——
+  PERFECTED_STRIKE: "perfected_strike",
+  CLASH: "clash",
+  THE_BOMB: "the_bomb",
+  HAND_OF_GREED: "hand_of_greed",
 };
 const ENCOUNTER: Record<string, string> = {
   CULTIST: "cultist",
@@ -375,6 +390,8 @@ function shape(bc: BattleContext): Record<string, unknown> {
   return {
     turn: bc.turn,
     outcome: bc.outcome,
+    // `start()` 不传 gold，所以这就是「本场赚了多少」——与 harness 的 goldGained 同形。
+    goldGained: bc.player.gold,
     player: {
       hp: bc.player.hp,
       maxHp: bc.player.maxHp,
@@ -412,6 +429,8 @@ function shapeExpected(s: Snapshot): Record<string, unknown> {
   return {
     turn: s.turn,
     outcome: s.outcome,
+    // harness 只在非零时输出这个字段（见 Snapshot.goldGained），缺省即 0。
+    goldGained: s.goldGained ?? 0,
     player: {
       hp: s.player.hp,
       maxHp: s.player.maxHp,
