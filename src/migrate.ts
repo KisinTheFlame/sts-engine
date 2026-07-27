@@ -77,6 +77,7 @@ export function migrateLoadedState(raw: unknown): GameState {
     // 时点都必空，当时的 exportState 甚至会为此显式抛错。
     backfill(live, "pendingCardQueue", []);
     migrateCombatCards(live);
+    migrateCombatBatch11(live, state);
   }
 
   return state as unknown as GameState;
@@ -134,4 +135,89 @@ function migrateCombatCards(combat: Record<string, unknown>): void {
       }
     }
   }
+}
+
+/**
+ * 第十一批新增的战斗字段：`strikeCount`、`player.bomb1/2/3`、`player.gold`。
+ *
+ * 三组的回填理由各不相同：
+ *
+ *  * **`bomb1/2/3` 一律 0** —— 无损。唯一能让它们非零的是炸弹（`the_bomb`），本批才登记；
+ *    在此之前任何一场战斗里这三格恒为 0。
+ *  * **`player.gold` 取 run 级的 `state.gold`** —— 无损，而且正是参考的入场值
+ *    （`player.gold = gc.gold`）。战斗内唯一的增点是贪婪之手（本批才登记），唯一的减点是
+ *    盗贼/劫掠者偷钱（那两只怪还没登记），所以老档的战斗内金币恒等于 run 级金币。
+ *  * **`strikeCount` 要真的数一遍** —— 这一条**不是**常量回填。老档的战斗里可以有
+ *    完美打击（变形/发现/多面手能从卡池里把它造出来躺在牌堆里），读回来之后玩家真的可能
+ *    打出它，所以数值得对。数的范围与 `notifyAddCardToCombat` 的语义一致：
+ *    手牌 + 抽牌堆 + 弃牌堆（**消耗堆不算**），再加上「已离开手牌、还在飞」的那些牌——
+ *    即残留动作里的 `after_use_card`、以及出牌队列里的项。
+ *    ⚠ 两处都要排除 `purgeOnUse`：二连击的复制项是按值拷贝、从来没进过计数器。
+ */
+function migrateCombatBatch11(
+  combat: Record<string, unknown>,
+  state: Record<string, unknown>,
+): void {
+  const player = asRecord(combat["player"]);
+  if (player) {
+    backfill(player, "bomb1", 0);
+    backfill(player, "bomb2", 0);
+    backfill(player, "bomb3", 0);
+    backfill(player, "gold", typeof state["gold"] === "number" ? state["gold"] : 0);
+  }
+  if (combat["strikeCount"] !== undefined) {
+    return;
+  }
+  // 与 sts-combat.ts 的 isStrikeCard 同源。这里独立列一份是故意的：migrate 不该依赖
+  // 战斗实现的内部函数（那个谓词不导出），而且这份名单是「老档当时可能出现的牌」，
+  // 将来即使 isStrikeCard 因新角色而扩表，老档的语义也不该跟着变。
+  const strikeIds = new Set([
+    "meteor_strike",
+    "perfected_strike",
+    "pommel_strike",
+    "sneaky_strike",
+    "strike",
+    "strike_blue",
+    "strike_green",
+    "strike_purple",
+    "swift_strike",
+    "thunder_strike",
+    "twin_strike",
+    "wild_strike",
+    "windmill_strike",
+  ]);
+  const isStrike = (raw: unknown): boolean => {
+    const card = asRecord(raw);
+    return card !== null && typeof card["defId"] === "string" && strikeIds.has(card["defId"]);
+  };
+  let count = 0;
+  for (const pile of ["hand", "drawPile", "discardPile"]) {
+    const cards: unknown = combat[pile];
+    if (Array.isArray(cards)) {
+      count += cards.filter(isStrike).length;
+    }
+  }
+  const pending: unknown = combat["pendingActions"];
+  if (Array.isArray(pending)) {
+    for (const raw of pending) {
+      const desc = asRecord(raw);
+      if (
+        desc?.["kind"] === "after_use_card" &&
+        desc["purgeOnUse"] !== true &&
+        isStrike(desc["card"])
+      ) {
+        count += 1;
+      }
+    }
+  }
+  const queued: unknown = combat["pendingCardQueue"];
+  if (Array.isArray(queued)) {
+    for (const raw of queued) {
+      const item = asRecord(raw);
+      if (item && item["purgeOnUse"] !== true && isStrike(item["card"])) {
+        count += 1;
+      }
+    }
+  }
+  combat["strikeCount"] = count;
 }

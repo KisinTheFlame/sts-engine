@@ -622,6 +622,27 @@ export type CombatPlayer = {
    * 所以「打了几张燃烧」和「对所有敌人打多少」是两个独立的数。
    */
   combustHpLoss: number;
+  /**
+   * 炸弹的三格计时器（对齐 Player::bomb1 / bomb2 / bomb3，Player.h:89-91）。
+   *
+   * 炸弹**不是** statusMap 里的 Power：`Player::buff<PS::THE_BOMB>` 在写 statusMap 之前就
+   * `bomb3 += amount; return;` 了（Player.h:330）。每个回合末**先**引爆 `bomb1`，再整体
+   * 前移一格（`bomb1 = bomb2; bomb2 = bomb3; bomb3 = 0`），所以打出后要等三个回合末。
+   * 同一回合打两张就是 `bomb3` 累加，不是两个独立计时器。
+   */
+  bomb1: number;
+  bomb2: number;
+  bomb3: number;
+  /**
+   * 战斗内金币（对齐 Player::gold，Player.h:36）。
+   *
+   * 金币是 **run 级**资源：参考在 `BattleContext::init` 里 `player.gold = gc.gold`、
+   * 在 `exitBattle` 里 `g.gold = player.gold` 写回去（BattleContext.cpp:55 / :484）。
+   * 我们照同一形状：`initCombat` 从入参带进来，`combat-bridge.settleCombat` 写回
+   * `GameState.gold`。战斗内唯一的增点是贪婪之手（`gainGold`），唯一的减点是
+   * 盗贼/劫掠者偷金币（`Monster::stealGoldFromPlayer`，那两只怪还没登记）。
+   */
+  gold: number;
 };
 
 // ============================================================================
@@ -669,6 +690,14 @@ export type BattleContext = {
   drawPile: CombatCard[];
   discardPile: CombatCard[];
   exhaustPile: CombatCard[];
+
+  /**
+   * 「在场」的打击牌张数（对齐 CardManager::strikeCount）。完美打击的伤害读它。
+   *
+   * 是**增量计数器**而不是派生量：见 `notifyAddCardToCombat` / `notifyRemoveFromCombat`
+   * 那一节。它算上「已离开手牌、还没进弃牌堆」的在飞牌，所以扫牌堆是数不出来的。
+   */
+  strikeCount: number;
 
   /** 怪物回合游标：>= monsters.length 表示当前不在怪物回合（对齐 monsterTurnIdx，游戏初值 6）。 */
   monsterTurnIdx: number;
@@ -991,33 +1020,47 @@ function drawOneCard(bc: BattleContext, card: CombatCard): void {
   bc.hand.push(card);
 }
 
+/**
+ * 抽牌（对齐 `BattleContext::drawCards`，BattleContext.cpp:2413）。
+ * 抽牌堆顶 = 数组尾（对齐 `CardManager::popFromDrawPile` = `drawPile.back()` + `pop_back()`）。
+ *
+ * ⚠ 四条提前返回逐字照抄，顺序不能动。第三条 `抽牌堆 + 弃牌堆 == 0` 是**唯一**能免掉下面
+ * 那次 shuffleRng 的门：两堆都空才不洗，只有抽牌堆空是**照样要洗**的（见下）。
+ * NO_DRAW（战斗恍惚）排在最前面，命中它连 reshuffle 都不做。
+ *
+ * ⚠ 抽不够时**不是**同步「抽干 → 洗回 → 补抽」，而是拆成三步、后两步走**动作队列**：
+ *   ① `addToTop(DrawCards(缺的张数))`、② `onShuffle()`、③ `addToTop(EmptyDeckShuffle())`
+ *      —— ①③ 都是 addToTop 且 ③ 后推，所以执行顺序是「先洗、再补抽」；
+ *   ④ 抽牌堆非空时**同步**把它剩下的抽干（递归调自己，参数是抽牌堆张数）。
+ *
+ * ⚠ 第十一批修掉的转写错误：原先这里写的是「弃牌堆非空才洗」，于是
+ * **「抽牌堆还剩几张、但弃牌堆是空的」这种局面白省了一次 shuffleRng**。参考的
+ * `EmptyDeckShuffle` 无条件先取 `shuffleRng.randomLong()` 再洗（Actions.cpp:181），
+ * 空弃牌堆同样消耗一次；能免掉它的只有上面那条「两堆都空」的提前返回。
+ * 第十一批炸弹那副牌组（净化 + 坚毅把牌大量消耗掉）第一次走到这个局面，对拍红了 3 例。
+ */
 function drawCards(bc: BattleContext, count: number): void {
-  // 抽牌堆顶 = 数组尾（对齐 CardManager::popFromDrawPile = drawPile.back()+pop_back()）。
-  // 对齐 BattleContext::drawCards 顶部四条提前返回里的 NO_DRAW（战斗恍惚打完那一张牌
-  // 之后本回合就再也抽不到牌）。⚠ 位置在**最前面**：命中它连 reshuffle 都不做，
-  // 所以不会白吃一次 shuffleRng。
-  if (getPower(bc.player.powers, "no_draw") > 0) {
+  if (
+    count <= 0 ||
+    getPower(bc.player.powers, "no_draw") > 0 ||
+    bc.drawPile.length + bc.discardPile.length === 0 ||
+    bc.hand.length === MAX_HAND_SIZE
+  ) {
     return;
   }
-  let toDraw = Math.min(MAX_HAND_SIZE - bc.hand.length, count);
-  if (toDraw <= 0) {
+  const amountToDraw = Math.min(MAX_HAND_SIZE - bc.hand.length, count);
+  if (bc.drawPile.length < amountToDraw) {
+    const temp = amountToDraw - bc.drawPile.length;
+    addToTop(bc, (c) => drawCards(c, temp), true, { kind: "draw_cards", count: temp });
+    onShuffle();
+    addToTop(bc, (c) => emptyDeckShuffle(c));
+    if (bc.drawPile.length > 0) {
+      drawCards(bc, bc.drawPile.length); // 同步递归（参考自注 `// the game adds this to top`）
+    }
     return;
   }
-  if (bc.drawPile.length < toDraw) {
-    // reshuffle：先抽干现有牌库（无 RNG），再把弃牌堆洗回，补抽剩余。
-    const before = bc.drawPile.length;
-    for (let i = 0; i < before; i += 1) {
-      drawOneCard(bc, bc.drawPile.pop()!);
-    }
-    toDraw -= before;
-    if (bc.discardPile.length > 0) {
-      shuffleCards(bc, bc.discardPile); // ★ 消耗一次 shuffleRng
-      bc.drawPile = bc.discardPile;
-      bc.discardPile = [];
-    }
-  }
-  const n = Math.min(toDraw, bc.drawPile.length);
-  for (let i = 0; i < n; i += 1) {
+  // 对齐 CardManager::draw：上面那道门保证抽牌堆够，所以这里不再取 min。
+  for (let i = 0; i < amountToDraw; i += 1) {
     drawOneCard(bc, bc.drawPile.pop()!);
   }
 }
@@ -1049,6 +1092,75 @@ function onShuffle(): void {
 
 /** 手牌上限（对齐 CardManager::MAX_HAND_SIZE）。 */
 const MAX_HAND_SIZE = 10;
+
+// ============================================================================
+// 「在场的打击牌张数」（对齐 CardManager::strikeCount）
+//
+// 完美打击的伤害是 `6 + strikeCount * (up ? 3 : 2)`，而 strikeCount **不是**每次打牌时
+// 扫牌堆数出来的，是一个**增量计数器**：参考在 `notifyAddCardToCombat`（+1）与
+// `notifyRemoveFromCombat`（-1）两个钩子里维护它（CardManager.cpp:258/264）。
+//
+// ⚠ 语义是「在这场战斗里」而不是「在某个牌堆里」：
+//  * **加**的时机是「一张牌凭空进入战斗」——建大牌组实例、三个 createTempCardIn*、
+//    两个 MakeTempCardIn(s)Hand 动作、以及掘尸把牌从消耗堆取回来。
+//    牌堆之间的搬运（抽牌 / 弃牌 / 洗牌 / 打出）**一次都不动它**。
+//  * **减**的时机只有一个：`moveToExhaustPile`。所以一张被打出、已离开手牌但还没进消耗堆
+//    的牌**仍然算在内**——完美打击自己就是打击牌，它在算伤害那一刻还没进弃牌堆，故计入
+//    自己（参考在那行注了 `// hack because we calculate strikeCount while non purge cards
+//    are still in hand.`）。
+//  * 二连击的复制项**不算**：`queuePurgeCard` 是按值拷贝、不走任何 notify，
+//    对应地它结算完直接丢掉、也不走 `moveToExhaustPile`，两头都不动计数器。
+//
+// ⚠ 由此还有一处参考的边角行为被顺带照抄了：浩劫/混乱从抽牌堆顶拿走的牌若 canUse 不通过，
+// 它凭空消失且**不**走 notifyRemoveFromCombat——计数器就永久偏高一张。当前观察不到
+// （能被 canUse 拒掉的只有状态/诅咒牌，没有一张是打击牌），照参考写着。
+// ============================================================================
+
+/**
+ * 名字含「打击」的牌（对齐 `isCardStrikeCard`，Cards.h:512）。
+ *
+ * 参考那份名单是「完整枚举 + `default: false`」，可以全表信任，故逐字抄全 13 项——
+ * 其中只有 `strike` / `perfected_strike` / `pommel_strike` / `twin_strike` / `wild_strike` /
+ * `swift_strike` 属于铁甲+无色，其余是别的角色的。判据是**牌名**、与颜色无关，所以整份
+ * 名单照抄，铺到别的角色时这里不用改。
+ * ⚠ `strike_blue` / `strike_green` / `strike_purple` 在**我们的数据表里还不存在**（四个角色
+ * 的起始打击共用同一张 `strike`，见 TODOS「待裁定」）。仍然列着，是为了将来真的拆成四份时
+ * 这个谓词自动跟上——现在它们只是三个匹配不到任何牌的名字，没有副作用。
+ */
+function isStrikeCard(defId: string): boolean {
+  switch (defId) {
+    case "meteor_strike":
+    case "perfected_strike":
+    case "pommel_strike":
+    case "sneaky_strike":
+    case "strike": // 四个角色的起始打击共用一张 `strike`（见 TODOS「待裁定」）
+    case "strike_blue":
+    case "strike_green":
+    case "strike_purple":
+    case "swift_strike":
+    case "thunder_strike":
+    case "twin_strike":
+    case "wild_strike":
+    case "windmill_strike":
+      return true;
+    default:
+      return false;
+  }
+}
+
+/** 一张牌进入战斗（对齐 CardManager::notifyAddCardToCombat，CardManager.cpp:258）。 */
+function notifyAddCardToCombat(bc: BattleContext, card: CombatCard): void {
+  if (isStrikeCard(card.defId)) {
+    bc.strikeCount += 1;
+  }
+}
+
+/** 一张牌离开战斗（对齐 CardManager::notifyRemoveFromCombat，CardManager.cpp:264）。 */
+function notifyRemoveFromCombat(bc: BattleContext, card: CombatCard): void {
+  if (isStrikeCard(card.defId)) {
+    bc.strikeCount -= 1;
+  }
+}
 
 /**
  * 进消耗堆（对齐 BattleContext::triggerAndMoveToExhaustPile，BattleContext.cpp:2814）。
@@ -1083,6 +1195,9 @@ function triggerAndMoveToExhaustPile(bc: BattleContext, card: CombatCard): void 
   if (card.defId === "sentinel") {
     bc.player.energy += card.upgraded ? 3 : 2;
   }
+  // 全项目**唯一**的「离场」点（对齐 CardManager::moveToExhaustPile 里那句
+  // notifyRemoveFromCombat）：消耗是唯一让一张牌不再属于这场战斗的去向。
+  notifyRemoveFromCombat(bc, card);
   bc.exhaustPile.push(card);
 }
 
@@ -1100,7 +1215,25 @@ function triggerAndMoveToExhaustPile(bc: BattleContext, card: CombatCard): void 
 // ============================================================================
 
 function makeCardInstance(bc: BattleContext, defId: string, upgraded = false): CombatCard {
-  return { ...cardInstanceProto(defId, upgraded), uid: bc.nextUid++ };
+  return instantiate(bc, cardInstanceProto(defId, upgraded));
+}
+
+/**
+ * 把一份**模板**变成真正入场的实例：取 uid + 通知「进入战斗」
+ *（对齐 `c.uniqueId = nextUniqueCardId++;` 紧跟 `notifyAddCardToCombat(c)` 那两行）。
+ *
+ * 这两步在参考里成对出现于**每一个**造牌点（`createTempCardIn{Hand,DrawPile,Discard}`、
+ * `Actions::MakeTempCardIn(s)Hand`、`chooseDualWieldCard` / `chooseDiscoveryCard` 的副本），
+ * 所以收成一个函数；漏调一处就是 strikeCount 少算一张。
+ *
+ * ⚠ **不包括** `chooseDualWieldCard` 给原牌换 uid 那一步：那里只有 `uniqueId = ...`、
+ * 没有 notify（原牌本来就在场）。也**不包括** `queuePurgeCard`（二连击的副本按值拷贝，
+ * 两头都不动计数器）。
+ */
+function instantiate(bc: BattleContext, proto: CombatCard): CombatCard {
+  const card = { ...proto, uid: bc.nextUid++ };
+  notifyAddCardToCombat(bc, card);
+  return card;
 }
 
 /**
@@ -1159,7 +1292,7 @@ function makeTempCardInHand(
  */
 function makeTempCardInstanceInHand(bc: BattleContext, proto: CombatCard, amount = 1): void {
   for (let i = 0; i < amount; i += 1) {
-    moveToHandHelper(bc, { ...proto, uid: bc.nextUid++ });
+    moveToHandHelper(bc, instantiate(bc, proto));
   }
 }
 
@@ -1173,7 +1306,7 @@ function makeTempCardInstanceInHand(bc: BattleContext, proto: CombatCard, amount
  */
 function makeTempCardsInHand(bc: BattleContext, protos: readonly CombatCard[]): void {
   for (const proto of protos) {
-    moveToHandHelper(bc, { ...proto, uid: bc.nextUid++ });
+    moveToHandHelper(bc, instantiate(bc, proto));
   }
 }
 
@@ -1634,6 +1767,15 @@ export type CombatInitInput = {
   /** 玩家当前生命/上限。 */
   playerHp: number;
   playerMaxHp: number;
+  /**
+   * 入场时的金币（对齐 `player.gold = gc.gold`）；缺省 0。
+   *
+   * 战斗内只有贪婪之手会改它，改完由 `combat-bridge.settleCombat` 写回 `GameState.gold`。
+   * trace 重放**故意不传**（即从 0 起算），这样 `player.gold` 直接就是「本场赚了多少」，
+   * 与 harness 输出的 `goldGained` 同形——参考那边入场值是 GameContext 的 99，
+   * 而这五个编队里没有任何东西**读**金币，所以差个常数不影响任何行为。
+   */
+  gold?: number;
   /** 角色（决定药水池前 3 项）；缺省铁甲。 */
   character?: CharacterId;
   /** 入场时持有的遗物 id。 */
@@ -1684,6 +1826,11 @@ export function initCombat(input: CombatInitInput): BattleContext {
       powers: [],
       cardsPlayedThisTurn: 0,
       combustHpLoss: 0,
+      bomb1: 0,
+      bomb2: 0,
+      bomb3: 0,
+      // 对齐 `BattleContext::init` 的 `player.gold = gc.gold`（BattleContext.cpp:55）。
+      gold: input.gold ?? 0,
     },
     monsters: [],
     monstersAlive: 0,
@@ -1691,6 +1838,8 @@ export function initCombat(input: CombatInitInput): BattleContext {
     drawPile: [],
     discardPile: [],
     exhaustPile: [],
+    // 对齐 `CardManager::init` 顶部的 `strikeCount = 0`——下面建大牌组实例时逐张加回来。
+    strikeCount: 0,
     monsterTurnIdx: 6, // 对齐游戏初值（>= monsterCount 即「非怪物回合」）
     endTurnQueued: false,
     turnHasEnded: false,
@@ -1809,9 +1958,17 @@ export function executeActions(bc: BattleContext): void {
     // ③b 「打不赢了」检查（对齐 BattleContext.cpp:767）：三个牌堆全空且没有不靠牌的伤害
     // 来源，直接判负。位置必须在出牌队列**之后**、怪物回合**之前**。
     // 净化 / 恶魔之火 / 断魂斩那类清手牌的牌能把牌全消耗掉，命中这条就该输而不是空转。
-    // TODO(后续PR): 欧米茄、炸弹三格、短暂（TRANSIENT，那只怪自己会跑）也算「不靠牌」。
+    // ⚠ 炸弹的三格计时器算「不靠牌的伤害来源」（对齐 BattleContext.cpp:786-788 那三行
+    // `player.bomb1 || player.bomb2 || player.bomb3`）：手牌打空但还有炸弹在倒计时时
+    // 不能判负，得等它炸完。
+    // TODO(后续PR): 欧米茄、短暂（TRANSIENT，那只怪自己会跑）也算「不靠牌」。
     if (bc.hand.length + bc.discardPile.length + bc.drawPile.length === 0) {
-      if (getPower(bc.player.powers, "thorns") <= 0) {
+      const hasDamageWithoutCards =
+        getPower(bc.player.powers, "thorns") > 0 ||
+        bc.player.bomb1 !== 0 ||
+        bc.player.bomb2 !== 0 ||
+        bc.player.bomb3 !== 0;
+      if (!hasDamageWithoutCards) {
         bc.outcome = "player_loss";
         break;
       }
@@ -1893,9 +2050,22 @@ function playCardQueueItem(bc: BattleContext, item: CardQueueItem): void {
  * ⚠ `inAutoplay` 只影响**能量**那一道：自动打出的牌不看能量够不够（浩劫打出的 3 费牌
  * 在 0 能量下照样打）。牌型那几道（诅咒/状态/缠绕/冲突/秘密技巧武器）对它一视同仁。
  *
- * TODO(后续PR): canUse 剩下的分支——缠绕封攻击（ENTANGLED）、冲突（手里全是攻击牌才能打）、
+ * TODO(后续PR): canUse 剩下的分支——缠绕封攻击（ENTANGLED）、
  *   大结局 / 招牌动作 / 反射 / 天降神兵 / 战术家。都还没有对应内容登记。
  */
+/**
+ * 冲撞能不能打（对齐 `canUseClash`，CardInstance.cpp:260）：**手牌里**每一张都得是攻击牌。
+ *
+ * ⚠ 两处照抄：
+ *  ① 扫的是整只手牌、**不排除冲撞自己**。玩家点牌时冲撞还在手里，而它自己是攻击牌，
+ *     所以自己那一格恒通过；浩劫/混乱翻出来的那张已经离开抽牌堆、不在手牌里，也不参与。
+ *     （数据表卡面写的是「其余全为攻击牌」，与参考的实现在结果上等价。）
+ *  ② 空手牌 → 恒真（循环不进）。这不是空谈：浩劫可以在手牌打空之后才结算。
+ */
+function canUseClash(bc: BattleContext): boolean {
+  return bc.hand.every((c) => getCardDef(c.defId).type === "attack");
+}
+
 function cardCanUse(
   bc: BattleContext,
   card: CombatCard,
@@ -1909,6 +2079,12 @@ function cardCanUse(
     if (t === undefined || !t.alive) {
       return `目标无效: ${target}`;
     }
+  }
+  // 冲撞：只有**手牌全是攻击牌**时才打得出（对齐 canUse 的 ATTACK 分支，
+  // CardInstance.cpp:295 → canUseClash）。⚠ 这一道对 `inAutoplay` **一视同仁**：
+  // 浩劫 / 混乱从抽牌堆顶翻出一张冲撞时照样要过它，不过就凭空消失（那张牌已被拿走）。
+  if (def.type === "attack" && card.defId === "clash" && !canUseClash(bc)) {
+    return `「${def.name}」需要手牌全是攻击牌`;
   }
   // 打不出来的牌（对齐 canUse 的按类型分支）：诅咒牌要蓝烛、状态牌要医疗包
   //（黏液除外，它本来就能打）。第五批开始有灼伤 / 伤口 / 眩晕真的躺在手里，少了这道门
@@ -1980,9 +2156,13 @@ function playTopCardInDrawPile(bc: BattleContext, target: number, exhausts: bool
 /**
  * 把弃牌堆洗回抽牌堆（对齐 `Actions::EmptyDeckShuffle`，Actions.cpp:181）。
  *
- * ⚠ 与 drawCards 里那段 reshuffle 是**两条不同的代码**：这条**不调 onShuffle**
- * （参考的 EmptyDeckShuffle 里没有），只有「洗弃牌堆 + 并入抽牌堆」两步。
- * ★ 消耗一次 shuffleRng。
+ * 两个调用方：`drawCards` 抽不够时（那边自己**同步**调 `onShuffle()`，因为参考的
+ * `BattleContext::drawCards` 是这么写的）与 `playTopCardInDrawPile`（浩劫 / 混乱，
+ * 那边**不**调 onShuffle）。这个函数自己只做「洗弃牌堆 + 并入抽牌堆」两步。
+ *
+ * ★ **无条件**消耗一次 shuffleRng：`java::Random(bc.shuffleRng.randomLong())` 在洗之前
+ * 就取好了，弃牌堆是空的照样掷。想省掉这一次只能在**调用之前**判掉（`drawCards` 的
+ * 「两堆都空」提前返回、深呼吸的「弃牌堆非空」判断都是这么做的）。
  */
 function emptyDeckShuffle(bc: BattleContext): void {
   shuffleCards(bc, bc.discardPile); // ★ 消耗一次 shuffleRng
@@ -2504,10 +2684,12 @@ function chooseDualWieldCard(bc: BattleContext, handIdx: number, copyCount: numb
       invalid.push(c);
     }
   }
+  // ⚠ 只换 uid，**不** notifyAddCardToCombat——原牌一直在场（参考这里只有一句
+  // `dualWieldCard.uniqueId = nextUniqueCardId++`，没有 notify）。
   dualWieldCard.uid = bc.nextUid++;
   bc.hand = [...valid, ...invalid, dualWieldCard];
   for (let i = 0; i < copyCount; i += 1) {
-    const copy = { ...dualWieldCard, uid: bc.nextUid++ };
+    const copy = instantiate(bc, dualWieldCard);
     if (bc.hand.length + 1 <= MAX_HAND_SIZE) {
       bc.hand.push(copy);
     } else {
@@ -2541,7 +2723,7 @@ function dualWieldAction(bc: BattleContext, copyCount: number): void {
   }
   if (validCount === 1) {
     for (let i = 0; i < copyCount; i += 1) {
-      const copy = { ...bc.hand[lastValidIdx], uid: bc.nextUid++ };
+      const copy = instantiate(bc, bc.hand[lastValidIdx]);
       if (bc.hand.length + 1 <= MAX_HAND_SIZE) {
         bc.hand.push(copy);
       } else {
@@ -2596,9 +2778,17 @@ function exhaustManyAction(bc: BattleContext, limit: number): void {
   bc.cardSelect = { task: "exhaust_many", pickCount: limit };
 }
 
-/** 对齐 BattleContext::chooseExhumeCard：消耗堆 → 手牌。 */
+/**
+ * 对齐 BattleContext::chooseExhumeCard（BattleContext.cpp:3036）：消耗堆 → 手牌。
+ *
+ * ⚠ 这里要 `notifyAddCardToCombat`：消耗是唯一的「离场」，掘尸把牌**重新带回战斗**，
+ * 所以 strikeCount 要加回来（参考在 removeFromExhaustPile 之后显式调了它）。
+ * `removeFromExhaustPile` 自己**不**调 notifyRemoveFromCombat——离场那一下在进消耗堆时
+ * 就已经记过了，这里再减一次会重复。
+ */
 function chooseExhumeCard(bc: BattleContext, exhaustIdx: number): void {
   const [card] = bc.exhaustPile.splice(exhaustIdx, 1);
+  notifyAddCardToCombat(bc, card);
   // TODO(后续PR): 参考标了「game handles corruption here」，腐化尚未登记。
   moveToHandHelper(bc, card);
 }
@@ -2759,9 +2949,9 @@ function chooseDiscoveryCard(bc: BattleContext, defId: string, amount: number): 
       if (getPower(bc.player.powers, "corruption") > 0 && getCardDef(defId).type === "skill") {
         setCostForTurn(proto, -9);
       }
-      bc.hand.push({ ...proto, uid: bc.nextUid++ });
+      bc.hand.push(instantiate(bc, proto));
     } else {
-      bc.discardPile.push({ ...proto, uid: bc.nextUid++ });
+      bc.discardPile.push(instantiate(bc, proto));
     }
   }
 }
@@ -4078,6 +4268,87 @@ const CARD_RULES: Record<string, CardRule> = {
   apotheosis: (bc) => {
     addToBot(bc, (c) => apotheosisAction(c));
   },
+
+  // ==========================================================================
+  // 铺量第十一批 · 四个互不相关的小机制
+  //
+  // 这一批不是「一个机制解锁一批卡」，而是四张各卡在一个独立小机制上的收尾牌：
+  //   完美打击 → `strikeCount` 增量计数器（见 isStrikeCard 那一节）
+  //   冲撞     → `cardCanUse` 的攻击牌分支（打出合法性门槛）
+  //   炸弹     → `bomb1/2/3` 三格计时器（见 applyEndOfTurnPowers 的开头）
+  //   贪婪之手 → 战斗内金币（`CombatPlayer.gold`，随 settleCombat 回写 run 层）
+  // ==========================================================================
+
+  // 完美打击：造成 6 点伤害；牌名含「打击」的牌每有一张，额外 2(升级 3) 点。
+  // 对齐 BattleContext.cpp:1103 PERFECTED_STRIKE。
+  //
+  // ⚠ 三处照抄：
+  //  ① 数的是 `cards.strikeCount`——「这场战斗里」的打击牌，不是「手牌里」，也不是
+  //     「大牌组里」。手牌 / 抽牌堆 / 弃牌堆全算，消耗掉的不算，掘尸取回来的又算回来。
+  //  ② **算上自己**：这张完美打击此刻已被 useCard 移出手牌，但「移出手牌」不等于「离场」，
+  //     计数器没减过它。参考在这一行注了 `// hack because we calculate strikeCount while
+  //     non purge cards are still in hand.`
+  //  ③ 加成量是 `strikeCount * (up ? 3 : 2)` 加在**基础伤害**上，然后整体过一次
+  //     `calculateCardDamage`——所以力量/易伤是作用在含加成的总额上的。
+  perfected_strike: (bc, item, up) => {
+    const strikeDmg = bc.strikeCount * (up ? 3 : 2);
+    const dmg = calculateCardDamage(bc, item.target, 6 + strikeDmg);
+    addToBot(bc, (c) => attackEnemy(c, item.target, dmg));
+  },
+
+  // 冲撞：仅当手牌中全是攻击牌时才能打出；造成 14(升级 18) 点伤害。
+  // 对齐 BattleContext.cpp:1023 CLASH（效果本身平平无奇，门槛在 cardCanUse / canUseClash）。
+  clash: (bc, item, up) => {
+    const dmg = calculateCardDamage(bc, item.target, up ? 18 : 14);
+    addToBot(bc, (c) => attackEnemy(c, item.target, dmg));
+  },
+
+  // 炸弹：3 个回合后，对所有敌人造成 40(升级 50) 点伤害。
+  // 对齐 BattleContext.cpp:1470 THE_BOMB → `Actions::BuffPlayer<PS::THE_BOMB>(up ? 50 : 40)`。
+  //
+  // ⚠ 它虽然写成 BuffPlayer，却**不是**一个普通 Power：`Player::buff<PS::THE_BOMB>`
+  //（Player.h:330）在进 statusMap 之前就 `bomb3 += amount; return;` 了，所以
+  //  ① 层数记在三个专用字段上、不在 statusMap 里；
+  //  ② `setHasStatus` 一次都没调过，于是 `hasStatusRuntime(THE_BOMB)` **恒为假**——
+  //     参考自己的状态 dump 因此看不见炸弹（harness 的快照同理，见报告的盲区一节）。
+  //  两张炸弹叠加就是 `bomb3` 累加（40 + 40 = 80），不是两个独立的计时器。
+  // 结算与推进见 applyEndOfTurnPowers 的开头。
+  the_bomb: (bc, _item, up) => {
+    const amount = up ? 50 : 40;
+    addToBot(bc, (c) => {
+      c.player.bomb3 += amount;
+    });
+  },
+
+  // 贪婪之手：造成 20(升级 25) 点伤害；若这一击**击杀**目标，获得 20(升级 25) 金币。
+  // 对齐 BattleContext.cpp:1061 HAND_OF_GREED → `Actions::HandOfGreedAction`（Actions.cpp:1103）。
+  //
+  // ⚠ 四处照抄（形状与进食那条同族，但不是同一段代码）：
+  //  ① 伤害走 `Monster::damage`（我们的 `monsterDamage`）而**不是** `attacked`——所以
+  //     蜷缩那条 onAttacked 链不触发。这与绝大多数攻击牌不同。
+  //  ② 顶部先判 `isDeadOrEscaped` 直接返回，尾部**自己**调一次 checkCombat，
+  //     「给金币」夹在扣血与 checkCombat 之间。
+  //  ③ 伤害在**打牌时**算好（`calculateCardDamage` 在 addToBot 之外），动作里只结算。
+  //  ④ 参考的豁免条件是 `!MINION && !isAlive() && !isHalfDead() &&
+  //     !(REGROW && monstersAlive > 0)`。当前登记的四种怪（邪教徒 / 颚虫 / 红虱 / 绿虱）
+  //     一个都没有 MINION / REGROW，`halfDead` 整个机制也还没建模（只有僧侣/书虫那类才有），
+  //     所以这里只留 `!alive` 那一项——与进食（feed）当年的处理一致。
+  //     ⚠ 登记那些怪时必须把三项补回来。
+  hand_of_greed: (bc, item, up) => {
+    const dmg = calculateCardDamage(bc, item.target, up ? 25 : 20);
+    const gold = up ? 25 : 20;
+    addToBot(bc, (c) => {
+      const m = c.monsters[item.target];
+      if (m === undefined || !m.alive) {
+        return;
+      }
+      monsterDamage(c, item.target, dmg);
+      if (!m.alive) {
+        gainGold(c, gold);
+      }
+      checkCombat(c);
+    });
+  },
 };
 
 /**
@@ -4522,6 +4793,21 @@ function healPlayer(bc: BattleContext, amount: number): void {
 }
 
 /**
+ * 战斗内获得金币（对齐 Player::gainGold，Player.cpp:82）。
+ *
+ * ⚠ 两条遗物分支照参考的位置留 TODO：以太（ECTOPLASM）在**加钱之前**整个提前返回
+ * （拿了它这一局再也捡不到金币），血腥雕像（BLOODY_IDOL）在加钱**之后**回 5 点血。
+ * 两个都还没登记，所以现在只有加钱这一句。
+ *
+ * ⚠ 参考在函数顶部有 `assert(amount > 0)`，我们不复制断言：唯一的调用方是贪婪之手，
+ * 它传的是 20/25 常量。
+ */
+function gainGold(bc: BattleContext, amount: number): void {
+  // TODO(遗物PR): 以太（提前返回，一分钱都不给）、血腥雕像（加完回 5 血）。
+  bc.player.gold += amount;
+}
+
+/**
  * 玩家主动失血（对齐 Actions::PlayerLoseHp → Player::loseHp，Player.cpp:259）。
  *
  * ⚠ 与受击伤害是两条路：**不过格挡**、不触发荆棘/火焰屏障，直接扣血。归零走同一个
@@ -4942,7 +5228,25 @@ function callEndOfTurnActions(bc: BattleContext): void {
  * 命中项的枚举序：LOSE_STRENGTH(14) → NO_DRAW(16) → DOUBLE_TAP(30) → COMBUST(41) → RAGE(71)。
  */
 function applyEndOfTurnPowers(bc: BattleContext): void {
-  // TODO(后续PR): 炸弹（THE_BOMB）排在整个循环**之前**，需要「N 回合后结算」的计数器。
+  // 炸弹（对齐 Player.cpp:350-355）：排在遍历 statusMap 的循环**之前**，与枚举序无关
+  // ——它压根不在 statusMap 里（见 CombatPlayer.bomb1 的注释）。
+  //
+  // ⚠ 四处照抄：
+  //  ① 先引爆 `bomb1`（**入队** DamageAllEnemy），**再**整体前移一格。所以「打出炸弹的那个
+  //     回合末」它落在 bomb3，要经过三个回合末才轮到 bomb1 被引爆。
+  //  ② 前移是**无条件**的三行赋值，不管有没有引爆过——`bomb3 = 0` 让同一回合打的几张
+  //     炸弹合成一格。
+  //  ③ 引爆判据是 `if (bomb1)`（非零即引爆），**不看**怪是否已全死——与紧随其后的燃烧
+  //     （有 `areMonstersBasicallyDead` 门）不同。
+  //  ④ 伤害是 `Actions::DamageAllEnemy`（非攻击、全体、不过 calculateCardDamage），
+  //     clearOnCombatVictory 用默认的 true。
+  const bomb1 = bc.player.bomb1;
+  if (bomb1 !== 0) {
+    addToBot(bc, (c) => damageAllEnemiesNonAttack(c, bomb1));
+  }
+  bc.player.bomb1 = bc.player.bomb2;
+  bc.player.bomb2 = bc.player.bomb3;
+  bc.player.bomb3 = 0;
 
   // 灵活的还债：先扣力量，再摘掉标记。两条都走 addToBot。
   // ⚠ 扣力量走的是 DebuffPlayer 而不是 BuffPlayer(-n)，所以会被神器吃掉一层——
@@ -5536,6 +5840,11 @@ export type StsCombatState = {
   drawPile: CombatCard[];
   discardPile: CombatCard[];
   exhaustPile: CombatCard[];
+  /**
+   * 在场的打击牌张数（第十一批新增，老档由 migrate 从牌堆 + 在飞牌重算）。
+   * **不能**在 importState 里派生：它算上「已离开手牌、还没进弃牌堆」的在飞牌。
+   */
+  strikeCount: number;
   monsterTurnIdx: number;
   endTurnQueued: boolean;
   turnHasEnded: boolean;
@@ -5600,6 +5909,7 @@ export function exportState(bc: BattleContext): StsCombatState {
     drawPile: copyCards(bc.drawPile),
     discardPile: copyCards(bc.discardPile),
     exhaustPile: copyCards(bc.exhaustPile),
+    strikeCount: bc.strikeCount,
     monsterTurnIdx: bc.monsterTurnIdx,
     endTurnQueued: bc.endTurnQueued,
     turnHasEnded: bc.turnHasEnded,
@@ -5658,6 +5968,7 @@ export function importState(s: StsCombatState): BattleContext {
     drawPile: copyCards(s.drawPile),
     discardPile: copyCards(s.discardPile),
     exhaustPile: copyCards(s.exhaustPile),
+    strikeCount: s.strikeCount,
     monsterTurnIdx: s.monsterTurnIdx,
     endTurnQueued: s.endTurnQueued,
     turnHasEnded: s.turnHasEnded,
