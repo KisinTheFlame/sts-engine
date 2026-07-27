@@ -245,8 +245,31 @@ export type CardQueueItem = {
   target: number;
   isEndTurn: boolean;
   triggerOnUse: boolean;
+  /**
+   * 「打出这张牌时手上有多少能量」（对齐 `CardQueueItem::energyOnUse`）。
+   *
+   * ⚠ 这就是 **X 费牌的 X**。参考在三个入队点分别填：
+   *   * 玩家点牌（`search::Action::execute` 的 CARD 支，Action.cpp:433）—— `player.energy`，
+   *     即**当前全部能量**，不是这张牌的费用；
+   *   * 浩劫 / 混乱（`playTopCardInDrawPile`，BattleContext.cpp:2540）—— 同样是
+   *     `player.energy`，但那一项还带 `freeToPlay = true`，于是 X 照算、能量**不扣**；
+   *   * 二连击的复制项（`queuePurgeCard`，:2782）—— **继承**当前项的值，并置
+   *     `ignoreEnergyTotal = true`，于是复制的那一击 X 与第一击相同。
+   * 非 X 费牌不读它（扣能量读的是实例级 `costForTurn`），所以第十批之前这个字段填什么
+   * 都观察不到——早先 `playCard` 填的是 `card.costForTurn`，与参考不符但无人读。
+   */
   energyOnUse: number;
-  /** 对齐 `CardQueueItem::freeToPlay`。当前只有死藤读它（未登记），留着与参考同形。 */
+  /**
+   * 「别再把 energyOnUse 往下夹了」（对齐 `CardQueueItem::ignoreEnergyTotal`）。
+   * 只有 `queuePurgeCard` 置真：复制项结算时能量早被第一击花光，若照旋风斩/嬗变那两句
+   * `player.energy < energyOnUse → energyOnUse = player.energy` 夹一下，X 就会塌成 0。
+   */
+  ignoreEnergyTotal: boolean;
+  /**
+   * 对齐 `CardQueueItem::freeToPlay`。两个读它的地方：X 费牌的
+   * `useEnergy = !(item.freeToPlay || c.freeToPlayOnce)`（旋风斩 / 嬗变），以及死藤（未登记）。
+   * 浩劫 / 混乱打出的牌置真，所以它们打出的旋风斩按满能量打、却一点能量都不花。
+   */
   freeToPlay: boolean;
   /**
    * 「不是玩家自己点出来的」（对齐 `CardQueueItem::autoplay`）。
@@ -273,6 +296,7 @@ export function noTriggerItem(card: CombatCard): CardQueueItem {
     isEndTurn: false,
     triggerOnUse: false,
     energyOnUse: 0,
+    ignoreEnergyTotal: false,
     freeToPlay: false,
     autoplay: false,
     exhaustOnUse: false,
@@ -288,6 +312,7 @@ export function endTurnItem(): CardQueueItem {
     isEndTurn: true,
     triggerOnUse: true,
     energyOnUse: 0,
+    ignoreEnergyTotal: false,
     freeToPlay: false,
     autoplay: false,
     exhaustOnUse: false,
@@ -1929,6 +1954,7 @@ function playTopCardInDrawPile(bc: BattleContext, target: number, exhausts: bool
     isEndTurn: false,
     triggerOnUse: true,
     energyOnUse: bc.player.energy,
+    ignoreEnergyTotal: false,
     freeToPlay: true,
     autoplay: true,
     exhaustOnUse: exhausts,
@@ -1975,6 +2001,7 @@ function queuePurgeCard(
     isEndTurn: false,
     triggerOnUse: true,
     energyOnUse,
+    ignoreEnergyTotal: true,
     freeToPlay: false,
     autoplay: true,
     exhaustOnUse: false,
@@ -4430,12 +4457,17 @@ export function playCard(bc: BattleContext, handIdx: number, target = 0): PlayCa
     return { ok: false, reason };
   }
 
+  // ⚠ `energyOnUse` 是**当前全部能量**，不是这张牌的费用（对齐 Action.cpp:433
+  // `CardQueueItem(hand[idx], target, bc.player.energy)`）。第十批之前这里填的是
+  // `card.costForTurn`——与参考不符，但除了 X 费牌没人读它，所以对拍看不出来。
+  // X 费牌（旋风斩 / 嬗变）读的正是它，即「打出时手上有多少能量」。
   bc.cardQueue.pushBack({
     card,
     target,
     isEndTurn: false,
     triggerOnUse: true,
-    energyOnUse: card.costForTurn,
+    energyOnUse: bc.player.energy,
+    ignoreEnergyTotal: false,
     freeToPlay: false,
     autoplay: false,
     exhaustOnUse: false,
