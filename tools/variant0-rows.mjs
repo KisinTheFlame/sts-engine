@@ -7,7 +7,8 @@ import fs from "node:fs";
 // 这个行数**由文件自己说**（第一行的牌组指纹连续出现几行），不写死：
 // variant 0 的种子数一改，写死的数字就会悄悄少校验一部分。
 //
-// 指纹与 split-traces.mjs 用的是同一个（牌组张数, 是否升级）。
+// 指纹与 split-traces.mjs 用的是同一个：**整副牌组的内容**（牌名序列 + 每张的升级位）。
+// 不能退回「张数 + 是否升级」——两个不同 variant 张数相同就会被认成一个，段长静默算错。
 //
 // 用法: node tools/variant0-rows.mjs <某个 .jsonl>   # 打印行数
 const [src] = process.argv.slice(2);
@@ -18,7 +19,7 @@ if (src === undefined) {
 
 const signature = (line) => {
   const t = JSON.parse(line);
-  return `${t.deck.length}|${t.deckUpgraded === undefined ? 0 : 1}`;
+  return `${t.deck.join(",")}|${t.deckUpgraded === undefined ? "" : t.deckUpgraded.join("")}`;
 };
 
 const lines = fs.readFileSync(src, "utf8").split("\n");
