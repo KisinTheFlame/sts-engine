@@ -106,6 +106,10 @@ export function startCombat(state: GameState, encounterId: string): void {
     })),
     playerHp: state.hp,
     playerMaxHp: state.maxHp,
+    // 金币要带进战斗（对齐 `player.gold = gc.gold`）：贪婪之手在战斗内加钱，
+    // settleCombat 再写回来。带的是**当前值**而不是 0，因为参考的战斗内金币是绝对值
+    // （盗贼/劫掠者偷钱时读它，虽然那两只怪还没登记）。
+    gold: state.gold,
     character: state.character,
     relics: state.relics.map((relic) => relic.id),
     potions: [...state.potions],
@@ -125,9 +129,13 @@ export function startCombat(state: GameState, encounterId: string): void {
  * 就生成奖励）。
  */
 function settleCombat(state: GameState, bc: BattleContext): void {
-  // 玩家血量与药水槽是 run 级资源，战斗内的变化（果汁涨上限、喝掉药水）要落回去。
+  // 玩家血量、金币与药水槽是 run 级资源，战斗内的变化（果汁涨上限、贪婪之手赚钱、
+  // 喝掉药水）要落回去。金币这条对齐参考的 `exitBattle`：`g.gold = player.gold`
+  // （BattleContext.cpp:484）。⚠ 与 hp 一样是**每个动作之后**都写回，不是只在战斗结束时——
+  // 战斗中途取档再读回来时 `state.gold` 与 `state.combat.player.gold` 必须一致。
   state.hp = bc.player.hp;
   state.maxHp = bc.player.maxHp;
+  state.gold = bc.player.gold;
   state.potions = [...bc.potions];
   state.stsPotionRng = bc.rng.potionRng.toState();
 

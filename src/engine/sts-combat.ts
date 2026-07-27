@@ -633,6 +633,16 @@ export type CombatPlayer = {
   bomb1: number;
   bomb2: number;
   bomb3: number;
+  /**
+   * 战斗内金币（对齐 Player::gold，Player.h:36）。
+   *
+   * 金币是 **run 级**资源：参考在 `BattleContext::init` 里 `player.gold = gc.gold`、
+   * 在 `exitBattle` 里 `g.gold = player.gold` 写回去（BattleContext.cpp:55 / :484）。
+   * 我们照同一形状：`initCombat` 从入参带进来，`combat-bridge.settleCombat` 写回
+   * `GameState.gold`。战斗内唯一的增点是贪婪之手（`gainGold`），唯一的减点是
+   * 盗贼/劫掠者偷金币（`Monster::stealGoldFromPlayer`，那两只怪还没登记）。
+   */
+  gold: number;
 };
 
 // ============================================================================
@@ -1743,6 +1753,15 @@ export type CombatInitInput = {
   /** 玩家当前生命/上限。 */
   playerHp: number;
   playerMaxHp: number;
+  /**
+   * 入场时的金币（对齐 `player.gold = gc.gold`）；缺省 0。
+   *
+   * 战斗内只有贪婪之手会改它，改完由 `combat-bridge.settleCombat` 写回 `GameState.gold`。
+   * trace 重放**故意不传**（即从 0 起算），这样 `player.gold` 直接就是「本场赚了多少」，
+   * 与 harness 输出的 `goldGained` 同形——参考那边入场值是 GameContext 的 99，
+   * 而这五个编队里没有任何东西**读**金币，所以差个常数不影响任何行为。
+   */
+  gold?: number;
   /** 角色（决定药水池前 3 项）；缺省铁甲。 */
   character?: CharacterId;
   /** 入场时持有的遗物 id。 */
@@ -1796,6 +1815,8 @@ export function initCombat(input: CombatInitInput): BattleContext {
       bomb1: 0,
       bomb2: 0,
       bomb3: 0,
+      // 对齐 `BattleContext::init` 的 `player.gold = gc.gold`（BattleContext.cpp:55）。
+      gold: input.gold ?? 0,
     },
     monsters: [],
     monstersAlive: 0,
@@ -4280,6 +4301,36 @@ const CARD_RULES: Record<string, CardRule> = {
       c.player.bomb3 += amount;
     });
   },
+
+  // 贪婪之手：造成 20(升级 25) 点伤害；若这一击**击杀**目标，获得 20(升级 25) 金币。
+  // 对齐 BattleContext.cpp:1061 HAND_OF_GREED → `Actions::HandOfGreedAction`（Actions.cpp:1103）。
+  //
+  // ⚠ 四处照抄（形状与进食那条同族，但不是同一段代码）：
+  //  ① 伤害走 `Monster::damage`（我们的 `monsterDamage`）而**不是** `attacked`——所以
+  //     蜷缩那条 onAttacked 链不触发。这与绝大多数攻击牌不同。
+  //  ② 顶部先判 `isDeadOrEscaped` 直接返回，尾部**自己**调一次 checkCombat，
+  //     「给金币」夹在扣血与 checkCombat 之间。
+  //  ③ 伤害在**打牌时**算好（`calculateCardDamage` 在 addToBot 之外），动作里只结算。
+  //  ④ 参考的豁免条件是 `!MINION && !isAlive() && !isHalfDead() &&
+  //     !(REGROW && monstersAlive > 0)`。当前登记的四种怪（邪教徒 / 颚虫 / 红虱 / 绿虱）
+  //     一个都没有 MINION / REGROW，`halfDead` 整个机制也还没建模（只有僧侣/书虫那类才有），
+  //     所以这里只留 `!alive` 那一项——与进食（feed）当年的处理一致。
+  //     ⚠ 登记那些怪时必须把三项补回来。
+  hand_of_greed: (bc, item, up) => {
+    const dmg = calculateCardDamage(bc, item.target, up ? 25 : 20);
+    const gold = up ? 25 : 20;
+    addToBot(bc, (c) => {
+      const m = c.monsters[item.target];
+      if (m === undefined || !m.alive) {
+        return;
+      }
+      monsterDamage(c, item.target, dmg);
+      if (!m.alive) {
+        gainGold(c, gold);
+      }
+      checkCombat(c);
+    });
+  },
 };
 
 /**
@@ -4721,6 +4772,21 @@ const POTION_RULES: Record<string, PotionRule> = {
 
 function healPlayer(bc: BattleContext, amount: number): void {
   bc.player.hp = Math.min(bc.player.maxHp, bc.player.hp + amount);
+}
+
+/**
+ * 战斗内获得金币（对齐 Player::gainGold，Player.cpp:82）。
+ *
+ * ⚠ 两条遗物分支照参考的位置留 TODO：以太（ECTOPLASM）在**加钱之前**整个提前返回
+ * （拿了它这一局再也捡不到金币），血腥雕像（BLOODY_IDOL）在加钱**之后**回 5 点血。
+ * 两个都还没登记，所以现在只有加钱这一句。
+ *
+ * ⚠ 参考在函数顶部有 `assert(amount > 0)`，我们不复制断言：唯一的调用方是贪婪之手，
+ * 它传的是 20/25 常量。
+ */
+function gainGold(bc: BattleContext, amount: number): void {
+  // TODO(遗物PR): 以太（提前返回，一分钱都不给）、血腥雕像（加完回 5 血）。
+  bc.player.gold += amount;
 }
 
 /**

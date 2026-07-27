@@ -111,6 +111,9 @@ describe("接线：战斗由 sts-combat 承担", () => {
       deck: state.deck.map((card) => ({ defId: card.defId, upgraded: card.upgraded })),
       playerHp: state.hp,
       playerMaxHp: state.maxHp,
+      // 金币也是桥必须带进去的 run 级资源（对齐 `player.gold = gc.gold`）。
+      // 漏了它这条断言就红——正是要它红。
+      gold: state.gold,
       character: "ironclad",
       relics: state.relics.map((relic) => relic.id),
       potions: [...state.potions],
@@ -153,6 +156,61 @@ describe("接线：战斗由 sts-combat 承担", () => {
     applyAction(state, { type: "end_turn" });
     expect(state.hp).toBeLessThan(state.maxHp);
     expect(state.hp).toBe(state.combat!.player.hp);
+  });
+
+  it("贪婪之手赚到的金币写回 GameState（战斗内 → run 级）", () => {
+    // 金币是本项目第一个进 BattleContext 的**战斗外**资源，所以要钉两头：
+    //   ① 入场值来自 run 层（桥传 `gold: state.gold`）；
+    //   ② 战斗内赚到的钱每个动作之后都写回 `state.gold`，且与快照里的值一致。
+    // trace 对拍看不见这一条（harness 的快照只输出「本场赚了多少」这个增量），
+    // 所以接线这一层必须自己有测试守着。
+    const state = runWithDeck(new Array<string>(10).fill("hand_of_greed"), 7);
+    const goldBefore = state.gold;
+    startCombat(state, "two_louse"); // 虱子 10~15 血，20 点一击必杀
+    expect(state.combat!.player.gold).toBe(goldBefore);
+
+    // 打到有虱子被杀掉为止（每杀一只 +20）。
+    let kills = 0;
+    for (let step = 0; step < 30 && state.combat !== null && kills === 0; step += 1) {
+      applyAction(state, nextAction(state));
+      if (state.combat !== null) {
+        kills = state.combat.monsters.filter((m) => !m.alive).length;
+      }
+    }
+    expect(kills).toBeGreaterThan(0);
+    expect(state.combat!.player.gold).toBe(goldBefore + 20 * kills);
+    // 写回 run 层，且两处一致（中途取档再读回来不能对不上）。
+    expect(state.gold).toBe(state.combat!.player.gold);
+    expect(exportState(importState(state.combat!))).toEqual(state.combat);
+  });
+
+  it("炸弹的三格计时器跟着存档往返，且第 3 个回合末引爆", () => {
+    // 炸弹在参考侧压根不在 statusMap 里（buff<THE_BOMB> 只加 bomb3 就 return），
+    // 所以它在 trace 的状态快照里**看不见**——只有三回合后那一下全体伤害能被看到。
+    // 计时器本身的往返因此得靠这条接线测试。
+    const state = runWithDeck(["the_bomb", ...new Array<string>(9).fill("defend")], 3);
+    startCombat(state, "cultist");
+    const idx = state.combat!.hand.findIndex((c) => c.defId === "the_bomb");
+    expect(idx).toBeGreaterThanOrEqual(0);
+    expect(applyAction(state, { type: "play_card", handIndex: idx })).toEqual({ ok: true });
+    // 打出的当回合三格都还没动（结算在回合末）。
+    expect([state.combat!.player.bomb1, state.combat!.player.bomb2, state.combat!.player.bomb3]) //
+      .toEqual([0, 0, 40]);
+    // 往返：三格是纯数据。
+    expect(exportState(importState(state.combat!))).toEqual(state.combat);
+
+    // 三个回合末：40 依次前移到 bomb1 再引爆。
+    applyAction(state, { type: "end_turn" });
+    expect([state.combat!.player.bomb1, state.combat!.player.bomb2]).toEqual([0, 40]);
+    applyAction(state, { type: "end_turn" });
+    expect([state.combat!.player.bomb1, state.combat!.player.bomb2]).toEqual([40, 0]);
+    const hpBefore = state.combat!.monsters[0].hp;
+    applyAction(state, { type: "end_turn" });
+    // 邪教徒 48~54 血，40 点炸不死它（第三回合它才咏唱完一次），所以战斗还在。
+    expect(state.combat).not.toBeNull();
+    expect(state.combat!.monsters[0].hp).toBe(hpBefore - 40);
+    expect([state.combat!.player.bomb1, state.combat!.player.bomb2, state.combat!.player.bomb3]) //
+      .toEqual([0, 0, 0]);
   });
 
   it("打赢后清空 combat、发奖励，并结算燃烧之血", () => {
