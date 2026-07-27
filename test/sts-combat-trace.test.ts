@@ -335,6 +335,11 @@ const POWER: Record<string, string> = {
   INTANGIBLE: "intangible",
   // 腐化：与壁垒同族的纯 bool 状态，harness 按 1 输出，我们也存 1 层。
   CORRUPTION: "corruption",
+  // —— 第九批：从牌堆打出 / 复制打出 ——
+  // 二连击：层数就是「还能额外结算几张攻击牌」，每触发一次递减一层。
+  DOUBLE_TAP: "double_tap",
+  // 混乱：层数就是「每回合开始打几张」，两张混乱叠成 2。
+  MAYHEM: "mayhem",
 };
 
 const mapPotion = (p: string): string | null => (p in POTION ? POTION[p]! : p);

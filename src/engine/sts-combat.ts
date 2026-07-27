@@ -1821,13 +1821,21 @@ function playCardQueueItem(bc: BattleContext, item: CardQueueItem): void {
   // **既不结算也不进任何牌堆**——它在 playTopCardInDrawPile 里就已经被 pop 出抽牌堆、
   // 只活在队列项里，于是凭空消失。参考如此（真实游戏同样如此）。
   //
-  // ⚠ 复制项（purgeOnUse）**不过** canUse：二连击复制的那份即使此刻已无合法目标也照打。
-  // TODO(后续PR): `if (c.isFreeToPlay(bc)) c.freeToPlayOnce = true;` —— freeToPlayOnce
-  //   与自由攻击（FREE_ATTACK_POWER）都还没有产出者，见 TODOS。
+  // ⚠ 复制项（purgeOnUse）**不过** canUse——但它照样过下面那道**单独的**目标门。
+  // 参考把「目标还在不在」写了**两遍**：一次在 canUseCard 的合取里（与 canUse 顶部那条重复），
+  // 一次是 `if (canUseCard)` 里紧挨 useCard() 的最后一道。对普通出牌两者冗余，
+  // 但对 purgeOnUse **只剩后一道生效**，于是二连击的表现是：第一击打死了这只怪、
+  // 而场上还有别的怪时，复制的那一击**不会**打出去（目标已死）。TWO_LOUSE 上很常见。
+  // 参考在那行自注 `// this is redundant right???? -> no i think echo form abilities can
+  // queue a card with invalid target`。
+  // TODO(后续PR): `if (c.isFreeToPlay(bc)) c.freeToPlayOnce = true;` 与
+  //   `player.lastTargetedMonster = item.target`（只被未登记的内容读）。
   const canUseCard =
     item.purgeOnUse ||
     (item.triggerOnUse && cardCanUse(bc, card, item.target, item.autoplay) === null);
-  if (canUseCard) {
+  const targetStillValid =
+    !targetedOf(getCardDef(card.defId), card.upgraded) || bc.monsters[item.target]?.alive === true;
+  if (canUseCard && targetStillValid) {
     useCard(bc, item);
   }
   if (!item.triggerOnUse) {
