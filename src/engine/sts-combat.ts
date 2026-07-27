@@ -245,8 +245,31 @@ export type CardQueueItem = {
   target: number;
   isEndTurn: boolean;
   triggerOnUse: boolean;
+  /**
+   * 「打出这张牌时手上有多少能量」（对齐 `CardQueueItem::energyOnUse`）。
+   *
+   * ⚠ 这就是 **X 费牌的 X**。参考在三个入队点分别填：
+   *   * 玩家点牌（`search::Action::execute` 的 CARD 支，Action.cpp:433）—— `player.energy`，
+   *     即**当前全部能量**，不是这张牌的费用；
+   *   * 浩劫 / 混乱（`playTopCardInDrawPile`，BattleContext.cpp:2540）—— 同样是
+   *     `player.energy`，但那一项还带 `freeToPlay = true`，于是 X 照算、能量**不扣**；
+   *   * 二连击的复制项（`queuePurgeCard`，:2782）—— **继承**当前项的值，并置
+   *     `ignoreEnergyTotal = true`，于是复制的那一击 X 与第一击相同。
+   * 非 X 费牌不读它（扣能量读的是实例级 `costForTurn`），所以第十批之前这个字段填什么
+   * 都观察不到——早先 `playCard` 填的是 `card.costForTurn`，与参考不符但无人读。
+   */
   energyOnUse: number;
-  /** 对齐 `CardQueueItem::freeToPlay`。当前只有死藤读它（未登记），留着与参考同形。 */
+  /**
+   * 「别再把 energyOnUse 往下夹了」（对齐 `CardQueueItem::ignoreEnergyTotal`）。
+   * 只有 `queuePurgeCard` 置真：复制项结算时能量早被第一击花光，若照旋风斩/嬗变那两句
+   * `player.energy < energyOnUse → energyOnUse = player.energy` 夹一下，X 就会塌成 0。
+   */
+  ignoreEnergyTotal: boolean;
+  /**
+   * 对齐 `CardQueueItem::freeToPlay`。两个读它的地方：X 费牌的
+   * `useEnergy = !(item.freeToPlay || c.freeToPlayOnce)`（旋风斩 / 嬗变），以及死藤（未登记）。
+   * 浩劫 / 混乱打出的牌置真，所以它们打出的旋风斩按满能量打、却一点能量都不花。
+   */
   freeToPlay: boolean;
   /**
    * 「不是玩家自己点出来的」（对齐 `CardQueueItem::autoplay`）。
@@ -273,6 +296,7 @@ export function noTriggerItem(card: CombatCard): CardQueueItem {
     isEndTurn: false,
     triggerOnUse: false,
     energyOnUse: 0,
+    ignoreEnergyTotal: false,
     freeToPlay: false,
     autoplay: false,
     exhaustOnUse: false,
@@ -288,6 +312,7 @@ export function endTurnItem(): CardQueueItem {
     isEndTurn: true,
     triggerOnUse: true,
     energyOnUse: 0,
+    ignoreEnergyTotal: false,
     freeToPlay: false,
     autoplay: false,
     exhaustOnUse: false,
@@ -1139,6 +1164,20 @@ function makeTempCardInstanceInHand(bc: BattleContext, proto: CombatCard, amount
 }
 
 /**
+ * 对齐 `Actions::MakeTempCardsInHand(std::vector<CardInstance>)`（Actions.cpp:261）：
+ * 把**一串各不相同**的牌实例逐张送进手牌，按数组顺序各取一个新 uid。
+ *
+ * ⚠ 与上面那个「同一个模板复制 amount 份」的重载是两条不同的代码：嬗变造出来的 X 张牌
+ * 每张都是**独立随机**的，不能靠复制模板。此外这条是 `addToBot` 的一条**单独动作**——
+ * 嬗变先在自己的动作里把 X 张牌全抽好（消耗 X 次 cardRandomRng），再排这条动作进手牌。
+ */
+function makeTempCardsInHand(bc: BattleContext, protos: readonly CombatCard[]): void {
+  for (const proto of protos) {
+    moveToHandHelper(bc, { ...proto, uid: bc.nextUid++ });
+  }
+}
+
+/**
  * 对齐 Actions::MakeTempCardInDrawPile（Actions.cpp:239）的 `shuffleInto = true` 分支。
  *
  * ⚠ 三处照抄：
@@ -1929,6 +1968,7 @@ function playTopCardInDrawPile(bc: BattleContext, target: number, exhausts: bool
     isEndTurn: false,
     triggerOnUse: true,
     energyOnUse: bc.player.energy,
+    ignoreEnergyTotal: false,
     freeToPlay: true,
     autoplay: true,
     exhaustOnUse: exhausts,
@@ -1975,6 +2015,7 @@ function queuePurgeCard(
     isEndTurn: false,
     triggerOnUse: true,
     energyOnUse,
+    ignoreEnergyTotal: true,
     freeToPlay: false,
     autoplay: true,
     exhaustOnUse: false,
@@ -2793,6 +2834,70 @@ function jackOfAllTradesAction(bc: BattleContext, upgraded: boolean): void {
   if (upgraded) {
     const c2 = getTrulyRandomColorlessCardInCombat(bc); // ★ 消耗一次 cardRandomRng
     addToTop(bc, (c) => makeTempCardInHand(c, c2, 1));
+  }
+}
+
+/**
+ * 对齐 `Actions::TransmutationAction`（Actions.cpp:591）：把 X 张随机**无色**牌加进手牌，
+ * **本回合** 0 费。
+ *
+ * ⚠ 五处照抄：
+ *  ① `effectAmount = energy + (化学 X ? 2 : 0)`，`=== 0` 就整个提前返回——注意是**等于**
+ *     而不是 `<= 0`（能量不会是负数，形状照参考）。X 为 0 时连 `useEnergy` 都不走。
+ *  ② X 张牌**先全抽完**（每张一次 cardRandomRng），装成一个数组，再由**一条单独的**
+ *     `MakeTempCardsInHand` 动作送进手牌。所以造牌与进手牌之间隔着一次动作调度。
+ *  ③ `CardInstance c(cid, upgraded)` —— **嬗变升级后造出来的牌是升级态的**。
+ *     这正是嬗变的升级效果（真实游戏卡面「它们是升级过的」），不是「多造一张」。
+ *     与多面手 / 发现 / 蜕变那几张「恒造未升级」的完全相反。
+ *  ④ 0 费走 `setCostForTurn(0)`，只管**本回合**（`cost` 不动，回合末会复位）——与蜕变/变形
+ *     的「本场战斗 0 费」不同。X 费牌（池里就有嬗变自己）的 `costForTurn = -1` 会被
+ *     `setCostForTurn` 的 `costForTurn >= 0` 门挡掉，保持 -1。
+ *  ⑤ `useEnergy` 排在**最后**（在 addToBot 之后），花的是「当前全部能量」而非 X。
+ */
+function transmutationAction(
+  bc: BattleContext,
+  upgraded: boolean,
+  energy: number,
+  useEnergy: boolean,
+): void {
+  // TODO(后续PR): 化学 X（CHEMICAL_X）遗物 +2，未登记。
+  const effectAmount = energy;
+  if (effectAmount === 0) {
+    return;
+  }
+  const cards: CombatCard[] = [];
+  for (let i = 0; i < effectAmount; i += 1) {
+    const defId = getTrulyRandomColorlessCardInCombat(bc); // ★ 消耗一次 cardRandomRng
+    const proto = cardInstanceProto(defId, upgraded);
+    setCostForTurn(proto, 0);
+    cards.push(proto);
+  }
+  addToBot(bc, (c) => makeTempCardsInHand(c, cards));
+  if (useEnergy) {
+    bc.player.energy = 0; // 对齐 `player.useEnergy(player.energy)`
+  }
+}
+
+/**
+ * 对齐 `Actions::ApotheosisAction`（Actions.cpp:1005）：升级**四个牌堆**里所有能升级的牌。
+ *
+ * ⚠ 三处照抄：
+ *  ① 扫的是 **手牌 → 抽牌堆 → 弃牌堆 → 消耗堆** 四个堆，顺序即参考的书写顺序。
+ *     ⚠ 消耗堆**也在其列**（真实游戏卡面只说「你所有的牌」，参考确实连消耗堆一起升）——
+ *     这与回合末费用复位（只扫手/弃/抽三堆）和血债血偿（只扫手/抽/弃三堆）都不同，
+ *     别照着那两处想当然。**master deck 不在其列**：升级只管「本场战斗剩余时间」。
+ *  ② 逐张 `if (c.canUpgrade()) c.upgrade()`，所以诅咒/状态牌被跳过，
+ *     而灼热之刃**每次都能再升一级**（`canUpgrade` 对它恒真）。
+ *  ③ 神化自己不在任何堆里：`useCard` 尾部已经把它摘出手牌，而它进消耗堆是
+ *     `OnAfterCardUsed` 的事、排在这条动作**之后**。所以它不会升级自己。
+ */
+function apotheosisAction(bc: BattleContext): void {
+  for (const pile of [bc.hand, bc.drawPile, bc.discardPile, bc.exhaustPile]) {
+    for (const card of pile) {
+      if (canUpgradeCard(card)) {
+        upgradeCard(card);
+      }
+    }
   }
 }
 
@@ -3899,6 +4004,80 @@ const CARD_RULES: Record<string, CardRule> = {
   dual_wield: (bc, _item, up) => {
     addToBot(bc, (c) => dualWieldAction(c, up ? 2 : 1));
   },
+
+  // ==========================================================================
+  // 铺量第十批 · X 费
+  //
+  // X 费牌在参考里的表达是**两个字段配合**，缺一不可：
+  //   * `getEnergyCost` 对它们返回 **-1**（第七批已原样照抄进 `CombatCard.cost` /
+  //     `costForTurn`）。这个负值同时兼了三件事：`canUse` 的 `energy < costForTurn` 恒不成立
+  //     （所以 0 能量也打得出）、`useCard` 尾部的 `costForTurn > 0` 恒不成立（所以扣能量
+  //     **不走那条通路**）、`setCostForTurn` 的 `costForTurn >= 0` 门恒不成立（所以腐化 /
+  //     疯狂 / 地狱之刃那些降费一律动不了它）。
+  //   * 真正的 X 记在出牌队列项的 `energyOnUse` 上（见 CardQueueItem 的注释），
+  //     能量由**卡自己的动作**一次花光（`player.useEnergy(player.energy)`）。
+  //
+  // 于是 X 在三条入队路径上各不相同：玩家点牌 = 点牌那一刻的全部能量；浩劫 / 混乱 =
+  // 弹出顶牌那一刻的全部能量（且 `freeToPlay` 让能量**不被花掉**）；二连击的复制项 =
+  // 继承第一击的 X（且 `ignoreEnergyTotal` 挡住下面那句夹取）。
+  //
+  // 神化不是 X 费牌，放在这一批是因为它同属「本批解锁的三张」。
+  // ==========================================================================
+
+  // 旋风斩：X 费。对所有敌人造成 5(升级 8) 点伤害，X 次。
+  // 对齐 BattleContext.cpp:1194 WHIRLWIND。
+  //
+  // ⚠ 四处照抄：
+  //  ① 那句 `if (!item.ignoreEnergyTotal && player.energy < item.energyOnUse)
+  //     item.energyOnUse = player.energy;` —— 把 X 往下夹到「现在真的还有这么多能量」。
+  //     它**改的是队列项本身**，所以夹过之后二连击的复制项继承到的也是夹后的值。
+  //     ⚠ 嬗变那边还多一句「往上抬」，旋风斩**没有**——两张牌不对称，照抄，见嬗变的注释。
+  //  ② 基础伤害先加精力（VIGOR），之后 `calculateCardDamage` 里还会再加一次
+  //     ——与顺劈斩同款，是参考的算法（精力实际算两次），不是笔误。当前没有精力来源。
+  //  ③ `useEnergy = !(item.freeToPlay || c.freeToPlayOnce)`：浩劫 / 混乱打出的旋风斩
+  //     按满能量打、却一点能量都不花。
+  //  ④ 伤害走 `WhirlwindAction` 那条**自己的**路径（矩阵算一次、addToTop 递归 X 轮），
+  //     不是 `attackAllEnemies` 排 X 条动作，见 whirlwindAction。
+  whirlwind: (bc, item, up) => {
+    if (!item.ignoreEnergyTotal && bc.player.energy < item.energyOnUse) {
+      item.energyOnUse = bc.player.energy;
+    }
+    const baseDamage = (up ? 8 : 5) + getPower(bc.player.powers, "vigor");
+    const energy = item.energyOnUse;
+    // TODO(后续PR): `c.freeToPlayOnce`（深谋远虑 / 液态记忆），还没有产出者。
+    const useEnergy = !item.freeToPlay;
+    addToBot(bc, (c) => whirlwindAction(c, baseDamage, energy, useEnergy));
+  },
+
+  // 嬗变：X 费。将 X 张随机无色牌加入手牌，**本回合**费用为 0（升级：它们是升级过的）。
+  // 对齐 BattleContext.cpp:1479 TRANSMUTATION。
+  //
+  // ⚠ 两处与旋风斩不同，都照抄：
+  //  ① 参考在夹取之前**多了一句往上抬**：`if (player.energy > item.energyOnUse)
+  //     item.energyOnUse = player.energy;`。旋风斩没有这一句。两张牌本该同形，
+  //     这处不对称在参考里没有注释；当前内容下两句都观察不到（energyOnUse 就是入队那一刻
+  //     的能量，之后到结算之间没有任何东西改能量），记为盲区，见报告。
+  //  ② 升级的效果是**造出来的牌带升级态**，不是多造一张（`CardInstance c(cid, upgraded)`）。
+  //     我给出的任务描述里猜的是「+1 张」——源码不是那样。
+  transmutation: (bc, item, up) => {
+    if (bc.player.energy > item.energyOnUse) {
+      item.energyOnUse = bc.player.energy;
+    }
+    if (!item.ignoreEnergyTotal && bc.player.energy < item.energyOnUse) {
+      item.energyOnUse = bc.player.energy;
+    }
+    const energy = item.energyOnUse;
+    // TODO(后续PR): `c.freeToPlayOnce`，同旋风斩。
+    const useEnergy = !item.freeToPlay;
+    addToBot(bc, (c) => transmutationAction(c, up, energy, useEnergy));
+  },
+
+  // 神化：本场战斗剩余时间内，升级你所有的牌。消耗。
+  // 对齐 BattleContext.cpp:1242 APOTHEOSIS → `Actions::ApotheosisAction()`。
+  // ⚠ 升级只降费（2 → 1），效果两分支完全一样；扫哪几个牌堆见 apotheosisAction。
+  apotheosis: (bc) => {
+    addToBot(bc, (c) => apotheosisAction(c));
+  },
 };
 
 /**
@@ -3924,6 +4103,78 @@ function attackAllEnemies(bc: BattleContext, baseDamage: number): void {
       }
     }
   });
+}
+
+/**
+ * 用**已经算好的伤害矩阵**对全体结算一次（对齐 `Actions::AttackAllEnemy(DamageMatrix)`，
+ * Actions.cpp:49）。与上面那个按 baseDamage 现算的重载是两条不同的代码：矩阵在外面算一次，
+ * 之后每一轮都用**同一份**数值，所以中途力量涨了 / 敌人上了易伤都不影响后续几轮。
+ *
+ * ⚠ 是**同步**的（参考里它被 `.actFunc(bc)` 直接调用，不入队）。
+ */
+function attackAllEnemiesWithMatrix(bc: BattleContext, matrix: readonly number[]): void {
+  for (let i = 0; i < bc.monsters.length; i += 1) {
+    const m = bc.monsters[i];
+    if (m?.alive === true) {
+      monsterAttacked(bc, m, matrix[i] ?? 0);
+    }
+  }
+  checkCombat(bc);
+}
+
+/**
+ * 「对全体打 N 次」（对齐 `Actions::AttackAllMonsterRecursive`，Actions.cpp:1262）。
+ *
+ * ⚠ 形状是「同步打一轮 + 把剩下的轮次 `addToTop` 回去」，**不是**一次性循环 N 遍：
+ *  ① `timesRemaining <= 0` 提前返回；
+ *  ② `AttackAllEnemy(matrix)` 是**同步**调用（`.actFunc(bc)`）；
+ *  ③ 只有 `timesRemaining > 1` 才 `addToTop` 下一轮。
+ * ⚠ ②③ 的先后决定了与「受击反应」的交织：本轮的攻击若给蜷缩/荆棘那类排了 addToTop 动作，
+ *    下一轮是在**它们之后**才被推到队首的，于是**下一轮反而先跑**。参考在那行自注
+ *    `// todo should this be to the top? test with`——照抄，包括这个疑问。
+ */
+function attackAllMonsterRecursive(
+  bc: BattleContext,
+  matrix: readonly number[],
+  timesRemaining: number,
+): void {
+  if (timesRemaining <= 0) {
+    return;
+  }
+  attackAllEnemiesWithMatrix(bc, matrix);
+  if (timesRemaining > 1) {
+    addToTop(bc, (c) => attackAllMonsterRecursive(c, matrix, timesRemaining - 1));
+  }
+}
+
+/**
+ * 旋风斩的动作（对齐 `Actions::WhirlwindAction`，Actions.cpp:1233）。
+ *
+ * ⚠ 四处照抄：
+ *  ① **先花能量**（`useEnergy(player.energy)`，即清零），再算伤害矩阵。
+ *     顺序在当前内容下观察不到（没有读能量的伤害修正），照参考写。
+ *  ② 伤害矩阵**只算一次**，之后 X 轮共用；死掉的怪那格留 0。
+ *  ③ 参考把每格夹进 `uint16`（`min(65535, dmg)`）——照抄这个上限，虽然当前伤害够不到。
+ *  ④ `effectAmount = energy + (化学 X ? 2 : 0)`，`> 0` 才打；X 为 0 时旋风斩什么都不做
+ *     （但仍然算作打出了一张牌，照常进弃牌堆）。
+ */
+function whirlwindAction(
+  bc: BattleContext,
+  baseDamage: number,
+  energy: number,
+  useEnergy: boolean,
+): void {
+  if (useEnergy) {
+    bc.player.energy = 0; // 对齐 `player.useEnergy(player.energy)`
+  }
+  const matrix = bc.monsters.map((m, i) =>
+    m.alive ? Math.min(65535, calculateCardDamage(bc, i, baseDamage)) : 0,
+  );
+  // TODO(后续PR): 化学 X（CHEMICAL_X）遗物 +2，未登记。
+  const effectAmount = energy;
+  if (effectAmount > 0) {
+    attackAllMonsterRecursive(bc, matrix, effectAmount);
+  }
 }
 
 /**
@@ -4430,12 +4681,17 @@ export function playCard(bc: BattleContext, handIdx: number, target = 0): PlayCa
     return { ok: false, reason };
   }
 
+  // ⚠ `energyOnUse` 是**当前全部能量**，不是这张牌的费用（对齐 Action.cpp:433
+  // `CardQueueItem(hand[idx], target, bc.player.energy)`）。第十批之前这里填的是
+  // `card.costForTurn`——与参考不符，但除了 X 费牌没人读它，所以对拍看不出来。
+  // X 费牌（旋风斩 / 嬗变）读的正是它，即「打出时手上有多少能量」。
   bc.cardQueue.pushBack({
     card,
     target,
     isEndTurn: false,
     triggerOnUse: true,
-    energyOnUse: card.costForTurn,
+    energyOnUse: bc.player.energy,
+    ignoreEnergyTotal: false,
     freeToPlay: false,
     autoplay: false,
     exhaustOnUse: false,

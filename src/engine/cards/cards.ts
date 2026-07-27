@@ -5552,8 +5552,16 @@ const CARD_LIST: CardDef[] = [
     exhausts: true,
     effects: [{ kind: "transmutation" }],
     upgradedEffects: [{ kind: "transmutation" }],
-    description: "消耗全部能量（X）。将 X 张随机无色牌加入手牌，本场它们的费用为 0。消耗。",
-    upgradedDescription: "消耗全部能量（X）。将 X 张随机无色牌加入手牌，本场它们的费用为 0。消耗。",
+    // ⚠ 两处订正（第十批，随登记一起改）：
+    //  ① 「本场」→「本回合」。参考 `Actions::TransmutationAction` 走的是
+    //     `c.setCostForTurn(0)`（只压本回合，`cost` 不动，回合末会复位），
+    //     不是蜕变/变形那种连 `cost` 一起压的「本场战斗 0 费」。真实游戏卡面同样是
+    //     「本回合费用为 0」。
+    //  ② 升级卡面原先与未升级逐字相同，漏了升级效果。参考是
+    //     `CardInstance c(cid, upgraded)`——造出来的牌**带升级态**，不是多造一张。
+    description: "消耗全部能量（X）。将 X 张随机无色牌加入手牌，本回合它们的费用为 0。消耗。",
+    upgradedDescription:
+      "消耗全部能量（X）。将 X 张随机无色牌加入手牌，本回合它们的费用为 0。它们是升级过的。消耗。",
   },
   {
     id: "fire_breathing",

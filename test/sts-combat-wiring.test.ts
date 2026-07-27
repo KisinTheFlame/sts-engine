@@ -580,9 +580,13 @@ describe("接线：尚未迁移的内容显式抛错", () => {
     expect(reason(state, "gremlin_nob")).toContain("尚未迁移");
   });
 
+  // 样本牌选 `seek` 搜寻：参考项目三个 switch 里都**没有 case**，等于压根没实现，
+  // 所以它永远不会有预言机、永远不会进 CARD_RULES——拿它当「未迁移」样本不会再被下一批
+  // 铺量顶掉。（原先用的是 `whirlwind`，第十批把它登记了，故换掉。别换成
+  // `the_bomb` / `hand_of_greed` 那类「下一批就要登记」的牌。）
   it("牌组里有未迁移的牌 → 抛错", () => {
     const state = runAtMap();
-    state.deck.push({ uid: 999, defId: "whirlwind", upgraded: false });
+    state.deck.push({ uid: 999, defId: "seek", upgraded: false });
     expect(reason(state, "cultist")).toContain("尚未迁移");
     expect(() => startCombat(state, "cultist")).toThrow();
   });

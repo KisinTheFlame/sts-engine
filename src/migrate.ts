@@ -124,7 +124,14 @@ function migrateCombatCards(combat: Record<string, unknown>): void {
   const queued: unknown = combat["pendingCardQueue"];
   if (Array.isArray(queued)) {
     for (const raw of queued) {
-      fix(asRecord(raw)?.["card"]);
+      const item = asRecord(raw);
+      fix(item?.["card"]);
+      if (item) {
+        // `ignoreEnergyTotal`（第十批新增）。回填是**无损**的：唯一置真的地方是
+        // `queuePurgeCard`（二连击的复制项），所以「purgeOnUse 为真 ⟺ 它为真」在
+        // 第九批的档里恒成立。
+        backfill(item, "ignoreEnergyTotal", item["purgeOnUse"] === true);
+      }
     }
   }
 }
