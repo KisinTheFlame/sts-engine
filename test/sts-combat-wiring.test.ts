@@ -57,8 +57,12 @@ function nextAction(state: GameState): GameAction {
   const targetIndex = combat.monsters.findIndex((m) => m.alive);
   for (let i = combat.hand.length - 1; i >= 0; i -= 1) {
     const card = combat.hand[i];
-    const cost = costOf(getCardDef(card.defId), card.upgraded) ?? 0;
-    if (cost <= combat.player.energy) {
+    // 费用读**实例级**的 costForTurn（腐化 / 疯狂 / 血债血偿会改它）；打不出的牌
+    // （数据表 cost 为 null）直接跳过——它们的 costForTurn 是负的哨兵值。
+    if (costOf(getCardDef(card.defId), card.upgraded) === null) {
+      continue;
+    }
+    if (card.costForTurn <= combat.player.energy) {
       return { type: "play_card", handIndex: i, targetIndex };
     }
   }
@@ -247,7 +251,15 @@ describe("接线：战斗内选牌屏", () => {
       { kind: "draw_cards", count: 2 },
       {
         kind: "after_use_card",
-        card: { uid: expect.any(Number) as number, defId: "burning_pact", upgraded: false },
+        // 卡牌实例级状态（第七批）也要跟着这条动作一起进档：焚誓 1 费、无 specialData。
+        card: {
+          uid: expect.any(Number) as number,
+          defId: "burning_pact",
+          upgraded: false,
+          cost: 1,
+          costForTurn: 1,
+          specialData: 0,
+        },
         exhaustOnUse: false,
       },
     ]);

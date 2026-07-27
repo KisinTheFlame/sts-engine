@@ -71,7 +71,16 @@ describe("sts-combat 非法动作的拒绝路径", () => {
     // （参考的 canUse 就不让打），所以少了这道门会一路走到「暂未登记卡牌行为」并抛错——
     // 那个错会把「登记了但打不出来」误报成「没登记」，指错方向。
     const bc = battle();
-    bc.hand.push({ uid: 900, defId: "wound", upgraded: false });
+    // cost/costForTurn 的 -2 是参考 getEnergyCost 给「打不出的状态/诅咒牌」的哨兵值
+    // （见 CombatCard 注释），照建实例的规则填。
+    bc.hand.push({
+      uid: 900,
+      defId: "wound",
+      upgraded: false,
+      cost: -2,
+      costForTurn: -2,
+      specialData: 0,
+    });
     const before = probe(bc);
     const r = playCard(bc, bc.hand.length - 1, 0);
     expect(r.ok).toBe(false);

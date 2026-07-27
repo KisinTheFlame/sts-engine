@@ -25,7 +25,7 @@
 import { StsRandom, JavaRandom, javaShuffle } from "./sts-rng.js";
 import type { RandomState } from "./sts-rng.js";
 import { getEnemyDef, getEncounterDef } from "./enemies/enemies.js";
-import { exhaustsOf, getCardDef, targetedOf } from "./cards/cards.js";
+import { costOf, etherealOf, exhaustsOf, getCardDef, targetedOf } from "./cards/cards.js";
 import { getPotionDef } from "./potions/potions.js";
 import type { CharacterId } from "./types.js";
 
@@ -381,13 +381,141 @@ export type CombatMonster = {
   rolledDamage: number;
 };
 
+/**
+ * 战斗内的一张牌实例（对齐 struct CardInstance，include/combat/CardInstance.h:20）。
+ *
+ * 前三个字段是「这是哪张牌」，后三个是**逐实例**的可变状态——同一张定义的两个实例可以
+ * 有不同的值，所以它们必须住在实例上、不能从数据表派生：
+ *
+ *  * `cost` / `costForTurn` —— 血债血偿每失血一次费用 -1、疯狂把某张手牌的费用置 0、
+ *    腐化把技能牌的费用压成 0。参考的费用读取一律走 `costForTurn`，`cost` 是它的复位基准
+ *    （回合末 `resetAttributesAtEndOfTurn` 把 costForTurn 拉回 cost）。
+ *  * `specialData` —— 暴走的伤害成长、灼热之刃的升级次数（对齐 `usesSpecialData()`
+ *    列举的 SEARING_BLOW / RAMPAGE / GENETIC_ALGORITHM / RITUAL_DAGGER，后两张未登记）。
+ *
+ * ⚠ 未建模的 CardInstance 字段：`freeToPlayOnce`（深谋远虑，参考的升级分支整段被注释掉，
+ * 本批未登记——见 TODOS）与 `retain`（保留，整套机制未做）。它们没有任何已登记内容能产生，
+ * 现在加进来就是没有预言机看着的死字段。
+ */
 export type CombatCard = {
   /** 牌实例 uid。 */
   uid: number;
   /** 卡定义 id（cards.ts）。 */
   defId: string;
   upgraded: boolean;
+  /**
+   * 本场战斗的基础费用（对齐 CardInstance::cost）。
+   * 特殊值照抄参考的 `getEnergyCost`：**-1 = X 费**、**-2 = 打不出的状态/诅咒牌**。
+   * 这两个负值是 `setCostForTurn` 的哨兵（它只在 `costForTurn >= 0` 时才写），不能规整成 0。
+   */
+  cost: number;
+  /** 本回合的费用（对齐 CardInstance::costForTurn）。打牌读的是它，不是 cost。 */
+  costForTurn: number;
+  /** 逐实例特殊数值（对齐 CardInstance::specialData）：暴走的成长量 / 灼热之刃的升级次数。 */
+  specialData: number;
 };
+
+// ============================================================================
+// 卡牌实例级状态的原语（对齐 CardInstance 的几个 setter）
+// ============================================================================
+
+/**
+ * 一张牌进入战斗时的基础费用（对齐 `getEnergyCost(id, upgraded)`）。
+ *
+ * ⚠ 两个负值是参考的哨兵，必须原样带进来：X 费牌 -1、打不出的状态/诅咒牌 -2。
+ * `setCostForTurn` 靠 `costForTurn >= 0` 认它们（负数一律不改），所以规整成 0 会让
+ * 腐化/疯狂去动一张伤口的费用。
+ */
+export function initialCardCost(defId: string, upgraded: boolean): number {
+  const def = getCardDef(defId);
+  if (def.xCost === true) {
+    return -1;
+  }
+  const cost = costOf(def, upgraded);
+  return cost ?? -2;
+}
+
+/**
+ * 一张牌进入战斗时的 specialData（对齐 `CardInstance(const Card &card)`，
+ * CardInstance.cpp:16）：灼热之刃取大牌组里那张的**升级次数**，其余取 `Card::misc`。
+ *
+ * ⚠ 我们的 run 层只有 `upgraded: boolean`，所以灼热之刃在这里最多只能是 0 或 1——
+ * 篝火反复升级同一张灼热之刃的 run 级语义尚未建模（`CardInstance` 那边同样只从
+ * `Card::misc` 读）。战斗**内**的反复升级（军备）由 `upgradeCard` 正确累加。
+ */
+function initialSpecialData(defId: string, upgraded: boolean): number {
+  return defId === "searing_blow" && upgraded ? 1 : 0;
+}
+
+/**
+ * 设置本回合费用（对齐 CardInstance::setCostForTurn，CardInstance.cpp:120）。
+ *
+ * ⚠ 两处照抄：① `costForTurn >= 0` 才写——负的 costForTurn（X 费 -1、状态/诅咒 -2）
+ * 是「没有费用」的哨兵，任何降费都不该动它；② 写入前 `max(0, newCost)`，所以腐化传
+ * 的 -9 落地是 0（参考真的传 -9，不是笔误：游戏里技能牌的费用修正量就是 -9）。
+ */
+function setCostForTurn(card: CombatCard, newCost: number): void {
+  if (card.costForTurn >= 0) {
+    card.costForTurn = Math.max(0, newCost);
+  }
+}
+
+/**
+ * 按增量改基础费用（对齐 CardInstance::updateCost，CardInstance.cpp:106）。
+ * 血债血偿每次失血调用一次（amount = -1）。
+ *
+ * ⚠ 形状照抄：先记下 `cost - costForTurn` 的差，改完 cost 再按同样的差重算 costForTurn，
+ * 于是「本回合已被别的效果降过费」这件事在跨回合时不会被抹掉。cost 已经是 0 时
+ * `max(0, cost-1)` 仍是 0，与旧值相等 → 整个 if 不进，costForTurn 也不动。
+ */
+function updateCardCost(card: CombatCard, amount: number): void {
+  const tmpCost = Math.max(0, card.cost + amount);
+  const diff = card.cost - card.costForTurn;
+  if (tmpCost !== card.cost) {
+    card.cost = tmpCost;
+    card.costForTurn = Math.max(0, card.cost - diff);
+  }
+}
+
+/**
+ * 「这张牌是不是血牌」（对齐 CardInstance::isBloodCard）：血债血偿与精妙之刺。
+ * 后者是静默的牌、当前范围外，所以这里只有一张。
+ */
+function isBloodCard(card: CombatCard): boolean {
+  return card.defId === "blood_for_blood";
+}
+
+/**
+ * 玩家失血时更新血牌的费用（对齐 CardManager::onTookDamage，CardManager.cpp:448）。
+ *
+ * ⚠ 三处：① 扫的是**手牌 / 抽牌堆 / 弃牌堆**，消耗堆不在其列；② 触发点是
+ * `Player::hpWasLost`，即**所有**失血路径（受击、自伤、灼伤）都算，不只「因牌失血」——
+ * 与破裂那条 `selfDamage` 判定不同；③ 血债血偿走 `updateCost(-1)`，精妙之刺是 `+1`
+ * （参考的 else 分支，未登记）。
+ */
+function cardsOnTookDamage(bc: BattleContext): void {
+  for (const pile of [bc.hand, bc.drawPile, bc.discardPile]) {
+    for (const card of pile) {
+      if (isBloodCard(card)) {
+        updateCardCost(card, -1);
+      }
+    }
+  }
+}
+
+/**
+ * 回合末复位本回合费用（对齐 CardManager::resetAttributesAtEndOfTurn，CardManager.cpp:379）。
+ *
+ * ⚠ 只扫**手牌 / 弃牌堆 / 抽牌堆**——消耗堆不复位（腐化把消耗堆里的技能也压成 0 费，
+ * 但那条改的是 `cost` 本身，复位读的正是 `cost`，所以两边不打架）。
+ */
+function cardsResetAttributesAtEndOfTurn(bc: BattleContext): void {
+  for (const pile of [bc.hand, bc.discardPile, bc.drawPile]) {
+    for (const card of pile) {
+      setCostForTurn(card, card.cost);
+    }
+  }
+}
 
 export type CombatPlayer = {
   hp: number;
@@ -742,12 +870,19 @@ function shuffleCards(bc: BattleContext, cards: CombatCard[]): void {
  * ⚠ 参考把 evolve / fireBreathing 两个层数读在**循环之外**（每次 draw 只读一次）。
  * 这里逐张读是等价的：两条触发都只入队、不同步改层数，一次 draw 内两个值不可能变。
  *
- * TODO(后续PR): 困惑（抽到时掷 cardRandomRng 改费用）、腐化（技能牌费用 -9）、
- *   虚无（抽到时 -1 能量，位置在烈焰吐息之后）。都需要逐实例卡牌状态或尚未登记的内容。
+ * ⚠ 腐化那条与状态/诅咒两条是**同一条 if/else-if 链**（技能牌 → 状态牌 → 诅咒牌），
+ * 三者互斥。传的是 -9，`setCostForTurn` 夹成 0。
+ *
+ * TODO(后续PR): 困惑（抽到时掷 cardRandomRng 改费用，位置在这条链**之前**）、
+ *   虚无（抽到时 -1 能量，位置在烈焰吐息之后）。两张都还没有入手途径。
  */
 function drawOneCard(bc: BattleContext, card: CombatCard): void {
   const type = getCardDef(card.defId).type;
-  if (type === "status") {
+  if (type === "skill") {
+    if (getPower(bc.player.powers, "corruption") > 0) {
+      setCostForTurn(card, -9);
+    }
+  } else if (type === "status") {
     const evolve = getPower(bc.player.powers, "evolve");
     if (evolve > 0) {
       addToBot(bc, (c) => drawCards(c, evolve));
@@ -875,7 +1010,16 @@ function triggerAndMoveToExhaustPile(bc: BattleContext, card: CombatCard): void 
 // ============================================================================
 
 function makeCardInstance(bc: BattleContext, defId: string, upgraded = false): CombatCard {
-  return { uid: bc.nextUid++, defId, upgraded };
+  const cost = initialCardCost(defId, upgraded);
+  return {
+    uid: bc.nextUid++,
+    defId,
+    upgraded,
+    // 对齐 `CardInstance::CardInstance(CardId, bool)`：cost = costForTurn = getEnergyCost(...)。
+    cost,
+    costForTurn: cost,
+    specialData: initialSpecialData(defId, upgraded),
+  };
 }
 
 /** 对齐 Actions::MakeTempCardInDiscard：逐张 push 到弃牌堆末尾，不消耗 RNG。 */
@@ -925,11 +1069,17 @@ function makeTempCardInDrawPile(
 }
 
 /**
- * 一张牌进手牌（对齐 BattleContext::moveToHandHelper）：手牌满了就改进弃牌堆。
- * TODO(后续PR): 腐化把进手的技能牌费用改 -9（需要逐实例的 costForTurn）。
+ * 一张牌进手牌（对齐 BattleContext::moveToHandHelper，BattleContext.cpp:2546）：
+ * 手牌满了就改进弃牌堆。
+ *
+ * ⚠ 腐化的钩子在**手牌未满**那一支里（进弃牌堆的那张不改费用，等它以后被抽到时
+ * `drawOneCard` 里那条再补上）。传的是 -9，`setCostForTurn` 会夹成 0。
  */
 function moveToHandHelper(bc: BattleContext, card: CombatCard): void {
   if (bc.hand.length < MAX_HAND_SIZE) {
+    if (getPower(bc.player.powers, "corruption") > 0 && getCardDef(card.defId).type === "skill") {
+      setCostForTurn(card, -9);
+    }
     bc.hand.push(card);
   } else {
     bc.discardPile.push(card);
@@ -940,8 +1090,7 @@ function moveToHandHelper(bc: BattleContext, card: CombatCard): void {
  * 这张牌能不能升级（对齐 CardInstance::canUpgrade，CardInstance.cpp:55）。
  *
  * ⚠ 照抄两处反直觉：① **不**检查这张牌是否真有升级形态，只看「还没升级」；
- * ② 灼热之刃可以反复升级。灼热之刃的层数（specialData）我们还没建模，但它未登记进
- * CARD_RULES，覆盖面检查会把带它的牌组整个挡在门外，所以这一支不可达。
+ * ② 灼热之刃可以反复升级（它的升级次数记在 specialData 上，见 upgradeCard）。
  */
 function canUpgradeCard(card: CombatCard): boolean {
   if (card.upgraded && card.defId !== "searing_blow") {
@@ -952,11 +1101,48 @@ function canUpgradeCard(card: CombatCard): boolean {
 }
 
 /**
- * 升级一张战斗内的牌实例（对齐 CardInstance::upgrade 的通用分支）。
- * 费用随 `upgraded` 由 `costOf` 派生，故不必像参考那样手动同步 cost/costForTurn。
+ * 改基础费用并保住本回合的降费差（对齐 CardInstance::upgradeBaseCost，CardInstance.cpp:99）。
+ * 只有血债血偿的升级分支调它。
+ */
+function upgradeBaseCost(card: CombatCard, newBaseCost: number): void {
+  const diff = card.costForTurn - card.cost;
+  card.cost = newBaseCost;
+  if (card.costForTurn > 0) {
+    card.costForTurn = Math.max(0, card.cost + diff);
+  }
+}
+
+/**
+ * 升级一张战斗内的牌实例（对齐 CardInstance::upgrade，CardInstance.cpp:132）。
+ *
+ * ⚠ 尾部那段是关键：升级前后 `getEnergyCost` 不同的牌（严阵以待 2→1、见红 1→0、
+ * 心灵冲击 2→1…）会把 **cost 与 costForTurn 一起**改成升级后的费用。此前费用是从
+ * `costOf(def, upgraded)` 现算的，加了实例级费用之后必须在这里同步，否则军备升级了一张
+ * 严阵以待，它的费用还停在 2。
+ *
+ * ⚠ 血债血偿那一支照抄，包括它**没有效果**这件事：`upgradeBaseCost(cost-1)` 之后紧接着
+ * 的尾部又把 `cost = costForTurn = getEnergyCost(BFB, true) = 3` 无条件盖掉了
+ * （未升级是 4，两者不等 → 一定进那个 if）。所以「升级时按当前费用再减 1」在参考里等于
+ * 没写，升完一律是 3 费。参考自己在那行标了 `// TODO(dmz) is this logic right?`。
+ * 预言机是参考，故照它写；真实游戏的行为存疑，记在报告里。
  */
 function upgradeCard(card: CombatCard): void {
-  card.upgraded = true;
+  if (card.defId === "searing_blow") {
+    // 灼热之刃：升级次数累加，且 `upgraded` 位照样置真（下面的尾部负责）。
+    card.specialData += 1;
+  } else if (card.defId === "blood_for_blood" && !card.upgraded && card.cost < 4 && card.cost > 0) {
+    upgradeBaseCost(card, card.cost - 1);
+  }
+  // 致盲 / 绊摔在参考里也有 case，但里面只有一句 `// todo change card target here`，
+  // 我们的指向性走 targetedOf(def, upgraded) 现算，无需实例级同步。
+  if (!card.upgraded) {
+    card.upgraded = true;
+    const newCost = initialCardCost(card.defId, true);
+    if (initialCardCost(card.defId, false) !== newCost) {
+      card.cost = newCost;
+      card.costForTurn = newCost;
+    }
+  }
 }
 
 /**
@@ -1128,7 +1314,8 @@ export function initCombat(input: CombatInitInput): BattleContext {
   //    于是固有牌排在最后就是「开局第一批被抽到」。
   const innateUids = new Set<number>();
   const instances: CombatCard[] = input.deck.map((card) => {
-    const instance = { uid: bc.nextUid++, defId: card.defId, upgraded: card.upgraded };
+    // uid 就是 master deck 的下标（makeCardInstance 取 nextUid++，此刻它正好从 0 开始）。
+    const instance = makeCardInstance(bc, card.defId, card.upgraded);
     if (isDeckCardInnate(card)) {
       innateUids.add(instance.uid);
     }
@@ -1830,7 +2017,23 @@ function drawToHandAction(bc: BattleContext, task: CardSelectTask, cardType: str
   bc.inputState = "card_select";
 }
 
-type CardRule = (bc: BattleContext, item: CardQueueItem, upgraded: boolean) => void;
+/**
+ * 一条卡牌规则。
+ *
+ * 第四个参数是**被打出的那张牌实例**——参考的 `useAttackCard` 等函数拿的是
+ * `curCardQueueItem.card`，暴走的 `c.specialData += …`、灼热之刃的 `c.getUpgradeCount()`
+ * 都读写它。⚠ 参考那份是 CardQueueItem 里的**副本**（`CardInstance card;` 按值存），
+ * 而 `OnAfterCardUsed` 又是把那份副本放进弃牌堆/消耗堆的，所以对它的改动会跟着牌走。
+ * 我们直接把手牌里那个对象传进来、`onAfterUseCard` 搬的也是同一个对象，两边等价
+ * ——前提是打牌到结算之间没人动手牌，而 playCard 只在 player_normal 受理、
+ * 入队后立刻抽干，这个前提成立。
+ */
+type CardRule = (
+  bc: BattleContext,
+  item: CardQueueItem,
+  upgraded: boolean,
+  card: CombatCard,
+) => void;
 
 const CARD_RULES: Record<string, CardRule> = {
   // 打击：造成 6(升级 9) 点伤害。对齐 BattleContext.cpp:967 STRIKE_RED。
@@ -1857,7 +2060,7 @@ const CARD_RULES: Record<string, CardRule> = {
     const dmg = calculateCardDamage(bc, item.target, up ? 8 : 6);
     addToBot(bc, (c) => attackEnemy(c, item.target, dmg));
     addToBot(bc, (c) => {
-      c.discardPile.push({ uid: c.nextUid++, defId: "anger", upgraded: up });
+      c.discardPile.push(makeCardInstance(c, "anger", up));
     });
   },
 
@@ -2725,7 +2928,7 @@ function useCard(bc: BattleContext, item: CardQueueItem): void {
   item.exhaustOnUse ||= exhaustsOf(def, card.upgraded);
   bc.player.cardsPlayedThisTurn += 1;
 
-  rule(bc, item, card.upgraded);
+  rule(bc, item, card.upgraded, card);
 
   // 打出后的 Power / 遗物触发。位置照抄参考 useCard 的 switch：每种牌型都是
   // 「先 useXxxCard() 跑卡效果、紧接着 onUseXxxCard() 跑触发」，于是这里入队的动作
@@ -2735,6 +2938,10 @@ function useCard(bc: BattleContext, item: CardQueueItem): void {
   //   之后的 triggerOnOtherCardPlayed（千刃 / 剧痛）。都还没有对应内容登记。
   if (def.type === "attack") {
     onUseAttackCard(bc);
+  } else if (def.type === "skill" && getPower(bc.player.powers, "corruption") > 0) {
+    // 腐化：技能牌打出后被消耗。位置照抄——在 useSkillCard() / onUseSkillCard() **之后**，
+    // 所以卡效果自己读到的 exhaustOnUse 还是原值（当前没有卡效果读它，记着以防将来有）。
+    item.exhaustOnUse = true;
   }
 
   // clearOnCombatVictory=false（对齐 Actions::OnAfterCardUsed 的第二参数）：
@@ -2757,7 +2964,15 @@ function useCard(bc: BattleContext, item: CardQueueItem): void {
   if (handIdx >= 0) {
     bc.hand.splice(handIdx, 1);
   }
-  if (item.energyOnUse > 0 && !item.freeToPlay) {
+  // ⚠ 腐化那一项照抄参考的 `!(hasStatus<CORRUPTION>() && getType() == SKILL)`：腐化在场时
+  // 技能牌**一律不扣能量**。多数时候它是冗余的（腐化早把 costForTurn 压成 0 了），但
+  // 「战斗内升级一张升级后费用不同的技能牌」会把 cost/costForTurn 一起改回非 0
+  //（见 upgradeCard 的尾部），那时就只剩这一项拦着——军备 + 腐化同场即可走到。
+  if (
+    item.energyOnUse > 0 &&
+    !item.freeToPlay &&
+    !(def.type === "skill" && getPower(bc.player.powers, "corruption") > 0)
+  ) {
     bc.player.energy -= item.energyOnUse;
   }
 }
@@ -2987,16 +3202,25 @@ function healPlayer(bc: BattleContext, amount: number): void {
  * ⚠ 与受击伤害是两条路：**不过格挡**、不触发荆棘/火焰屏障，直接扣血。归零走同一个
  * wouldDie（瓶中仙灵仍能救回）。
  *
+ * ⚠ 虚无缥缈（INTANGIBLE）把失血压成 **1**，且这一句排在**最前面**、参考那边**没有**
+ * `amount > 0` 的前置判断——所以 0 点失血在虚无缥缈下会变成 1 点。我们的
+ * `amount <= 0` 提前返回是防御性的加法（`Player::loseHp` 没有它，`hpWasLost` 只有一句
+ * assert），当前没有任何已登记内容会以 0 调用它，两边观察不到差别。
+ *
  * @param selfDamage 这次失血算不算「因你打出的牌而失去生命」——破裂（RUPTURE）只认这一种。
  *   写成**必填**参数是故意的：漏传会静默少一次加力量，而 TS 的默认值不会报错。
  *   各调用点传什么逐个对齐了参考的 `Actions::PlayerLoseHp(n, selfDamage)` 第二参数。
  * TODO(遗物PR): 钨钢棒减 1（在 loseHp 里、hpWasLost 之前）。
  */
 function playerLoseHp(bc: BattleContext, amount: number, selfDamage: boolean): void {
-  if (amount <= 0) {
+  let loss = amount;
+  if (getPower(bc.player.powers, "intangible") > 0) {
+    loss = 1;
+  }
+  if (loss <= 0) {
     return;
   }
-  playerHpWasLost(bc, amount, selfDamage);
+  playerHpWasLost(bc, loss, selfDamage);
 }
 
 /**
@@ -3006,8 +3230,10 @@ function playerLoseHp(bc: BattleContext, amount: number, selfDamage: boolean): v
  * （`buff<PS::STRENGTH>`，不入队）；③ 位置在扣血**之后**、濒死判定之前。
  * 怪物攻击走 Player::attacked，它固定传 selfDamage=false，所以永远不触发破裂。
  *
- * TODO(遗物PR): 百年拼图（抽 3）、情绪芯片、自成型黏土、鲁尼方块、红骷髅；以及
- *   `cards.onTookDamage()`（血债血偿的费用自增）。
+ * ⚠ `cards.onTookDamage()`（血债血偿降费）也挂在这里，位置在遗物之后、濒死判定之前。
+ * 它**不看** selfDamage——被怪打一下同样降费，与破裂那条判据不同。
+ *
+ * TODO(遗物PR): 百年拼图（抽 3）、情绪芯片、自成型黏土、鲁尼方块、红骷髅。
  */
 function playerHpWasLost(bc: BattleContext, amount: number, selfDamage: boolean): void {
   bc.player.hp = Math.max(0, bc.player.hp - amount);
@@ -3015,6 +3241,7 @@ function playerHpWasLost(bc: BattleContext, amount: number, selfDamage: boolean)
   if (selfDamage && rupture > 0) {
     addPower(bc.player.powers, "strength", rupture);
   }
+  cardsOnTookDamage(bc);
   if (bc.player.hp <= 0) {
     wouldDie(bc);
   }
@@ -3134,9 +3361,11 @@ export function playCard(bc: BattleContext, handIdx: number, target = 0): PlayCa
   if (def.type === "status" && card.defId !== "slimed" && !hasRelic(bc, "medical_kit")) {
     return { ok: false, reason: `「${def.name}」是状态牌，打不出来` };
   }
-  // 升级降费必须走 upgradedCost（对齐 Cards.h:703 getEnergyCost 里那几组 `upgraded ? a : b`）：
-  // 严阵以待 2→1、见红 1→0、全身撞击 1→0 等。此前只读 def.cost，升级态的能量会多扣。
-  const cost = (card.upgraded ? def.upgradedCost : undefined) ?? def.cost ?? 0;
+  // 费用读**实例级**的 costForTurn（对齐 CardInstance::canUse 的
+  // `bc.player.energy < costForTurn`，CardInstance.cpp:339）。它在建实例时由
+  // `getEnergyCost(id, upgraded)` 播种（升级降费因此照样生效），之后可被腐化 / 疯狂 /
+  // 血债血偿 / 战斗内升级改写——从数据表现算就看不到这些。
+  const cost = card.costForTurn;
   if (cost > bc.player.energy) {
     return { ok: false, reason: `能量不足：需要 ${cost}，剩余 ${bc.player.energy}` };
   }
@@ -3444,11 +3673,11 @@ function applyStartOfTurnPowers(bc: BattleContext): void {
  *
  * 参考那份名单是「完整枚举 + `default: false`」，可以全表信任：杀戮 / 幽灵护甲 / 眩晕 /
  * 笨拙 / 虚无 / 升华诅咒恒为真，幻影 / 回响成型 / 提婆形态是 `!upgraded`（升级后不再以太）。
- * 后三张一张都没登记，故这里只读数据表的 `ethereal` 位；登记它们时要加一个
- * `upgradedEthereal` 字段，不能继续无条件读。
+ * 后一组由数据表的 `upgradedEthereal` 表达（第七批新增），取值器是 `etherealOf`——
+ * 幻影登记之后就走到这一支了，不能再无条件读 `ethereal`。
  */
 function isEtherealCard(card: CombatCard): boolean {
-  return getCardDef(card.defId).ethereal === true;
+  return etherealOf(getCardDef(card.defId), card.upgraded);
 }
 
 /**
@@ -3511,7 +3740,10 @@ function onTurnEnding(bc: BattleContext): void {
     c.cardQueue.clear();
   });
   addToBot(bc, (c) => discardAtEndOfTurn(c));
-  // TODO(后续PR): cards.resetAttributesAtEndOfTurn()（费用修改 / 本回合免费等卡实例级状态）。
+  // 卡实例级状态复位：costForTurn 拉回 cost（对齐 CardManager::resetAttributesAtEndOfTurn）。
+  // ⚠ **同步**调用，位置照抄参考——夹在 DiscardAtEndOfTurn 与 UnnamedEndOfTurnAction 两条
+  // addToBot 之间。它是同步的，所以实际上跑在这三条动作全部之前，手牌那时还没弃掉。
+  cardsResetAttributesAtEndOfTurn(bc);
   // UnnamedEndOfTurnAction：置 turnHasEnded，再入队怪物阶段开始，最后把游标归零。
   addToBot(bc, (c) => {
     c.turnHasEnded = true;
@@ -3609,7 +3841,14 @@ function calculateDamageToPlayer(bc: BattleContext, m: CombatMonster, baseDamage
   if (getPower(bc.player.powers, "vulnerable") > 0) {
     damage = Math.fround(damage * 1.5);
   }
-  // TODO(后续PR): 被围攻/姿态/虚无。
+  // 虚无缥缈：怪物攻击那条路的钳制在**这里**（Monster.cpp:594），不在 Player::attacked
+  // ——参考在 attacked 里明写「assume intangible is already handled」。
+  // ⚠ 是 `min(damage, 1.0f)` 而不是「置 1」：伤害本来不足 1（虚弱把 1 压成 0.75）时
+  // 不会被抬高。位置在所有倍率之后、截断之前。
+  if (getPower(bc.player.powers, "intangible") > 0) {
+    damage = Math.min(damage, 1);
+  }
+  // TODO(后续PR): 被围攻 / 姿态。
   return Math.max(0, Math.trunc(damage));
 }
 
@@ -3691,10 +3930,15 @@ function applyEndOfRoundPowers(bc: BattleContext): void {
   decrementPlayerDebuff(bc, "frail");
   decrementPlayerDebuff(bc, "vulnerable");
   decrementPlayerDebuff(bc, "weak");
+  // 虚无缥缈：同样是**无条件**递减（`decrementStatus<PS::INTANGIBLE>()`，Player.cpp:477）。
+  // ⚠ `Player::buff<INTANGIBLE>` 里那句 `setJustApplied(true)` 是死代码——这里用的不是
+  // `decrementIfNotJustApplied`，所以「施加当回合跳过」并不成立：幻影给的 1 层在**本回合末**
+  // 就掉光，只护住紧随其后的那个怪物回合。参考自己在那行标了 `// todo this is definitely wrong`。
+  // 位置对齐参考的顺序：脆弱 → 易伤 → 虚弱 → 双倍伤害 → 复制 → 平衡 → INTANGIBLE → NO_BLOCK。
+  decrementPlayerPower(bc, "intangible");
   // 无法格挡（应急按钮的 NO_BLOCK）：**无条件**递减一层，不走 justApplied 那一套——
   // 参考在 Player::applyAtEndOfRoundPowers 里对它用的是裸 `decrementStatus`，而脆弱/易伤/
   // 虚弱用的是 `decrementIfNotJustApplied`。所以 2 层 = 「本回合 + 下一回合」都封住。
-  // 位置对齐参考的顺序：脆弱 → 易伤 → 虚弱 → …… → NO_BLOCK。
   decrementPlayerPower(bc, "no_card_block");
 
   for (const m of bc.monsters) {
@@ -3773,15 +4017,23 @@ function dealDamageToPlayer(bc: BattleContext, amount: number, attackerIdx = -1)
  *   * **过格挡**（这一点与 playerLoseHp 相反——灼伤是能被格挡挡掉的）；
  *   * **不触发荆棘 / 火焰屏障**（那两条在 attacked 里，因为需要攻击者下标）。
  *
+ * ⚠ 虚无缥缈（INTANGIBLE）在**格挡之前**把伤害压成 1（`if (damage > 0 && hasStatus<
+ * PS::INTANGIBLE>()) damage = 1;`，Player.cpp:180）——注意这里带 `damage > 0` 判断，
+ * 与 `loseHp` 那条不带的写法不同，照抄。
+ *
  * @param selfDamage 同 playerLoseHp：破裂只认「因打出的牌」的失血。灼伤走
  *   `Actions::DamagePlayer(2, true)`（BattleContext.cpp:940），所以灼伤**会**触发破裂；
  *   而缠绕那类怪物来源的 `DamagePlayer(n)` 是默认的 false。写成必填参数同理。
- * TODO(遗物PR): 钨钢棒减 1、缓冲（BUFFER）、虚无缥缈（INTANGIBLE 把伤害压成 1）。
+ * TODO(遗物PR): 钨钢棒减 1、缓冲（BUFFER）。
  */
 function damagePlayerNonAttack(bc: BattleContext, amount: number, selfDamage: boolean): void {
-  const blocked = Math.min(bc.player.block, amount);
+  let damage = amount;
+  if (damage > 0 && getPower(bc.player.powers, "intangible") > 0) {
+    damage = 1;
+  }
+  const blocked = Math.min(bc.player.block, damage);
   bc.player.block -= blocked;
-  const unblocked = amount - blocked;
+  const unblocked = damage - blocked;
   if (unblocked <= 0) {
     return;
   }

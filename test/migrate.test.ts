@@ -81,6 +81,47 @@ describe("migrateLoadedState", () => {
     });
   });
 
+  it("战斗中的老档回填卡牌实例级状态（cost / costForTurn / specialData）", () => {
+    // 第七批加的三个逐实例字段。回填是无损的：能改写它们的牌（血债血偿 / 疯狂 / 腐化 /
+    // 暴走 / 灼热之刃）当时一张都没登记，所以老档里每张牌都还是数据表播种的初值。
+    const migrated = migrateLoadedState({
+      runId: "r",
+      seed: 1,
+      screen: "combat",
+      combat: {
+        encounterId: "cultist",
+        hand: [{ uid: 1, defId: "strike", upgraded: false }],
+        // 状态牌的 -2 哨兵（参考 getEnergyCost 对 WOUND 就是 -2）不能被规整成 0，
+        // 否则腐化/疯狂会去动一张伤口的费用。
+        drawPile: [{ uid: 2, defId: "wound", upgraded: false }],
+        // 升级降费的牌必须回填**升级后**的费用。
+        discardPile: [{ uid: 3, defId: "seeing_red", upgraded: true }],
+        exhaustPile: [],
+        pendingActions: [
+          {
+            kind: "after_use_card",
+            card: { uid: 4, defId: "burning_pact", upgraded: false },
+            exhaustOnUse: false,
+          },
+        ],
+      },
+    });
+    const combat = migrated.combat!;
+    expect(combat.hand[0]).toEqual({
+      uid: 1,
+      defId: "strike",
+      upgraded: false,
+      cost: 1,
+      costForTurn: 1,
+      specialData: 0,
+    });
+    expect(combat.drawPile[0]).toMatchObject({ cost: -2, costForTurn: -2 });
+    expect(combat.discardPile[0]).toMatchObject({ cost: 0, costForTurn: 0 });
+    expect(combat.pendingActions[0]).toMatchObject({
+      card: { uid: 4, cost: 1, costForTurn: 1, specialData: 0 },
+    });
+  });
+
   it("不在战斗中的老档不动 screen", () => {
     const migrated = migrateLoadedState({ runId: "r", seed: 1, screen: "shop", combat: null });
     expect(migrated.screen).toBe("shop");

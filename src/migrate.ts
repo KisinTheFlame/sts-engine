@@ -1,3 +1,4 @@
+import { initialCardCost } from "./engine/sts-combat.js";
 import type { GameState } from "./engine/types.js";
 
 // === 存档迁移 ===
@@ -71,7 +72,48 @@ export function migrateLoadedState(raw: unknown): GameState {
     backfill(live, "inputState", "player_normal");
     backfill(live, "cardSelect", null);
     backfill(live, "pendingActions", []);
+    migrateCombatCards(live);
   }
 
   return state as unknown as GameState;
+}
+
+/**
+ * 卡牌实例级状态（第七批）的三个后加字段：`cost` / `costForTurn` / `specialData`。
+ *
+ * 回填同样是**无损**的，理由是「能改写它们的牌当时一张都没登记」：血债血偿 / 疯狂 /
+ * 腐化 / 暴走 / 灼热之刃都是本批才进 CARD_RULES 的，在它们之前任何一张牌的实例状态都
+ * 恒等于「建实例时由数据表播种的初值」——正是 `initialCardCost` / 灼热之刃那条给出的值。
+ */
+function migrateCombatCards(combat: Record<string, unknown>): void {
+  const fix = (raw: unknown): void => {
+    const card = asRecord(raw);
+    if (!card || typeof card["defId"] !== "string") {
+      return;
+    }
+    const cost = initialCardCost(card["defId"], card["upgraded"] === true);
+    backfill(card, "cost", cost);
+    backfill(card, "costForTurn", cost);
+    backfill(
+      card,
+      "specialData",
+      card["defId"] === "searing_blow" && card["upgraded"] === true ? 1 : 0,
+    );
+  };
+  for (const pile of ["hand", "drawPile", "discardPile", "exhaustPile"]) {
+    const cards: unknown = combat[pile];
+    if (Array.isArray(cards)) {
+      cards.forEach(fix);
+    }
+  }
+  // 选牌屏上取的档里，队列残留的 after_use_card 也带着一张牌实例。
+  const pending: unknown = combat["pendingActions"];
+  if (Array.isArray(pending)) {
+    for (const raw of pending) {
+      const desc = asRecord(raw);
+      if (desc?.["kind"] === "after_use_card") {
+        fix(desc["card"]);
+      }
+    }
+  }
 }
