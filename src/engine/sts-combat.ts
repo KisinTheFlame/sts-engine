@@ -5581,10 +5581,46 @@ function decrementPlayerPower(bc: BattleContext, id: string): void {
   }
 }
 
+/**
+ * 怪物的回合末触发（对齐 `Monster::applyEndOfTurnTriggers`，Monster.cpp:41）。
+ *
+ * 与紧随其后的 `Monster::applyEndOfRoundPowers` 是**两个不同的时点**，参考把它们分别放在
+ * `BattleContext::applyEndOfRoundPowers` 的玩家结算**之前**与**之后**，中间夹着
+ * `player.applyAtEndOfRoundPowers()`。所以「这条属于哪一半」不能凭直觉猜，要逐条对：
+ * 金属化 / 易塑 / 镀甲 / 虚无缥缈 / 再生 / **束缚**在前半，仪式 / 缓慢 / 锁定 / 虚弱 /
+ * 易伤 / 通用力量成长在后半。
+ *
+ * ⚠ 束缚（SHACKLED）归还力量走的是 `Monster::buff<MS::STRENGTH>`（Monster.h:536，
+ * `strength += amount`）而**不是** `addDebuff`——所以它**不过神器**。神器只在施加那一刻
+ * 拦截（见黑暗镣铐的注释），归还这一步无条件发生。
+ * ⚠ 清除走 `removeStatus<SHACKLED>()`（Monster.h:495）：先 `setStatus(0)` 再清 bit，
+ * 与我们的「整条摘掉」等价（层数归零的条目在快照里两边都被丢弃）。
+ *
+ * TODO(后续PR): 金属化 / 镀甲（都要 `Monster::addBlock`）、易塑（`setStatus<MALLEABLE>(3)`，
+ * 与它的 onAttacked 成长分支配套）、怪物侧虚无缥缈递减、再生（`Monster::heal`）。
+ * 当前登记的四种怪（邪教徒 / 颚虫 / 红虱 / 绿虱）一个都没有这五种 Power，写了也没有
+ * 预言机走到——等登记带它们的怪（如拉加维林的金属化、史莱姆王一族）时按上面的顺序补。
+ */
+function applyMonsterEndOfTurnTriggers(m: CombatMonster): void {
+  const shackled = getPower(m.powers, "shackled");
+  if (shackled > 0) {
+    addPower(m.powers, "strength", shackled);
+    removePower(m.powers, "shackled");
+  }
+}
+
 /** 对齐 MonsterGroup::applyEndOfRoundPowers：回合末怪物 Power 结算。 */
 function applyEndOfRoundPowers(bc: BattleContext): void {
-  // 顺序对齐 BattleContext::applyEndOfRoundPowers：怪物 endOfTurnTriggers（留后续）
-  // → **玩家减益递减** → 怪物 endOfRoundPowers。
+  // 顺序对齐 BattleContext::applyEndOfRoundPowers（BattleContext.cpp:2148）：
+  // 怪物 endOfTurnTriggers → **玩家减益递减** → 怪物 endOfRoundPowers。
+  // ⚠ 两个怪物循环各自带 `isDying() || isEscaping()` 的跳过（`isDying()` 就是 `curHp <= 0`，
+  // 即我们的 `!alive`；逃跑还没建模，没有已登记的怪会逃）。
+  for (const m of bc.monsters) {
+    if (!m.alive) {
+      continue;
+    }
+    applyMonsterEndOfTurnTriggers(m);
+  }
   decrementPlayerDebuff(bc, "frail");
   decrementPlayerDebuff(bc, "vulnerable");
   decrementPlayerDebuff(bc, "weak");
