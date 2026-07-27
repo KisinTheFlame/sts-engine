@@ -3809,15 +3809,15 @@ function applyStartOfTurnPostDrawPowers(bc: BattleContext): void {
   // ⚠ 失血走 PlayerLoseHp（不过格挡、clearOnCombatVictory=false），抽牌是默认的 true；
   // 两条都 addToBot，故「先失血后抽牌」。
   //
-  // ⚠⚠ selfDamage 传 **false**，所以暴虐的失血**不触发破裂**。这是**照抄参考**：
-  // `Player.cpp:683` 写的是 `Actions::PlayerLoseHp(pair.second)`，第二参数缺省即 false，
-  // 而同文件 :369 的燃烧明确写了 `(combustHpLoss, true)`。真实游戏里暴虐用的是
-  // `LoseHPAction(owner, owner, …)`，来源是玩家自己，破裂**会**触发（暴虐+破裂是铁甲的
-  // 经典组合），所以这大概是参考漏传了参数。但预言机是参考，改了两边就对不上——
-  // 已写进本批报告等裁定，不在这里私自纠正。
+  // ⚠⚠ selfDamage 传 **true**，所以暴虐的失血**会触发破裂**——这是**偏离参考原文的修正**，
+  // 参考侧已同步打补丁（`Player.cpp:683` 原文是 `Actions::PlayerLoseHp(pair.second)`，
+  // 第二参数缺省即 false，而同文件 :369 的燃烧、以及 BattleContext.cpp 里所有卡牌调用点
+  // 都显式传了 true——只有暴虐漏了）。真实游戏里暴虐走的是 `LoseHPAction(owner, owner, …)`，
+  // 来源是玩家自己，`onLoseHp` 因此会跑到，破裂**会**触发（暴虐+破裂是铁甲的经典组合）。
+  // 补丁与重生成的 trace 一起落地，所以这条有预言机背书，见 TODOS「已修正」。
   const brutality = getPower(bc.player.powers, "brutality");
   if (brutality > 0) {
-    addToBot(bc, (c) => playerLoseHp(c, brutality, false), false);
+    addToBot(bc, (c) => playerLoseHp(c, brutality, true), false);
     addToBot(bc, (c) => drawCards(c, brutality));
   }
   const demonForm = getPower(bc.player.powers, "demon_form");
