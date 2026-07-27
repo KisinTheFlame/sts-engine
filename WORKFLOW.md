@@ -172,7 +172,7 @@ tools/regen-traces.sh --install UPPERCUT DEMON_FORM METALLICIZE ...
 pnpm typecheck && pnpm lint && pnpm test && pnpm format
 ```
 
-全绿是**下限**，不是完成。`sts-combat-trace.test.ts` 现有 6675 例逐帧对拍，
+全绿是**下限**，不是完成。`sts-combat-trace.test.ts` 现有 8115 例逐帧对拍，
 其中一部分用**全升级牌组**——所以每条规则 `up ? x : y` 的两个分支都会被验证。
 
 改共享路径（`callEndOfTurnActions`、`drawCards`、`onTurnEnding`、`useCard` 之类）时，
@@ -236,7 +236,15 @@ cp /tmp/sc.bak src/engine/sts-combat.ts
 
 ## 附：踩过的坑
 
-- **`whirlwind` 必须保持未登记**：`sts-combat-wiring.test.ts` 用它当「未迁移卡牌」的样本。
+- **`sts-combat-wiring.test.ts` 里那条「未迁移卡牌」用例需要一张永远不会被登记的样本。**
+  第十批之前用的是 `whirlwind`，本批登记它时换成了 **`seek`**——参考项目三个 switch 里都没有
+  `SEEK` 的 case，等于压根没实现，所以它永远不会有预言机、永远不会进 `CARD_RULES`。
+  别换成 `the_bomb` / `hand_of_greed` / `clash` 那类「下一批就要登记」的牌。
+- **`isReplayableCard` 那道门要覆盖「会自动打出别的牌」的卡，不只是卡自己。**
+  浩劫 / 混乱把选择权交给 `playTopCardInDrawPile`，参考取抽牌堆顶那张、不看任何门。
+  第十批被这个洞咬到（详情见 TODOS「已修正」里那条）：一张未登记的 `clash` 被混乱打出去，
+  整条 trace 不可重放。现在 harness 有 `mayPlayHandCard`，但它同时意味着
+  **凡是从卡池造牌的卡（含嬗变）都不能与混乱同处一副牌组**——第十批因此拆了两对 variant。
 - **凡是「从卡池随机取牌」的卡，harness 必须有一道「只打已登记的牌」的门**
   （`isReplayableCard`，与 `isReplayablePotion` 同源）。第八批之前能进战斗的牌全部来自牌组，
   而牌组里只有已登记的牌；蜕变/变形/发现/多面手/地狱之刃一来，`CardPools.h` 的三个池
