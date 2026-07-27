@@ -194,11 +194,44 @@ const CARD: Record<string, string> = {
   MADNESS: "madness",
   CORRUPTION: "corruption",
   APPARITION: "apparition",
+  // —— 第八批 5 张（随机卡池取牌）——
+  CHRYSALIS: "chrysalis",
+  METAMORPHOSIS: "metamorphosis",
+  DISCOVERY: "discovery",
+  JACK_OF_ALL_TRADES: "jack_of_all_trades",
+  INFERNAL_BLADE: "infernal_blade",
   // 第五批凭空造出来的状态牌。三张都**不在牌组里**，只由卡效果生成，所以不进 CARD_RULES
   // （打不出来，playCard 有一道 canUse 门拦着），但会出现在牌堆快照里，必须能映射。
   BURN: "burn",
   WOUND: "wound",
   DAZED: "dazed",
+  // —— 第八批：**从战斗内卡池随机取出来**、但尚未登记行为的牌 ——
+  //
+  // 蜕变 / 变形 / 发现 / 多面手 / 地狱之刃 会从 CardPools.h 的三个战斗内卡池里随机取牌
+  // 定义，那三个池一共点名 104 张牌，其中 18 张 `CARD_RULES` 里没有。它们**只会躺在牌堆
+  // 快照里**（harness 的 isReplayableCard 不让策略打出未登记的牌），但既然出现在快照里就
+  // 必须能映射——漏一个会在重放时报「未知卡牌」而不是静默错。
+  //
+  // ⚠ 出现在这张表里**不等于**登记了行为：真去打它们仍然会抛「暂未登记卡牌行为」。
+  // 各自卡在哪个机制上见 TODOS 的分批清单（第九/十/十一/十二批，以及参考自己没实现好的）。
+  APOTHEOSIS: "apotheosis",
+  CLASH: "clash",
+  DARK_SHACKLES: "dark_shackles",
+  DOUBLE_TAP: "double_tap",
+  DUAL_WIELD: "dual_wield",
+  ENLIGHTENMENT: "enlightenment",
+  FORETHOUGHT: "forethought",
+  HAND_OF_GREED: "hand_of_greed",
+  HAVOC: "havoc",
+  MAGNETISM: "magnetism",
+  MAYHEM: "mayhem",
+  PANACHE: "panache",
+  PERFECTED_STRIKE: "perfected_strike",
+  SADISTIC_NATURE: "sadistic_nature",
+  THE_BOMB: "the_bomb",
+  TRANSMUTATION: "transmutation",
+  VIOLENCE: "violence",
+  WHIRLWIND: "whirlwind",
 };
 const ENCOUNTER: Record<string, string> = {
   CULTIST: "cultist",

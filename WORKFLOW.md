@@ -172,7 +172,7 @@ tools/regen-traces.sh --install UPPERCUT DEMON_FORM METALLICIZE ...
 pnpm typecheck && pnpm lint && pnpm test && pnpm format
 ```
 
-全绿是**下限**，不是完成。`sts-combat-trace.test.ts` 现有 5475 例逐帧对拍，
+全绿是**下限**，不是完成。`sts-combat-trace.test.ts` 现有 6675 例逐帧对拍，
 其中一部分用**全升级牌组**——所以每条规则 `up ? x : y` 的两个分支都会被验证。
 
 改共享路径（`callEndOfTurnActions`、`drawCards`、`onTurnEnding`、`useCard` 之类）时，
@@ -237,6 +237,20 @@ cp /tmp/sc.bak src/engine/sts-combat.ts
 ## 附：踩过的坑
 
 - **`whirlwind` 必须保持未登记**：`sts-combat-wiring.test.ts` 用它当「未迁移卡牌」的样本。
+- **凡是「从卡池随机取牌」的卡，harness 必须有一道「只打已登记的牌」的门**
+  （`isReplayableCard`，与 `isReplayablePotion` 同源）。第八批之前能进战斗的牌全部来自牌组，
+  而牌组里只有已登记的牌；蜕变/变形/发现/多面手/地狱之刃一来，`CardPools.h` 的三个池
+  一共点名 104 张牌，其中十几张没登记——策略一旦打出去，重放端就抛「暂未登记卡牌行为」，
+  整条 trace **不可重放**（不是「未验证」，是直接坏掉）。
+  那道门写成**黑名单**（列出池里未登记的那些）而不是白名单：可达集合就是
+  「牌组 ∪ 三个池 ∪ 状态牌生成器」，黑名单因此是完备的，而且漏一项是**当场抛错**，
+  不像白名单漏一项那样悄悄少掉覆盖。
+  ⚠ 加这道门之后先**只加门、不加新 variant** 跑一次 `--check`：已提交数据逐字节复现，
+  就证明了这道门对既有 variant 是空操作。
+- **`tools/split-traces.mjs` 不能把 harness 输出整份读成字符串**：第八批起输出超过了
+  V8 的字符串上限（0x1fffffe8 ≈ 512MB），`readFileSync(src, "utf8")` 直接抛
+  `ERR_STRING_TOO_LONG`。已改成读 Buffer + 按顶层 trace 边界切片、逐条 parse。
+  逐条仍走 `JSON.stringify(JSON.parse(...))`，所以输出与旧写法逐字节等价。
 - **参考的 `ActionQueue` 是手写环形缓冲，`clearPostCombatActions` 只修 `size` 不修 `back`**。
   于是「胜利清扫之后又 `addToBot`」会取到残留的旧动作、新动作永远轮不到。第五批已打补丁。
   凡是**胜负已定之后**还会入队的东西（消耗触发、`onAfterUseCard` 之后的连锁）都会踩到它。
