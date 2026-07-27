@@ -33,7 +33,7 @@
 
 | 类别 | 已登记 | 数据表里有               | 登记表                                      |
 | ---- | ------ | ------------------------ | ------------------------------------------- |
-| 卡牌 | 84     | 359（铁甲 74 / 无色 41） | `CARD_RULES`                                |
+| 卡牌 | 90     | 359（铁甲 74 / 无色 41） | `CARD_RULES`                                |
 | 怪物 | 4      | 227                      | `MOVE_RULES`                                |
 | 遗物 | 8      | 168                      | `RELIC_IMMEDIATE` / `RELIC_AT_BATTLE_START` |
 | 药水 | 13     | 42                       | `POTION_RULES`                              |
@@ -62,15 +62,16 @@
 
 ### 二、内容铺量
 
-按登记表逐条转写参考项目的精确行为，范围先限定铁甲 + 无色（31 张待实现）。
+按登记表逐条转写参考项目的精确行为，范围先限定铁甲 + 无色（25 张待实现）。
 
-选牌屏、牌生命周期、玩家事件钩子那三批已做（见下方第三项）。剩下卡在这些子系统上：
+选牌屏、牌生命周期、玩家事件钩子、卡牌实例级状态那四批已做（见下方第三项）。
+剩下卡在这些子系统上：
 
 - `add_random_colorless` / `add_random_cards_to_draw`（各 2 张）—— 消耗 `cardRandomRng`，
   还需要「战斗内卡池」（`CombatCardPool` / `CombatColorlessCardPool`）与凭空造牌实例
-- **逐实例卡牌状态**（`costForTurn` / `freeToPlayOnce` / `specialData`）—— 未雨绸缪一类
-  「本回合免费」、发现的 0 费副本、灼热之刃的层数都要它。当前 `CombatCard` 只有
-  `{uid, defId, upgraded}`
+- **`freeToPlayOnce`**（逐实例的「下次打出免能量」）—— 第七批把 `cost` / `costForTurn` /
+  `specialData` 三个字段做了，唯独没做它：唯一的产出者是深谋远虑，而那张牌的参考侧
+  升级分支整段被注释掉（见下表），没有预言机就不写
 - 各 1 张：`double_block`、`double_strength`、`deal_damage_all_x`（X 费）、`deal_damage_random`、
   `deal_damage_draw_pile_count`、`deal_damage_perfected`、`exhaust_non_attacks`、
   `exhaust_non_attacks_gain_block` 等
@@ -107,6 +108,14 @@
 | `thousand_cuts`   | 同挂 `triggerOnOtherCardPlayed`，是观者/静默的牌，当前范围外                                                                                                                                                                                            |
 | `after_image`     | 挂在三个 `onUseXxxCard` 上（每打出一张牌加格挡），静默的牌，当前范围外                                                                                                                                                                                  |
 
+第七批（卡牌实例级状态）点名跳过的：
+
+| 卡                     | 为什么跳过                                                                                                                                                                                                                                                                                                                                                                 |
+| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `forethought` 深谋远虑 | 参考的**升级分支整段被注释掉**（`Actions.cpp:784-806`），全升级 variant 会照错的跑。把它补上不是转写而是**发明**：参考侧只有单选的 `chooseForethoughtCard(int)`，`FORETHOUGHT` 也只在 `isValidSingleCardSelectAction` / `enumerateCardSelectActions` 的单选分支里，多选那套（`chooseForethoughtCards` + 校验 + 枚举）全都不存在。按 WORKFLOW 第 5 步留给人裁定，见本批报告 |
+
+它也是 `freeToPlayOnce` 唯一的产出者，所以那个字段这一批一并没加。
+
 ### 三、整类缺失的机制
 
 - ~~**选牌屏**（card select screen）~~ **已完成**：`inputState` 加 `card_select`、
@@ -116,6 +125,8 @@
   `exhume` / `headbutt` / `secret_technique` / `secret_weapon` / `warcry`。
   尚缺的 task：`codex` / `discovery` / `dual_wield` / `forethought` / `gamble` / `hologram` /
   `liquid_memories` / `meditate` / `nightmare` / `recycle` / `seek` / `setup`。
+  ⚠ `forethought` 的**单选**分支参考侧是齐的（`chooseForethoughtCard`），卡在升级分支——
+  见「二、内容铺量」第七批那张表。
 - **消耗堆相关**：~~从消耗堆取回~~（掘尸已登记，`triggerAndMoveToExhaustPile` 是统一入口）；
   ~~消耗**触发**~~ **已完成**（黑暗拥抱抽牌 / 无痛之心加格挡，顺序与参考一致；两条都在
   `triggerAndMoveToExhaustPile` 里，压栈**之前**）；~~哨兵~~ **已完成**（第六批，**同步**
@@ -161,6 +172,27 @@
     `damagePlayerNonAttack` 的 `selfDamage` 已改为**必填**参数，各调用点逐个对齐参考
     仍缺同族的：残影（三种牌型都触发）、千刃 / 剧痛（`triggerOnOtherCardPlayed`）、
     风采、双击 / 复制 / 回响形态 / 爆发（都要 `purgeOnUse` 那套复制打出）
+- ~~**卡牌实例级状态**：`costForTurn` / `specialData`~~ **已完成**（第七批）。
+  `CombatCard` 从 `{uid, defId, upgraded}` 扩成带 `cost` / `costForTurn` / `specialData`
+  的实例（对齐 `CardInstance`），三个字段一起进出 `exportState` / `importState`，
+  `migrate.ts` 回填老档。配套原语：`initialCardCost`（= `getEnergyCost(id, upgraded)`，
+  含 **-1 = X 费 / -2 = 打不出**两个哨兵）、`setCostForTurn`（只在 `costForTurn >= 0` 时写）、
+  `updateCardCost`、`upgradeBaseCost`、以及从「置一个 bool」补全成完整转写的 `upgradeCard`
+  （尾部会把升级前后费用不同的牌的 cost/costForTurn 一起改掉）。
+  两个新时点：`cardsOnTookDamage`（挂 `playerHpWasLost`，血债血偿降费，**不看** selfDamage）
+  与 `cardsResetAttributesAtEndOfTurn`（挂 `onTurnEnding`，同步）。
+  腐化是**三处**联动：落地扫四个牌堆改 `cost`（永久）、`drawOneCard` / `moveToHandHelper`
+  改 `costForTurn`（每回合重压）、`useCard` 里技能牌消耗且不扣能量。
+  仍缺：`freeToPlayOnce`（深谋远虑 / 发现 / 液态记忆）、`retain`（保留整套）、
+  困惑（抽到时掷 `cardRandomRng` 改费用）、X 费牌（旋风斩那类读 `energyOnUse`）
+- ~~**虚无缥缈**（INTANGIBLE：受到的一切伤害降为 1）~~ **已完成**（第七批，随幻影登记）。
+  三条钳制路径在参考里是**三段不同的代码**，逐个转写：怪物攻击走
+  `Monster::calculateDamageToPlayer` 的 `min(damage, 1.0f)`（在所有倍率之后、截断之前；
+  `Player::attacked` 里明写「assume intangible is already handled」）、非攻击伤害走
+  `Player::damage` 顶部的 `damage > 0 && …`、主动失血走 `Player::loseHp` 顶部（**不带**
+  `> 0` 判断）。回合末 `decrementStatus` **无条件**递减，所以幻影给的 1 层当回合末就掉光。
+  仍缺：怪物侧的 INTANGIBLE（`Monster::attacked` / `Monster::damage` 各一处，没有已登记的
+  怪有它）、缓冲（BUFFER）
 - **战斗内遗物**：现只 8 个。79 个钩子随近似实现删掉了，要从参考项目重新转写
   （包括开局 buff、回合触发、出牌/失血/消耗/击杀响应、跨战斗计数型如笔尖 / 幸运花 / 双节棍）
 - **姿态**（观者）与**充能球**（机器人）—— 当前范围外，但迟早要做
@@ -173,7 +205,7 @@
 
 - 数据：`test/golden/traces/<encounter>.jsonl`，每行一条 trace
 - 测试：
-  - `test/sts-combat-trace.test.ts` —— 逐帧对拍（4275 例）
+  - `test/sts-combat-trace.test.ts` —— 逐帧对拍（5475 例）
   - `test/sts-combat-wiring.test.ts` —— 接线：入参一致性、存档往返、胜负出口、未迁移即抛错、
     选牌屏（开屏 / 存档往返 / 残留动作不丢 / 非法选择被拒 / 两个策略都不死循环）；
     其中一条把 `SUPPORTED_ENCOUNTERS` 与 trace 文件名双向对齐，漏加或多加都失败
@@ -200,8 +232,22 @@ harness 已支持选牌屏动作（`select_card` / `select_cards`），姿态 / 
 | 2       | 同上                                        | 前 40  | 是   |
 | 3       | 起始 + 第五批 + `mind_blast`（23 张，聚焦） | 前 40  | 否   |
 | 4       | 同上                                        | 前 40  | 是   |
+| 5       | 起始 + 第七批 + 8 张使能牌（24 张，聚焦）   | 前 40  | 否   |
+| 6       | 同上                                        | 前 40  | 是   |
 
-当前 68MB / 4275 例。
+当前 87MB / 5475 例。
+
+⚠ **「variant 1/2 = 当前全牌组」这个策略从第七批起走不下去了**：全牌组已经 93 张，
+`Deck::MAX_SIZE` 是 96，93 + 6 = 99 装不下（而 `fixed_list` 没有越界检查，第 97 张是静默的
+内存破坏）。砍到 96 要删掉那三张刻意加的副本、且下一批照样装不下。第七批因此改成
+**给本批单开一对聚焦 variant**，variants 0-4 原样不动——实测重生成后前 855 行/编队逐字节
+未变，于是它们那些已量过的变异例数一条都没失效。下一批要么继续这么做（每批 +~19MB，
+再几批就过 100MB），要么把全牌组拆成两副、并接受重量一遍所有 ★ 例数的代价。
+
+⚠ **variant 指纹已从「张数 + 是否升级」改成整副牌组的内容**（`split-traces.mjs` /
+`variant0-rows.mjs`）。旧指纹是个哑弹：两个 variant 张数相同就会被认成一个、行被静默排到
+一起、`variant0-rows` 数出来的段长也跟着错，而且不报任何错。第七批本来正好也是 23 张、
+与 variant 3/4 撞号，是差点踩上才发现的。换指纹在已提交的 5475 行上验证过：分组划分完全一致。
 
 variant 1/2 里 `FIRE_BREATHING` 有**两张**。这个副本是量出来的、结论也和预期相反，值得记下来：
 1 张时（92 张牌组）它被打出 47/29 次，删掉「抽到状态牌就触发」那条钩子只红 7 例；
@@ -263,12 +309,15 @@ variant 2（全升级）补的是一个真实漏洞：在它之前，所有 trac
 **「对拍全绿」也不等于新代码被验证了，要用变异测试确认。** 删掉一段逻辑后对拍仍全绿，
 说明那段逻辑没有预言机看着。已确认覆盖到的（括号内为变异后的失败例数）：
 
-⚠ **例数是随数据变的**，换 variant 就得重量。下面标 ★ 的是在**当前布局（4275 例、
-variant 1/2 为 93 张）**上量的；标 ‡ 的是第五批那版布局（同为 4275 例，但 variant 1/2 是
-85 张）；标 † 的是 3075 例那版；没标的更早（3675 例）。绝对值会有出入，
-但都远离 0、定性结论（有背书）不受影响。第六批抽查了几个旧数据点，量级都还在：
+⚠ **例数是随数据变的**，换 variant 就得重量。下面标 § 的是在**当前布局（5475 例，
+variant 5/6 为第七批的 24 张聚焦牌组）**上量的；标 ★ 的是第六批那版布局（4275 例，
+variant 1/2 为 93 张）；标 ‡ 的是第五批那版（同为 4275 例，但 variant 1/2 是 85 张）；
+标 † 的是 3075 例那版；没标的更早（3675 例）。绝对值会有出入，但都远离 0、定性结论
+（有背书）不受影响。第六批抽查了几个旧数据点，量级都还在：
 `inputState` 门 ★489（‡511）、以太回合末消耗 ★369（‡355）、固有分区本身 ★2395（‡2400）、
 回合末灼伤那一族 ★5/4/1（与 ‡ 完全一致）。
+⚠ 第七批只**追加**了 variant 5/6，variants 0-4 逐字节未变，所以 ★ / ‡ / † 那些例数
+仍然成立（只会因为多了 1200 条 trace 而偏大，不会变小）。
 
 - 前三批：`upgradedCost`（230）、回合末弃牌顺序（‡1975，旧 1866）、燃烧失血量取 `combustHpLoss`
   而非层数（130）、玩家 Power 的**枚举序**遍历（‡42，†6，旧 4）、
@@ -339,6 +388,29 @@ variant 1/2 为 93 张）**上量的；标 ‡ 的是第五批那版布局（同
     `clearPostCombatActions` 就把暴虐那次抽牌清掉，少抽一张。改成入队后 4275 例全绿
   - **进化**：抽到状态牌才触发（266）、触发本身（132）、层数 `up?2:1`（133）、
     补抽是入队而非同步（50）
+- 第七批（卡牌实例级状态），全部 §：
+  - **框架**：`playCard` 读实例级 `costForTurn` 而非从数据表现算（767）、
+    `upgradeCard` 尾部「升级前后费用不同就同步 cost/costForTurn」（6）、
+    `useCard` 扣能量的 `!(腐化 && 技能牌)` 子句（**2**，最薄；全靠 ENTRENCH 那条链，
+    见下方布局说明）
+  - **暴走**：伤害读 `specialData`（46）、成长量 `up?8:5`（14）、
+    成长排在算伤害**之后**（412——把它提到前面就等于本次也吃成长）
+  - **灼热之刃**：伤害公式 `n(n+7)/2+12` 里的 n（115）、
+    `getUpgradeCount` 对它读 `specialData` 而非 `upgraded`（8）、
+    `upgradeCard` 里 `specialData += 1`（10）
+  - **血债血偿**：`cardsOnTookDamage` 整条（326）、它**不看** `selfDamage`（227）、
+    扫手牌/抽牌堆/弃牌堆三个堆（只扫手牌 268、去掉弃牌堆 60、去掉抽牌堆 218）、
+    伤害 `up?22:18`（83）
+  - **疯狂**：整条效果（591）、拒绝采样（改成一次命中 62）、
+    命中后 `cost` 与 `costForTurn` **都**置 0（只置后者 53）、
+    「无有效牌就提前返回」（19）
+  - **腐化**：`onBuffCorruption` 落地扫场（309）、它只压**技能牌**（去掉类型判断 510）、
+    它扫四个牌堆（只扫手牌 18）、`useCard` 里技能牌 `exhaustOnUse=true`（471）、
+    改成对所有牌型都消耗（516）、**重复获得不叠层**（175）
+  - **幻影 / 虚无缥缈**：幻影整条效果（768）、升级后不再虚无（84）、
+    怪物攻击那条钳制（390）、`Player::loseHp` 那条（174）、
+    `Player::damage` 那条（**1**，最薄）、回合末递减（696）、
+    「一回合只递减一层」（多加一次递减 76）
 
 这一批还**消掉了两个旧盲区**（状态牌真的进了手牌之后自然可达）：
 `canUpgradeCard` 的诅咒/状态排除（‡2）、`moveToHandHelper` 的「手牌满改进弃牌堆」（‡2）。
@@ -419,6 +491,47 @@ variant 1/2 为 93 张）**上量的；标 ‡ 的是第五批那版布局（同
   - **主宰 `damageRandomEnemy` 顶部的 `monstersAlive === 0` 提前返回（0 例，且本质不可验证）**：
     去掉它之后 `getRandomMonsterIdx` 在无怪时返回 0 且**同样不掷 RNG**，`monsterDamage`
     对死怪又是提前返回——两条路径可观察行为完全相同。留着是为了与参考的 `-1` 分支形状一致。
+- 第七批（卡牌实例级状态）新增的盲区，全部 §：
+  - **`cardsResetAttributesAtEndOfTurn` 整条（0 例）。** 它要有活干，前提是回合末某张牌的
+    `costForTurn != cost`；而当前唯一让两者分岔的是腐化的进牌钩子，那条钩子作用的牌
+    `cost` 早已被 `onBuffCorruption` 一并压成 0 了。等「本回合免费」（深谋远虑 / 发现 /
+    液态记忆）或困惑登记后会自然可观察。
+  - **`playCard` 读 `costForTurn` 而不是 `cost`（0 例）。** 同一个根：两个字段在当前内容里
+    几乎不分岔。注意「读实例值而不是从数据表现算」那条**是有背书的**（767 例），
+    没背书的只是 `cost` 与 `costForTurn` 之间的区别。
+  - **`updateCardCost` 的 `max(0, …)` 下限与「值没变就整个不动」的 if（各 0 例）。**
+    血债血偿的 `cost` 掉到 0 之后再降，去掉这两道也只让 `cost` 变成负数，而
+    `costForTurn` 仍被另一个 `max(0, …)` 夹住——可观察行为完全相同。
+  - **`setCostForTurn` 的 `costForTurn >= 0` 门（0 例）。** 只有 X 费牌（-1）与打不出的
+    状态/诅咒牌（-2）会命中它，而腐化只动技能牌、X 费牌一张都没登记。
+    同源的 **`initialCardCost` 的 -2 哨兵改成 0 也是 0 例**：状态牌既不是技能牌
+    （腐化不碰）、又在 `playCard` 里先被牌型挡掉，费用数值无人读。
+  - **腐化的 `drawOneCard` / `moveToHandHelper` 两个进牌钩子（各 0 例）。**
+    `onBuffCorruption` 已经把**四个牌堆**里所有技能的 `cost` 永久压成 0，之后进手的技能
+    `costForTurn` 本来就是 0，钩子没有活干。真实游戏里它们是给「腐化之后凭空造出来的技能牌」
+    （发现 / 双持 / 液态记忆）准备的，那些都还没登记。
+    传的 **-9 这个具体数值本质不可验证**（`setCostForTurn` 会夹成 0，改成 0 是 0 例）。
+  - **`onBuffCorruption` 扫消耗堆那一支（0 例）。** 要求腐化落地时消耗堆里正好有一张
+    `cost > 0` 的技能牌，**而且**它后来还能回到手上（掘尸）才看得出来。
+    同理 **`cardsOnTookDamage` 不扫消耗堆（0 例）**：血债血偿基本进不了消耗堆。
+  - **疯狂的 `haveNonZeroTurnCost` / `haveNonZeroCost` 两个判据分支（各 0 例）**，
+    包括预扫描里那个 `break`、以及两条判断的先后。根还是「两个字段不分岔」：
+    要走到 `cost > 0` 那一支，得让**整只手牌**的 `costForTurn` 都是 0 而其中一张的
+    `cost > 0`——只有「腐化在场 + 事后升级过的技能」能造出这种牌，太窄。
+  - **虚无缥缈的钳制是 `min(damage, 1)` 而不是无条件置 1（0 例）。**
+    要求怪物那一击算出来不足 1 点（虚弱把 1 压成 0.75 那种），当前编队的招式伤害都够大。
+  - **虚无缥缈的递减放在回合末还是下回合开始（0 例，本质等价）。**
+    两处都在 `afterMonsterTurns` 里、中间没有任何东西读它，把整条从
+    `applyEndOfRoundPowers` 挪到 `applyStartOfTurnPowers` 对拍全绿。
+    「必须递减且一回合只递减一层」是有背书的（删掉 696、多加一次 76）。
+  - **血债血偿升级时的 `upgradeBaseCost` 分支（0 例，且是参考自己写死的死代码）。**
+    `CardInstance::upgrade` 里先按当前费用 -1，紧接着尾部又无条件把
+    `cost = costForTurn = getEnergyCost(BFB, true) = 3` 盖掉（未升级是 4，两者必不相等）。
+    参考自己在那行标了 `// TODO(dmz) is this logic right?`。我们照抄了，含它无效这件事。
+  - **`specialData` 是逐实例而非逐定义（trace 0 例）。** variant 5/6 里暴走与灼热之刃各只有
+    一张，trace 分不出「记在实例上」和「记在定义上」。改由
+    `sts-combat-wiring.test.ts` 的「卡牌实例级状态跟着存档往返」守着（10 张暴走的牌组，
+    断言每张打出过的暴走各自是 +5 而不是累加）。
 
 **每批用当前全牌组替换 variant 1/2**（曾短暂改成「每批新开一对」，理由是错的，已改回）：
 之前以为牌组卡在 64 张，于是第四批只能另开一对；实际上限是 96（见上），85 张的全牌组装得下。
@@ -504,6 +617,14 @@ release workflow 见到 tag 已存在就整体跳过，所以合并到 master �
   variant 0 的 375 行/编队**逐字节未变**（暴虐与破裂都不在那副 21 张牌组里），
   variant 3/4 也未变（没有破裂 → `selfDamage` 观察不到）。
   重生成后 4275 例全绿，改回 false 红 23 例。
+- **harness 的牌组构造漏掉了灼热之刃的升级次数**，随第七批登记一起修（fork 的
+  `sts-engine-harness` 分支 `ed72833`）。原先写的是 `gc.deck.obtain(gc, Card(cid, up ? 1 : 0))`，
+  而 `Card(CardId, int)` 只置 `upgraded` 位、**不动 `misc`**；灼热之刃的升级**次数**恰恰记在
+  `misc` 上，只有 `Card::upgrade()` 会自增它（`Card.cpp:9`）。于是
+  `CardInstance(const Card&)` 读到 `specialData = getUpgraded() = 0`，「已升级」的灼热之刃
+  会按未升级的 12 点打。改成 `Card c(cid); if (up) c.upgrade();`——对其余每一张牌都等价。
+  ⚠ 这是 harness 自己的坑，不是参考项目的 bug（`Card(CardId,int)` 只是个容易误用的构造）。
+  复验过：variant 0 全未升级，已提交数据逐字节未变。
 - **`setHasStatus` 从不写 `statusMap`，dump 纯 bool 状态会抛异常**（harness 侧规避）。
   `Player.h:233` 只翻转 `statusBits`，于是 `getStatusRuntime` 的 default 分支对着不存在的 key
   做 `statusMap.at(s)` → `std::out_of_range`。壁垒一上场整个生成就崩。harness 的
@@ -594,13 +715,27 @@ release workflow 见到 tag 已存在就整体跳过，所以合并到 master �
   ⚠ 射程有限，别高估：**挡不住尚未登记的 275 张牌**，也挡不住 red ↔ colorless 记错、
   或 common/uncommon/rare 三档之间记错。登记表越长它覆盖越广。
 
+### 已修正（第七批 · 续）
+
+- **`CardDef` 补了 `upgradedEthereal` 与 `upgradedOnExhaust`**（已裁定）。
+  前者对齐 `Cards.h:466 isCardEthereal` 对 APPARITION / ECHO_FORM / DEVA_FORM 的
+  `!upgraded`，幻影填 `false`——没有它就登记不了幻影；顺带订正了幻影的升级卡面
+  （原先照抄了未升级那句、还留着「虚无。」）。后者让哨兵+ 的「回 3 点能量」终于在数据表里
+  有地方写，与同族的 `upgradedOnDiscard` 一个模式。
+  两个字段运行期都只被 `sts-combat.ts` 的 `etherealOf` 读（`onExhaust` 仍是纯数据）。
+  `data-tables.test.ts` 两处枚举 upgradedXxx 的不变量已同步，并新增
+  「『虚无』文案与 ethereal 一致（含升级后不再虚无）」——幻影那处漏改的卡面正是被它挡住的。
+
 ### 待裁定
 
-- **`CardDef` 没有 `upgradedOnExhaust`**，所以哨兵+「回 3 点能量」在数据表里**无处可写**
-  （只有 `onExhaust`，语义是未升级态；同族的 `onDiscard` 倒是有 `upgradedOnDiscard`）。
-  当前只把 3 写进了 `upgradedDescription`。补一个可选字段是加法式改动、且运行期**没有任何
-  代码读 `onExhaust`**（近似战斗删掉之后它就是纯数据），但按 WORKFLOW 第 5 步「动
-  `CardDef` 之类的类型定义要先报告不要拍板」，留给人决定。
+- **`forethought` 深谋远虑要不要在参考侧补升级分支。** 参考的 `Actions::ForethoughtAction`
+  把升级那一支整段注释掉了（`Actions.cpp:784-806`），于是升级态退化成未升级行为，
+  全升级 variant 会照错的跑。补它**不是转写而是发明**：参考侧只有单选的
+  `chooseForethoughtCard(int)`，`FORETHOUGHT` 也只出现在
+  `isValidSingleCardSelectAction` / `enumerateCardSelectActions` 的单选分支里，
+  多选那一整套（`chooseForethoughtCards` + 多选校验 + 多选枚举）都不存在。
+  真实游戏是「把**任意张**手牌置于抽牌堆底，它们在被打出前费用为 0」。
+  第七批因此仍然跳过它，连带没有加 `freeToPlayOnce` 字段。
 - **四个角色的起始牌组共用同一张 `strike` / `defend`（`color: "red"`）**，而参考区分
   `STRIKE_RED` / `STRIKE_GREEN` / `STRIKE_BLUE` / `STRIKE_PURPLE`。目前无害
   （`rarity: "starter"` 不进任何奖励池，且只有铁甲能打），但这让「起始牌组的牌颜色必须与

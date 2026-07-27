@@ -118,6 +118,13 @@ tools/regen-traces.sh --check
 
 三条不变量（改 harness 后必须复验，脚本会自动查前两条）：
 
+- ⚠ **全牌组从第七批起已经装不下了**：93（批 1-6）+ 6 = 99 > 96。第七批的做法是
+  **给本批单开一对聚焦 variant、variants 0-4 原样不动**（重生成后前 855 行/编队逐字节未变，
+  所有已量过的变异例数一条都没失效）。代价是新卡不与全牌组共存，收益是覆盖密度高得多。
+  下一批要么继续这么做（每批 +~19MB），要么把全牌组拆两副并重量所有 ★ 例数。
+- ⚠ **新 variant 的牌组张数不必回避已有的 variant**：指纹已改成整副牌组的内容
+  （`split-traces.mjs` / `variant0-rows.mjs`）。旧的「张数 + 是否升级」指纹撞号会把两个
+  variant 的行静默排到一起、段长也跟着错，且不报任何错——第七批差点踩上。
 - ⚠ **牌组不得超过 96 张**（`Deck::MAX_SIZE`）。上限来自**主牌组**：`Deck::cards` 是
   `fixed_list<Card, 96>`，而 `fixed_list` **没有任何越界检查**，第 97 张就是静默内存破坏、
   不是 assert（`CardManager::init` 的 `fixed_list<int, Deck::MAX_SIZE> idxs` 与
@@ -165,7 +172,7 @@ tools/regen-traces.sh --install UPPERCUT DEMON_FORM METALLICIZE ...
 pnpm typecheck && pnpm lint && pnpm test && pnpm format
 ```
 
-全绿是**下限**，不是完成。`sts-combat-trace.test.ts` 现有 4275 例逐帧对拍，
+全绿是**下限**，不是完成。`sts-combat-trace.test.ts` 现有 5475 例逐帧对拍，
 其中一部分用**全升级牌组**——所以每条规则 `up ? x : y` 的两个分支都会被验证。
 
 改共享路径（`callEndOfTurnActions`、`drawCards`、`onTurnEnding`、`useCard` 之类）时，
