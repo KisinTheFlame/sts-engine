@@ -20,6 +20,7 @@ import {
   potionPoolOfRarity,
   shopPotionPool,
 } from "../src/engine/potions/potions.js";
+import { REGISTERED_CARD_IDS } from "../src/engine/sts-combat.js";
 import { ALL_EVENTS, getEventDef } from "../src/engine/events/events.js";
 import { getEnemyDef, getEncounterDef } from "../src/engine/enemies/enemies.js";
 import type { CardDef, CharacterId } from "../src/engine/types.js";
@@ -97,6 +98,55 @@ describe("卡表", () => {
       for (const rarity of ["common", "uncommon", "rare"] as const) {
         expect(cardPoolOf(color, rarity).length, `${color}/${rarity} 池为空`).toBeGreaterThan(0);
       }
+    }
+  });
+});
+
+// ============================================================================
+// 「颜色归属」不变量。
+//
+// `color` 决定一张牌进哪个角色的奖励池，改一处就改变同种子 run 的卡牌奖励。但它在数据表里
+// 基本是**孤证**：`cardPoolOf` 直接按 `color` 过滤派生，所以「池里的牌颜色对不对」是
+// 恒真的，上面那条奖励池不变量真正挡住的只有重复定义。权威名单在参考的 `CardPools.h`，
+// 那是 C++、本仓库读不到。
+//
+// 代价已经付过一次：哨兵是铁甲（红）牌，却被记成 `"blue"`——于是它进了机器人的奖励池、
+// 铁甲的红池少一张，而**没有任何测试守着**（第六批靠逐张对参考才发现）。
+//
+// 能在本仓库内自洽的第二数据源只有一个：`sts-combat.ts` 的登记表。那张表的范围就是
+// **铁甲 + 无色**（TODOS「二、内容铺量」：范围先限定铁甲 + 无色），所以「这张牌已登记」
+// 本身就是一次独立的角色归属声明。两处一冲突必有一处错，而且冲突时先信登记表——
+// 它的每一条都有 trace 背书，数据表的 `color` 没有。
+//
+// ⚠ 这条不变量的**射程**（不要以为它守住了整张卡表）：
+//   * 挡得住：已登记的牌被记成 green / blue / purple（哨兵那一类）；以及已登记的牌
+//     因 rarity 被记成 starter / special 而整个掉出奖励池。
+//   * 挡不住：**尚未登记的 275 张牌**的 `color` 全无背书；已登记的牌在 red ↔ colorless
+//     之间记错；common / uncommon / rare 三档之间记错。
+//   随铺量推进，登记表越长这条的射程越大——全部铺完时它就覆盖了铁甲 + 无色全部 115 张。
+// ============================================================================
+
+describe("卡表 · 颜色归属", () => {
+  it("已登记游戏级行为的牌只能是 red 或 colorless", () => {
+    for (const id of REGISTERED_CARD_IDS) {
+      const def = getCardDef(id);
+      expect(
+        ["red", "colorless"],
+        `${id} 已在 sts-combat.ts 登记（迁移范围=铁甲+无色）却记成 color=${def.color}`,
+      ).toContain(def.color);
+    }
+  });
+
+  it("已登记的牌真的在自己颜色的奖励池里（starter / special 除外）", () => {
+    // 与上一条互为夹逼：上一条挡「颜色落到范围外」，这一条挡「颜色在范围内、但 rarity
+    // 把它踢出了奖励池」——那种错法颜色看着没问题，红池却照样少一张。
+    for (const id of REGISTERED_CARD_IDS) {
+      const def = getCardDef(id);
+      // starter（打击/防御/猛击）与 special（撕咬 / 杰克斯 那类不可获得的牌）本就不进池。
+      if (def.rarity === "starter" || def.rarity === "special") {
+        continue;
+      }
+      expect(rewardCardPoolOf(def.color), `${id} 不在 ${def.color} 奖励池里`).toContain(id);
     }
   });
 });

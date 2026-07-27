@@ -4602,15 +4602,22 @@ const CARD_LIST: CardDef[] = [
     name: "哨戒",
     type: "skill",
     rarity: "uncommon",
-    color: "blue",
+    // 红（铁甲）而非蓝：参考的 CardPools.h 把 CardId::SENTINEL 列在 ironclad 的
+    // uncommon / skills / cardBlob 各池里。曾误记成 "blue"，于是它进了机器人的奖励池、
+    // 而铁甲的红池少了一张——同种子 run 的卡牌奖励因此不对。
+    color: "red",
     cost: 1,
     targeted: false,
     exhausts: false,
     effects: [{ kind: "gain_block", amount: 5 }],
     upgradedEffects: [{ kind: "gain_block", amount: 8 }],
+    // 消耗时回能量 `up ? 3 : 2`（`bc.player.gainEnergy(c.isUpgraded() ? 3 : 2)`，
+    // BattleContext.cpp:2857；CardInstance.cpp:209 同值）。`onExhaust` 与 `effects` 一样
+    // 只记**未升级**态，而 CardDef 目前没有 `upgradedOnExhaust`（只有 `upgradedOnDiscard`），
+    // 所以升级态的 3 只写在 upgradedDescription 里。加字段属于动类型定义，已写进报告等裁定。
     onExhaust: [{ kind: "gain_energy", amount: 2 }],
     description: "获得 5 点格挡。若本牌被消耗，获得 2 点能量。",
-    upgradedDescription: "获得 8 点格挡。若本牌被消耗，获得 2 点能量。",
+    upgradedDescription: "获得 8 点格挡。若本牌被消耗，获得 3 点能量。",
   },
 
   {

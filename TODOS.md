@@ -99,13 +99,13 @@
 
 第六批（玩家的事件钩子）点名跳过的：
 
-| 卡                | 为什么跳过                                                                                                                                                                                |
-| ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `apparition` 幻影 | 同第五批：缺 INTANGIBLE，**而且**要给 `CardDef` 加 `upgradedEthereal`（参考的 `isCardEthereal` 对它是 `!upgraded`）。动类型定义按 WORKFLOW 第 5 步要先报告不要自己拍板，故仍跳过          |
-| `dark_shackles`   | 参考侧两处 bug 未修 + 依赖 `Monster::applyEndOfTurnTriggers`（见下方「已确认但尚未打补丁」）                                                                                              |
-| `pain` 剧痛       | 挂在 `triggerOnOtherCardPlayed`（每打出一张牌失 1 血）。钩子位置已在 `useCard` 里标注，但这张诅咒牌**没有入手途径**；且参考对它的 `PlayerLoseHp(1)` 没传 selfDamage，与暴虐同一类疑似漏传 |
-| `thousand_cuts`   | 同挂 `triggerOnOtherCardPlayed`，是观者/静默的牌，当前范围外                                                                                                                              |
-| `after_image`     | 挂在三个 `onUseXxxCard` 上（每打出一张牌加格挡），静默的牌，当前范围外                                                                                                                    |
+| 卡                | 为什么跳过                                                                                                                                                                                                                                              |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `apparition` 幻影 | 同第五批：缺 INTANGIBLE，**而且**要给 `CardDef` 加 `upgradedEthereal`（参考的 `isCardEthereal` 对它是 `!upgraded`）。动类型定义按 WORKFLOW 第 5 步要先报告不要自己拍板，故仍跳过                                                                        |
+| `dark_shackles`   | 参考侧两处 bug 未修 + 依赖 `Monster::applyEndOfTurnTriggers`（见下方「已确认但尚未打补丁」）                                                                                                                                                            |
+| `pain` 剧痛       | 挂在 `triggerOnOtherCardPlayed`（每打出一张牌失 1 血）。钩子位置已在 `useCard` 里标注，但这张诅咒牌**没有入手途径**；且参考对它的 `PlayerLoseHp(1)` 没传 selfDamage——与暴虐同一类漏传，暴虐已随第七批修掉，剧痛按「补丁跟着登记一起打」留到登记它那一批 |
+| `thousand_cuts`   | 同挂 `triggerOnOtherCardPlayed`，是观者/静默的牌，当前范围外                                                                                                                                                                                            |
+| `after_image`     | 挂在三个 `onUseXxxCard` 上（每打出一张牌加格挡），静默的牌，当前范围外                                                                                                                                                                                  |
 
 ### 三、整类缺失的机制
 
@@ -173,13 +173,17 @@
 
 - 数据：`test/golden/traces/<encounter>.jsonl`，每行一条 trace
 - 测试：
-  - `test/sts-combat-trace.test.ts` —— 逐帧对拍（3075 例）
+  - `test/sts-combat-trace.test.ts` —— 逐帧对拍（4275 例）
   - `test/sts-combat-wiring.test.ts` —— 接线：入参一致性、存档往返、胜负出口、未迁移即抛错、
     选牌屏（开屏 / 存档往返 / 残留动作不丢 / 非法选择被拒 / 两个策略都不死循环）；
     其中一条把 `SUPPORTED_ENCOUNTERS` 与 trace 文件名双向对齐，漏加或多加都失败
   - `test/data-tables.test.ts` —— 数据表不变量。**数据表是两代实现共用的**，它错了游戏级实现
     会照着错的数值逐位复现。首次跑就抓到了 `teardrop_locket` 重复定义（watcher 奖励池里
-    双倍权重）——这类问题此前一直没有测试守着
+    双倍权重）——这类问题此前一直没有测试守着。
+    ⚠ 「奖励池：不含 starter/special…」那条里，「池里的牌颜色对不对」是**恒真**的
+    （`cardPoolOf` 直接按 `color` 过滤派生），真正有牙的只有「无重复」。守 `color` 的是
+    第七批加的「卡表 · 颜色归属」——它拿 `sts-combat.ts` 的登记表（范围=铁甲+无色）
+    当第二数据源，射程与局限写在那条注释里
 - 生成器：不在本仓库。见 fork 的 `sts-engine-harness` 分支
   （`KisinTheFlame/sts_lightspeed`，`tools/sts-engine-harness/`）
 
@@ -317,11 +321,13 @@ variant 1/2 为 93 张）**上量的；标 ‡ 的是第五批那版布局（同
   - **烈焰吐息**：错写成旧版本「打出攻击牌时触发」（128）、层数 `up?10:6`（165）、
     走 `DamageAllEnemy` 而非 `AttackAllEnemy`（4）、
     状态牌那支的触发本身（**5**，最薄）、伤害**入队**而非同步（**1**，最薄）
-  - **破裂**：触发本身（39）、**只认** `selfDamage`（受击也加力量 → 41）、
-    加力量是**同步**而非入队（4）、层数 `up?2:1`（80）；各失血来源的 `selfDamage` 实参逐个
-    验证过：燃烧（6）、血液动力（9）、放血（24）、杰克斯（8）、献祭（17）、
-    暴虐传 false（改 true → 23，**确认参考真的没让暴虐触发破裂**，见「已确认但尚未打补丁」）、
-    受击传 false（改 true → 35）
+  - **破裂**：触发本身（39 → **补丁后 49**）、**只认** `selfDamage`（受击也加力量 →
+    41 → **补丁后 35**）、加力量是**同步**而非入队（4）、层数 `up?2:1`（80）；
+    各失血来源的 `selfDamage` 实参逐个验证过：燃烧（6）、血液动力（9）、放血（24）、
+    杰克斯（8）、献祭（17）、受击传 false（改 true → 35）、
+    **暴虐传 true**（改回 false → **23**）。最后这条第七批才成立：第六批测到的是「暴虐传
+    false，改 true 红 23 例」，即数据当时明确记着参考的漏传；补丁 + 重生成之后同样是 23 例，
+    只是方向反过来了（见下方「已修正」的暴虐条）
   - **哨兵**：消耗回能量的触发本身（7）、回能量 `up?3:2`（2）、
     触发排在黑暗拥抱/无痛之心**之后**（7）、格挡 `up?8:5`（58）
   - **应急按钮 / NO_BLOCK**：`calculateCardBlock` 顶部那道门（50）、
@@ -374,8 +380,10 @@ variant 1/2 为 93 张）**上量的；标 ‡ 的是第五批那版布局（同
   - 强行突破「先塞伤口后加格挡」对调（★仍 0 例。主宰登记之后**理论上**可观察了——加格挡
     会掷 `cardRandomRng` 选目标——但要求同一回合同时有主宰在场且伤口进弃牌堆改变后续，
     当前数据里没撞上）
-  - 暴虐「先失血后抽牌」对调、以及暴虐排到恶魔形态之后（★仍 0 例。破裂登记后失血会加力量，
-    但力量仍然不影响抽到哪张牌）
+  - 暴虐排到恶魔形态之后（★仍 0 例。力量不影响抽到哪张牌）。
+    ⚠ 同族的**暴虐「先失血后抽牌」对调已经不再是盲区**：第七批的暴虐补丁让它从 0 例变成
+    **2 例**——失血现在会加力量，于是「先抽后失血」与「先失血后抽」在少数 trace 上分岔。
+    很薄，但有背书了
   - **应急按钮「先加格挡后上 NO_BLOCK」对调**（★0 例）——格挡在**打牌时**就过
     `calculateCardBlock` 算好了，两条动作的先后不影响它
   - **火焰屏障「先加格挡后上 Power」对调**（★0 例）——同理
@@ -483,6 +491,19 @@ release workflow 见到 tag 已存在就整体跳过，所以合并到 master �
   ⚠ 差异只出现在**胜负已定之后**的状态（真实游戏那时已经把战斗状态丢掉了），
   但 trace dumper 会把它快照下来，所以队列必须是队列。
   复验过：重新生成后 variant 0 那 375 行/编队**逐字节未变**，即已有背书一条都没受影响。
+- **`BRUTALITY` 暴虐的失血没标 `selfDamage`，于是不触发破裂**，随第七批修
+  （fork 的 `sts-engine-harness` 分支 `d5b27bf`）。`Player.cpp:683` 原文是
+  `bc.addToBot(Actions::PlayerLoseHp(pair.second));`，而第二参数
+  `bool selfDamage` **有默认值 false**（`Actions.h:64`），`Player::hpWasLost`
+  （`:283`）只在 `selfDamage` 为真时给破裂加力量。参考里**所有卡牌调用点**都显式传了 true
+  （`BattleContext.cpp` 的 952 / 1080 / 1268 / 1388 / 1409 / 1933，以及同文件 `:369` 的燃烧），
+  只有暴虐漏了。真实游戏里暴虐走 `LoseHPAction(owner, owner, …)`，来源是玩家自己，
+  `onLoseHp` 因此会跑到，破裂**会**触发——暴虐 + 破裂是铁甲广为人知的组合。
+  补丁按「跟着登记一起打」在 `brutality`（第五批）与 `rupture`（第六批）**都已登记**之后才打。
+  ⚠ 这个补丁**会改数据**：重生成后 4275 例里有 23 例的内容变了（第六批测到的正是这 23 例），
+  variant 0 的 375 行/编队**逐字节未变**（暴虐与破裂都不在那副 21 张牌组里），
+  variant 3/4 也未变（没有破裂 → `selfDamage` 观察不到）。
+  重生成后 4275 例全绿，改回 false 红 23 例。
 - **`setHasStatus` 从不写 `statusMap`，dump 纯 bool 状态会抛异常**（harness 侧规避）。
   `Player.h:233` 只翻转 `statusBits`，于是 `getStatusRuntime` 的 default 分支对着不存在的 key
   做 `statusMap.at(s)` → `std::out_of_range`。壁垒一上场整个生成就崩。harness 的
@@ -531,17 +552,13 @@ release workflow 见到 tag 已存在就整体跳过，所以合并到 master �
 
   ⚠ 登记 `violence` 之前必须先在参考侧改掉，否则重生成的 trace 会带着「牌被复制」的错值。
 
-- **`BRUTALITY` 暴虐的失血没标 `selfDamage`，于是不触发破裂**
-  （`Player.cpp:683`：`bc.addToBot(Actions::PlayerLoseHp(pair.second));`，第二参数缺省即
-  `false`）。同一个函数里 `:369` 的燃烧明确写了 `(combustHpLoss, true)`，所以这看着是漏传。
-  真实游戏里暴虐走的是 `LoseHPAction(owner, owner, …)`，来源是玩家自己，
-  `AbstractPlayer::damage` 的 `onLoseHp` 因此会跑到，破裂**会**触发——暴虐 + 破裂是铁甲
-  广为人知的组合。**但这一批没有改**（改了两边就对不上，而北极星与预言机在这一点上冲突，
-  需要人来裁定）。
-  ⚠ 这不是纸面推测：变异测试把暴虐改成传 `true` 后**红了 23 例**，说明当前 trace 明确
-  记录着「暴虐不触发破裂」。要修就必须**同时**改参考侧并重新生成 variant 1/2。
-  同一类漏传还有 `PAIN` 剧痛（`BattleContext.cpp:2678` 的 `PlayerLoseHp(1)`），
-  那张诅咒牌尚无入手途径，登记它时一并处理。
+- **`PAIN` 剧痛的失血没标 `selfDamage`，于是不触发破裂**
+  （`BattleContext.cpp:2678` 的 `Actions::PlayerLoseHp(1)`，第二参数缺省即 `false`）。
+  与暴虐那条**同一类漏传**（暴虐已随第七批修掉，见上方「已修正」），修法也一样：
+  改成 `PlayerLoseHp(1, true)`。
+  **但现在不要改**——`pain` 这张诅咒牌在本引擎里**没有任何入手途径**、也未登记，
+  按「补丁跟着登记一起打」提前打没有 trace 走到它，既验证不了又会在重新克隆时静默丢失。
+  登记 `pain` 的那一批一并处理。
 
 另有 3 处性质不同，单独记：**`Cards.h getEnergyCost` 以 `default: return 1` 收尾**，
 所以它对未列举的牌一律返回 1 费。`SHIV` 飞刀、`SEEK` 搜寻、`THROUGH_VIOLENCE` 以暴制暴
@@ -555,16 +572,37 @@ release workflow 见到 tag 已存在就整体跳过，所以合并到 master �
 `SHIV` / `SEEK` / `THROUGH_VIOLENCE` 这三张参考项目三个 switch 里都没有 case，
 等于压根没实现，铺量到它们时只能以真实游戏为准。
 
-## 数据表与参考/真实游戏冲突（待裁定，第六批发现）
+## 数据表与参考/真实游戏冲突
 
-数据表是两代实现共用的，它错了游戏级实现会照着错的数值逐位复现。下面两处**没有自己改**
-（按 WORKFLOW 第 5 步：数据表与参考冲突要报告不要拍板），也**不影响**第六批的对拍——
-`sts-combat.ts` 只读 `type` / `cost` / `upgradedCost` / `targeted` / `exhausts` / `ethereal` /
-`innate`，不读 `color`，也不读 `effects` / `onExhaust` 数组：
+数据表是两代实现共用的，它错了游戏级实现会照着错的数值逐位复现。
 
-- **`sentinel` 哨兵的 `color` 记成了 `"blue"`**（`cards.ts:4601`），但哨兵是**铁甲**（红）的
-  牌——参考的 `CardPools.h` 把 `CardId::SENTINEL` 列在 ironclad 池里。`color` 决定它进哪个
-  角色的奖励池，改动会影响 run 级的卡牌奖励，所以留给人决定。
-- **`sentinel` 的 `onExhaust` 升级态回能量记成 2**，真实游戏与参考都是 **3**
-  （`bc.player.gainEnergy(c.isUpgraded() ? 3 : 2)`）。`sts-combat.ts` 已按 3 实现并有 trace
-  背书（变异 2 例），但数据表的 `onExhaust` / `upgradedDescription` 仍写 2。
+### 已修正（第七批）
+
+- **`sentinel` 哨兵的 `color` 从 `"blue"` 改为 `"red"`**。哨兵是铁甲牌——参考的
+  `CardPools.h` 把 `CardId::SENTINEL` 列在 ironclad 的 `uncommonCards` / `skills` /
+  `cardBlob` 各池里。⚠ 这一改**改变了 run 级的奖励卡池成员**（红池 +1、蓝池 -1），
+  于是同种子 run 的卡牌奖励会变——这是修正而非破坏，数据本来就错了。
+  改动不影响战斗对拍（`sts-combat.ts` 不读 `color`）。
+- **`sentinel` 的 `upgradedDescription` 从「获得 2 点能量」改为 3 点**。参考
+  `BattleContext.cpp:2857` 与 `CardInstance.cpp:209` 都是 `up ? 3 : 2`；
+  `sts-combat.ts` 早已按 3 实现并有 trace 背书（变异 2 例）。
+  `onExhaust: [gain_energy 2]` **保持不动**——它与 `effects` 一样只记未升级态，见下。
+- 同时**补上了一条此前完全缺失的不变量**（`data-tables.test.ts` 的「卡表 · 颜色归属」）：
+  已在 `sts-combat.ts` 登记行为的牌，`color` 只能是 `red` / `colorless`
+  （迁移范围就是铁甲 + 无色），且必须真的落在自己颜色的奖励池里。
+  哨兵那个错法在这条下当场失败（实测：把 `color` 改回 `"blue"` → 该条红）。
+  ⚠ 射程有限，别高估：**挡不住尚未登记的 275 张牌**，也挡不住 red ↔ colorless 记错、
+  或 common/uncommon/rare 三档之间记错。登记表越长它覆盖越广。
+
+### 待裁定
+
+- **`CardDef` 没有 `upgradedOnExhaust`**，所以哨兵+「回 3 点能量」在数据表里**无处可写**
+  （只有 `onExhaust`，语义是未升级态；同族的 `onDiscard` 倒是有 `upgradedOnDiscard`）。
+  当前只把 3 写进了 `upgradedDescription`。补一个可选字段是加法式改动、且运行期**没有任何
+  代码读 `onExhaust`**（近似战斗删掉之后它就是纯数据），但按 WORKFLOW 第 5 步「动
+  `CardDef` 之类的类型定义要先报告不要拍板」，留给人决定。
+- **四个角色的起始牌组共用同一张 `strike` / `defend`（`color: "red"`）**，而参考区分
+  `STRIKE_RED` / `STRIKE_GREEN` / `STRIKE_BLUE` / `STRIKE_PURPLE`。目前无害
+  （`rarity: "starter"` 不进任何奖励池，且只有铁甲能打），但这让「起始牌组的牌颜色必须与
+  角色一致」这条本来更强的不变量无法成立——上面那条颜色不变量只能退而依赖登记表。
+  拆成四份是数据表结构改动，未自行处理。

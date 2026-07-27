@@ -2667,6 +2667,16 @@ const CARD_RULES: Record<string, CardRule> = {
 };
 
 /**
+ * 已登记游戏级行为的卡牌 id（`CARD_RULES` 的键）。**只给测试用**，运行期不读它。
+ *
+ * 存在的理由：登记表是本仓库里唯一一处「知道某张牌属于哪个角色」的第二数据源——
+ * 本次迁移的范围就是**铁甲（红）+ 无色**，所以任何进了这张表的牌，数据表里的 `color`
+ * 必须是 `red` 或 `colorless`。`data-tables.test.ts` 拿它交叉验证 `color`
+ * （哨兵曾被记成 `blue` 而无任何测试守着，就是靠这条挡住的）。
+ */
+export const REGISTERED_CARD_IDS: readonly string[] = Object.freeze(Object.keys(CARD_RULES));
+
+/**
  * 对全体造成伤害（对齐 Actions::AttackAllEnemy）：先**逐怪算好**伤害矩阵，
  * 再逐怪结算。两段分开很重要——先打死的怪不会影响后面怪的伤害取值。
  */
