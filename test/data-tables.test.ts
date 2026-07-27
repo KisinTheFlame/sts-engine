@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   ALL_CARDS,
   cardPoolOf,
+  etherealOf,
   exhaustsOf,
   getCardDef,
   rewardCardPoolOf,
@@ -172,7 +173,9 @@ describe("卡表 · 升级相关属性", () => {
       "upgradedExhausts",
       "upgradedTargeted",
       "upgradedInnate",
+      "upgradedEthereal",
       "upgradedOnDiscard",
+      "upgradedOnExhaust",
     ] as const;
     for (const card of ALL_CARDS) {
       if (canUpgrade(card)) {
@@ -199,8 +202,26 @@ describe("卡表 · 升级相关属性", () => {
           card.targeted,
         );
       }
+      if (card.upgradedEthereal !== undefined) {
+        expect(card.upgradedEthereal, `${card.id} 的 upgradedEthereal 与 ethereal 同值`).not.toBe(
+          card.ethereal === true,
+        );
+      }
       if (card.upgradedInnate === true) {
         expect(card.innate, `${card.id} 本就固有，upgradedInnate 是多余的`).not.toBe(true);
+      }
+      // Effect[] 型的两个覆盖字段：结构相同即等于没填（同族的标量字段在上面逐个查过了）。
+      for (const [over, base] of [
+        ["upgradedOnDiscard", "onDiscard"],
+        ["upgradedOnExhaust", "onExhaust"],
+      ] as const) {
+        if (card[over] === undefined) {
+          continue;
+        }
+        expect(card[base], `${card.id} 有 ${over} 却没有 ${base}`).toBeDefined();
+        expect(JSON.stringify(card[over]), `${card.id} 的 ${over} 与 ${base} 同值`).not.toBe(
+          JSON.stringify(card[base]),
+        );
       }
     }
   });
@@ -320,6 +341,21 @@ describe("卡表 · 升级相关属性", () => {
     }
   });
 
+  it("「虚无」文案与 ethereal 一致（含升级后不再虚无）", () => {
+    // 幻影+ 正是这一形状：加 upgradedEthereal 时忘了改升级卡面，这条当场失败。
+    // ⚠ 只认句首的「虚无。」/「虚无——」，不能裸 /虚无/ ——「虚无缥缈」（INTANGIBLE）
+    // 是另一个词，幻影自己的卡面里就有。
+    const mentionsEthereal = (text: string): boolean => /(^|。)虚无(。|——)/.test(text);
+    for (const card of auditedCards) {
+      expect(mentionsEthereal(card.description), `${card.id} 卡面与 ethereal 不符`).toBe(
+        etherealOf(card, false),
+      );
+      expect(mentionsEthereal(card.upgradedDescription), `${card.id} 升级卡面与虚无与否不符`).toBe(
+        etherealOf(card, true),
+      );
+    }
+  });
+
   it("「保留」文案与 retain 一致", () => {
     // 本轮抓到的：秘密武器 / 秘密技巧凭空多了「保留」（原版两张都没有）。
     const mentionsRetain = (text: string): boolean => /(^|。)保留。/.test(text);
@@ -342,6 +378,10 @@ describe("卡表 · 升级相关属性", () => {
     expect(targetedOf(getCardDef("blind"), true)).toBe(false);
     expect(targetedOf(getCardDef("trip"), true)).toBe(false);
     expect(targetedOf(getCardDef("strike"), true)).toBe(true); // 无覆盖字段 → 沿用 targeted
+    expect(etherealOf(getCardDef("apparition"), false)).toBe(true);
+    expect(etherealOf(getCardDef("apparition"), true)).toBe(false);
+    expect(etherealOf(getCardDef("carnage"), true)).toBe(true); // 无覆盖字段 → 沿用 ethereal
+    expect(etherealOf(getCardDef("strike"), false)).toBe(false); // 没有 ethereal 位 → false
   });
 
   it("effects 与 upgradedEffects 的「空 / 非空」一致", () => {

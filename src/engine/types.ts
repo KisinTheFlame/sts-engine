@@ -349,6 +349,11 @@ export type CardDef = {
   retain?: boolean;
   /** 虚无：回合结束时若仍在手牌中，则被消耗（而非进弃牌堆）。 */
   ethereal?: boolean;
+  /**
+   * 升级后是否仍为虚无（省略=不变）；用于幻影/回响成型/提婆形态那类「升级后不再虚无」。
+   * 对齐 Cards.h:466 isCardEthereal 里 APPARITION / ECHO_FORM / DEVA_FORM 的 `!upgraded`。
+   */
+  upgradedEthereal?: boolean;
   /** 回合结束时若此牌在手牌中，以玩家为行动者结算这些效果（灼烧/腐朽自伤、疑虑虚弱等）。 */
   endOfTurnInHand?: Effect[];
   /** 被牌效果从手牌弃掉时，以玩家为行动者结算这些效果（急智回能量、应激反射抽牌）。 */
@@ -357,6 +362,11 @@ export type CardDef = {
   upgradedOnDiscard?: Effect[];
   /** 被消耗（进消耗堆）时，以玩家为行动者结算这些效果（哨戒回能量）。 */
   onExhaust?: Effect[];
+  /**
+   * 升级后的 onExhaust（省略则沿用 onExhaust）。与 upgradedOnDiscard 同一模式。
+   * 哨兵是目前唯一的用户：消耗时回 `up ? 3 : 2` 点能量（BattleContext.cpp:2857）。
+   */
+  upgradedOnExhaust?: Effect[];
   /** 被抽到手牌时，以玩家为行动者结算这些效果（无尽痛楚：加一张自身副本）。 */
   onDraw?: Effect[];
   /** 被抽到时立即消耗自身（机械降神：抽到即生成奇迹并消耗）。 */
