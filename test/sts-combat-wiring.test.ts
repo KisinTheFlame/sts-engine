@@ -454,6 +454,73 @@ describe("接线：战斗内选牌屏", () => {
     expect(conjured.cost).toBe(costOf(getCardDef(picked), false));
   });
 
+  /**
+   * 停在「头槌的选牌屏开着、而二连击的复制项还排在出牌队列里」那一刻。
+   *
+   * 第九批之前「可取档时点出牌队列必空」是成立的，exportState 甚至为此显式抛错。
+   * 二连击 + 头槌打破了它：头槌是**攻击牌**，所以 onUseAttackCard 会把一份复制项塞进
+   * 出牌队列；而头槌自己又开选牌屏，于是屏开着时那份复制项还排在队里。
+   * trace 那边看不到这条（harness 不做存档往返），所以只能由这两条接线测试守着。
+   */
+  function openHeadbuttScreenWithPurgedCopy(): GameState {
+    // 种子 1 的起手是 headbutt,double_tap,defend,double_tap,defend。
+    const state = runWithDeck(
+      [
+        "double_tap",
+        "double_tap",
+        "double_tap",
+        "headbutt",
+        "headbutt",
+        "headbutt",
+        "defend",
+        "defend",
+        "defend",
+        "defend",
+      ],
+      1,
+    );
+    startCombat(state, "cultist");
+    // 两张二连击各 1 费：叠到 2 层，同时把 2 张牌送进弃牌堆——头槌候选必须 ≥2 张才开屏
+    // （恰好 1 张时 HeadbuttAction 走「直接替玩家选掉」的捷径）。
+    for (let i = 0; i < 2; i += 1) {
+      const dt = state.combat!.hand.findIndex((c) => c.defId === "double_tap");
+      expect(dt).toBeGreaterThanOrEqual(0);
+      expect(applyAction(state, { type: "play_card", handIndex: dt })).toEqual({ ok: true });
+    }
+    expect(state.combat!.player.powers.find((p) => p.id === "double_tap")?.amount).toBe(2);
+    const hb = state.combat!.hand.findIndex((c) => c.defId === "headbutt");
+    expect(hb).toBeGreaterThanOrEqual(0);
+    expect(applyAction(state, { type: "play_card", handIndex: hb })).toEqual({ ok: true });
+    expect(state.combat!.inputState).toBe("card_select");
+    expect(state.combat!.cardSelect!.task).toBe("headbutt");
+    return state;
+  }
+
+  it("二连击的复制项确实排在出牌队列里（存档里看得见）", () => {
+    const state = openHeadbuttScreenWithPurgedCopy();
+    const queued = state.combat!.pendingCardQueue;
+    expect(queued).toHaveLength(1);
+    expect(queued[0]!.purgeOnUse).toBe(true);
+    expect(queued[0]!.autoplay).toBe(true);
+    expect(queued[0]!.card!.defId).toBe("headbutt");
+    // 层数已经被**同步**递减掉一层（2 → 1）。
+    expect(state.combat!.player.powers.find((p) => p.id === "double_tap")?.amount).toBe(1);
+  });
+
+  it("出牌队列里的复制项跟着存档往返，选完之后两条路结果一致", () => {
+    const state = openHeadbuttScreenWithPurgedCopy();
+    const roundTripped = JSON.parse(JSON.stringify(state)) as GameState;
+    expect(roundTripped).toEqual(state);
+    expect(exportState(importState(state.combat!))).toEqual(state.combat);
+
+    // 选完之后复制项要真的结算掉——第二块头槌屏就是它开的。
+    const action: GameAction = { type: "select_card", index: 0 };
+    expect(applyAction(state, action)).toEqual({ ok: true });
+    expect(applyAction(roundTripped, action)).toEqual({ ok: true });
+    expect(roundTripped).toEqual(state);
+    expect(state.combat!.pendingCardQueue).toEqual([]);
+  });
+
   // 自动对战策略必须能应付选牌屏，否则 `pnpm sim` 会在屏上原地死循环：
   // sts-combat 在屏没关之前拒绝一切打牌 / 结束回合，策略若只在那两个里挑就永远推不动。
   for (const [name, policy] of [
