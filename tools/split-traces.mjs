@@ -17,6 +17,14 @@ import path from "node:path";
 //  * 全序（而非仅「稳定」）—— 末位用输入下标兜底，不靠 V8 排序的稳定性，
 //    否则「重跑逐字节一致」就成了实现细节而不是性质。
 //
+// ⚠ **不能把整个文件读成一个 JS 字符串**：harness 的输出从第八批起超过了 512MB
+// （V8 的字符串上限 0x1fffffe8 ≈ 512MB），`fs.readFileSync(src, "utf8")` 会直接抛
+// `ERR_STRING_TOO_LONG`。所以这里读成 **Buffer**（上限以 GB 计），按顶层 trace 边界切片，
+// 每条单独 `JSON.parse`。切完就丢，峰值内存只有 Buffer 本身。
+//
+// 边界用字节序列 `,{"seed":"` 找：harness 把每条 trace 都以 `{"seed":"…` 开头、以 `,` 相连，
+// 而 `seed` 这个 key 每条只出现一次，卡名/药水名/遗物名里也不可能出现这个序列。
+//
 // 用法: node tools/split-traces.mjs <traces.json> <输出目录>
 const [src, outDir] = process.argv.slice(2);
 if (src === undefined || outDir === undefined) {
@@ -24,7 +32,38 @@ if (src === undefined || outDir === undefined) {
   process.exit(2);
 }
 
-const all = JSON.parse(fs.readFileSync(src, "utf8")).traces;
+const buf = fs.readFileSync(src);
+const TRACE_HEAD = Buffer.from('{"seed":"');
+const TRACE_SEP = Buffer.from(',{"seed":"');
+// 每条 trace 的头部字段（排序要用的那几个）都排在 `"initial"` 之前，所以只解析这一小段，
+// 不为了排序把 630MB 全部解析成对象。
+const HEAD_END = Buffer.from(',"initial":');
+
+/** 顶层 trace 的字节区间 [start, end)，按 harness 的输出顺序。 */
+const spans = [];
+{
+  let start = buf.indexOf(TRACE_HEAD);
+  if (start === -1) {
+    console.error("✗ 输入里一条 trace 都没有——harness 输出格式变了？");
+    process.exit(1);
+  }
+  while (start !== -1) {
+    const next = buf.indexOf(TRACE_SEP, start + 1);
+    // 最后一条的收尾是 `]}` + 换行；前面的都以 `,` 与下一条相接。
+    const end = next === -1 ? buf.lastIndexOf(0x5d /* ] */) : next;
+    spans.push([start, end]);
+    start = next === -1 ? -1 : next + 1;
+  }
+}
+
+const head = (i) => {
+  const [start, end] = spans[i];
+  const cut = buf.indexOf(HEAD_END, start);
+  if (cut === -1 || cut >= end) {
+    throw new Error(`第 ${String(i)} 条 trace 里找不到 "initial" 分界`);
+  }
+  return JSON.parse(buf.toString("utf8", start, cut) + "}");
+};
 
 // variant 的指纹：**整副牌组的内容**（牌名序列 + 每张的升级位）。只用来把同一个 variant
 // 的行认出来，不参与先后比较——先后由首次出现顺序决定。
@@ -38,12 +77,15 @@ const all = JSON.parse(fs.readFileSync(src, "utf8")).traces;
 const signature = (t) =>
   `${t.deck.join(",")}|${t.deckUpgraded === undefined ? "" : t.deckUpgraded.join("")}`;
 const variantRank = new Map();
-for (const t of all) {
+const by = {};
+for (let i = 0; i < spans.length; i += 1) {
+  const t = head(i);
   const s = signature(t);
   if (!variantRank.has(s)) variantRank.set(s, variantRank.size);
+  (by[t.encounter] ||= []).push({ i, rank: variantRank.get(s), seed: t.seed, floor: t.floor });
 }
 
-const key = ({ t, i }) => [variantRank.get(signature(t)), t.seed, t.floor, i];
+const key = ({ rank, seed, floor, i }) => [rank, seed, floor, i];
 const cmp = (a, b) => {
   const ka = key(a);
   const kb = key(b);
@@ -53,16 +95,20 @@ const cmp = (a, b) => {
   return 0;
 };
 
-const by = {};
-all.forEach((t, i) => (by[t.encounter] ||= []).push({ t, i }));
-
 fs.mkdirSync(outDir, { recursive: true });
 for (const [enc, list] of Object.entries(by)) {
   list.sort(cmp);
-  fs.writeFileSync(
-    path.join(outDir, `${enc.toLowerCase()}.jsonl`),
-    list.map(({ t }) => JSON.stringify(t)).join("\n") + "\n",
-  );
+  const fd = fs.openSync(path.join(outDir, `${enc.toLowerCase()}.jsonl`), "w");
+  try {
+    for (const { i } of list) {
+      const [start, end] = spans[i];
+      // 逐条 parse → stringify（而不是直接写原始切片）：输出因此与「整份 parse 之后
+      // 逐条 stringify」逐字节等价，换成流式读取不会悄悄改变已提交数据的字节。
+      fs.writeSync(fd, JSON.stringify(JSON.parse(buf.toString("utf8", start, end))) + "\n");
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
 }
 console.log(
   `拆出 ${String(Object.keys(by).length)} 个编队: ` +

@@ -58,6 +58,7 @@ export type PlayerInputState = "player_normal" | "card_select";
 /** 选牌任务（对齐 CardSelectTask 的已转写子集，命名保持一致便于回查）。 */
 export type CardSelectTask =
   | "armaments"
+  | "discovery"
   | "exhaust_one"
   | "exhaust_many"
   | "exhume"
@@ -69,24 +70,38 @@ export type CardSelectTask =
 /**
  * 选牌屏状态（对齐 CardSelectInfo 的已用字段）。
  *
- * ⚠ 只存 task 与 pickCount。参考的 `canPickZero` / `canPickAnyNumber` / `data0` 在本批
- * 登记的这些 task 上都无人读取：
- *   * `openSimpleCardSelectScreen` 把前两者恒置 false；
- *   * `ExhaustMany` / `ExhumeAction` / `WarcryAction` / `DrawToHandAction` **不走**它，
+ * ⚠ 只存 task / pickCount / cards / data0。参考的 `canPickZero` / `canPickAnyNumber`
+ * 在已登记的这些 task 上都无人读取：
+ *   * `openSimpleCardSelectScreen` / `openDiscoveryScreen` 把两者恒置 false；
+ *   * `ExhaustMany` / `ExhumeAction` / `WarcryAction` / `DrawToHandAction` **不走**它们，
  *     直接改 `cardSelectTask` + `inputState`，于是那两个 bool 是**上一次开屏留下的残值**——
- *     正因为没人读才无害。`data0` 只有发现 / 双持用（两张都未登记）。
+ *     正因为没人读才无害。
  * pickCount 同理：单选类 task 的校验（`isValidSingleCardSelectAction`）不读它，我们统一记 1。
+ * `cards` / `data0` 只有 discovery 用（第八批新增；参考里另有双持 / 液态记忆 / 法典也用，
+ * 三张都未登记）。
  */
 export type CardSelectInfo = {
   task: CardSelectTask;
   /** 多选上限（只对 exhaust_many 有意义；单选类恒 1）。 */
   pickCount: number;
+  /**
+   * 候选牌的**定义 id**（对齐 `cardSelectInfo.cards` / `discovery_Cards()`）。
+   * 只有 discovery 有：它选的不是某个牌堆里的牌，而是当场随机生成的 3 张候选。
+   */
+  cards?: string[];
+  /** 对齐 `cardSelectInfo.data0` / `discovery_CopyCount()`：选定后造几份。 */
+  data0?: number;
 };
 
-/** 某个选牌任务从哪个牌堆里选（供 UI / 策略定位候选，参考里散在各 case 的隐含约定）。 */
+/**
+ * 某个选牌任务从哪个牌堆里选（供 UI / 策略定位候选，参考里散在各 case 的隐含约定）。
+ *
+ * ⚠ `"generated"` 不是牌堆：发现的 3 张候选是当场从战斗内卡池随机生成的，
+ * 存在 `cardSelect.cards` 里，下标 0..2 与任何牌堆都无关。
+ */
 export function cardSelectSource(
   task: CardSelectTask,
-): "hand" | "draw_pile" | "discard_pile" | "exhaust_pile" {
+): "hand" | "draw_pile" | "discard_pile" | "exhaust_pile" | "generated" {
   switch (task) {
     case "armaments":
     case "exhaust_one":
@@ -100,6 +115,8 @@ export function cardSelectSource(
     case "secret_technique":
     case "secret_weapon":
       return "draw_pile";
+    case "discovery":
+      return "generated";
   }
 }
 
@@ -1010,9 +1027,21 @@ function triggerAndMoveToExhaustPile(bc: BattleContext, card: CombatCard): void 
 // ============================================================================
 
 function makeCardInstance(bc: BattleContext, defId: string, upgraded = false): CombatCard {
+  return { ...cardInstanceProto(defId, upgraded), uid: bc.nextUid++ };
+}
+
+/**
+ * 一份**尚未分配 uid** 的牌实例（对齐 `CardInstance(CardId, bool)` 本身：它只算费用，
+ * `uniqueId` 保持默认 -1，要等 `createTempCardIn*` / `MakeTempCardInHand` 才递增计数器）。
+ *
+ * 分成两步是因为参考里这两个时点**真的会分开**：地狱之刃 / 多面手先在自己的动作里造实例，
+ * 再 `addToTop(MakeTempCardInHand(...))`，uid 到那条动作执行时才取。多面手升级后推两条，
+ * 后推的先执行，于是**第二张抽到的牌 uid 反而更小**——把 uid 提前到造实例时就反了。
+ */
+function cardInstanceProto(defId: string, upgraded = false): CombatCard {
   const cost = initialCardCost(defId, upgraded);
   return {
-    uid: bc.nextUid++,
+    uid: -1,
     defId,
     upgraded,
     // 对齐 `CardInstance::CardInstance(CardId, bool)`：cost = costForTurn = getEnergyCost(...)。
@@ -1043,6 +1072,21 @@ function makeTempCardInHand(
 ): void {
   for (let i = 0; i < amount; i += 1) {
     moveToHandHelper(bc, makeCardInstance(bc, defId, upgraded));
+  }
+}
+
+/**
+ * 对齐 `Actions::MakeTempCardInHand(CardInstance card, int amount)`（Actions.cpp:227）：
+ * 按**已经准备好的模板**逐张复制进手牌，每份各取一个新 uid。
+ *
+ * ⚠ 与上面按 defId 造牌那版的区别只在「模板已被调用方改过」：地狱之刃先
+ * `c.setCostForTurn(0)` 再 addToTop 这条动作，那个 0 必须跟着复制过去。
+ * 模板自身的 uid 是**未分配**（参考的 `CardInstance::uniqueId` 默认 -1），
+ * 真正的 uid 在这里才取，与参考 `c.uniqueId = bc.cards.nextUniqueCardId++` 的时点一致。
+ */
+function makeTempCardInstanceInHand(bc: BattleContext, proto: CombatCard, amount = 1): void {
+  for (let i = 0; i < amount; i += 1) {
+    moveToHandHelper(bc, { ...proto, uid: bc.nextUid++ });
   }
 }
 
@@ -1085,6 +1129,286 @@ function moveToHandHelper(bc: BattleContext, card: CombatCard): void {
     bc.discardPile.push(card);
   }
 }
+
+// ============================================================================
+// 战斗内卡池（对齐 include/constants/CardPools.h 的三个 namespace）
+//
+// ⚠ 这三个池与 **run 级奖励卡池**（`cards.ts` 的 `cardPoolOf`）不是一回事，别混用：
+// 奖励池按 color + rarity 派生、且是 run 级 `cardRng` 的事；这三个是**战斗内**凭空造牌
+// 用的固定数组，顺序写死在头文件里、消耗的是 `cardRandomRng`。取错池子或取错流会让
+// 同种子的结果整个错位。三个池逐字抄自 CardPools.h：
+//
+//   * CombatTypeCardPool（`CardPools.h:150`）—— 按牌型取，铁甲 攻击 28 / 技能 28 / 能力 14。
+//     蜕变（技能）与变形（攻击）走它。
+//   * CombatCardPool（`:177`）—— 不分牌型的 70 张铁甲牌。**发现**走它。
+//   * CombatColorlessCardPool（`:189`）—— 34 张无色牌。多面手走它。
+//
+// ⚠ `getPoolSize(cc, ...)` / `getCardAt(cc, ...)` 的 `cc` 参数**完全没被使用**——三个池
+// 都只有铁甲那一份数据。我们的迁移范围本来就是铁甲，所以照抄成无参数的常量；
+// 铺到别的角色时这里要跟着参考一起改（参考自己也还没有别的角色的池）。
+// ============================================================================
+
+/** 对齐 `CombatTypeCardPool::cardBlob`（攻击，28 张）。 */
+const COMBAT_ATTACK_POOL: readonly string[] = [
+  "sword_boomerang",
+  "perfected_strike",
+  "heavy_blade",
+  "wild_strike",
+  "headbutt",
+  "clothesline",
+  "twin_strike",
+  "pommel_strike",
+  "thunderclap",
+  "clash",
+  "body_slam",
+  "iron_wave",
+  "cleave",
+  "anger",
+  "uppercut",
+  "dropkick",
+  "carnage",
+  "searing_blow",
+  "whirlwind",
+  "sever_soul",
+  "rampage",
+  "pummel",
+  "blood_for_blood",
+  "hemokinesis",
+  "reckless_charge",
+  "bludgeon",
+  "fiend_fire",
+  "immolate",
+];
+
+/** 对齐 `CombatTypeCardPool::skills`（技能，28 张）。 */
+const COMBAT_SKILL_POOL: readonly string[] = [
+  "havoc",
+  "armaments",
+  "shrug_it_off",
+  "true_grit",
+  "flex",
+  "warcry",
+  "ghostly_armor",
+  "bloodletting",
+  "second_wind",
+  "battle_trance",
+  "sentinel",
+  "entrench",
+  "rage",
+  "disarm",
+  "seeing_red",
+  "shockwave",
+  "burning_pact",
+  "flame_barrier",
+  "intimidate",
+  "infernal_blade",
+  "dual_wield",
+  "power_through",
+  "spot_weakness",
+  "double_tap",
+  "limit_break",
+  "impervious",
+  "exhume",
+  "offering",
+];
+
+/** 对齐 `CombatTypeCardPool::powers`（能力，14 张）。当前没有登记的牌从它取，留着备用。 */
+const COMBAT_POWER_POOL: readonly string[] = [
+  "evolve",
+  "fire_breathing",
+  "rupture",
+  "feel_no_pain",
+  "dark_embrace",
+  "combust",
+  "metallicize",
+  "inflame",
+  "demon_form",
+  "corruption",
+  "barricade",
+  "berserk",
+  "juggernaut",
+  "brutality",
+];
+
+/** 对齐 `CombatCardPool::cardBlob`（不分牌型，70 张）。 */
+const COMBAT_CARD_POOL: readonly string[] = [
+  "sword_boomerang",
+  "perfected_strike",
+  "heavy_blade",
+  "wild_strike",
+  "headbutt",
+  "havoc",
+  "armaments",
+  "clothesline",
+  "twin_strike",
+  "pommel_strike",
+  "thunderclap",
+  "clash",
+  "shrug_it_off",
+  "true_grit",
+  "body_slam",
+  "iron_wave",
+  "flex",
+  "warcry",
+  "cleave",
+  "anger",
+  "evolve",
+  "uppercut",
+  "ghostly_armor",
+  "fire_breathing",
+  "dropkick",
+  "carnage",
+  "bloodletting",
+  "rupture",
+  "second_wind",
+  "searing_blow",
+  "battle_trance",
+  "sentinel",
+  "entrench",
+  "rage",
+  "feel_no_pain",
+  "disarm",
+  "seeing_red",
+  "dark_embrace",
+  "combust",
+  "whirlwind",
+  "sever_soul",
+  "rampage",
+  "shockwave",
+  "metallicize",
+  "burning_pact",
+  "pummel",
+  "flame_barrier",
+  "blood_for_blood",
+  "intimidate",
+  "hemokinesis",
+  "reckless_charge",
+  "infernal_blade",
+  "dual_wield",
+  "power_through",
+  "inflame",
+  "spot_weakness",
+  "double_tap",
+  "demon_form",
+  "bludgeon",
+  "limit_break",
+  "corruption",
+  "barricade",
+  "fiend_fire",
+  "berserk",
+  "impervious",
+  "juggernaut",
+  "brutality",
+  "exhume",
+  "offering",
+  "immolate",
+];
+
+/** 对齐 `CombatColorlessCardPool::cards`（34 张）。 */
+const COMBAT_COLORLESS_POOL: readonly string[] = [
+  "madness",
+  "thinking_ahead",
+  "mind_blast",
+  "metamorphosis",
+  "jack_of_all_trades",
+  "swift_strike",
+  "good_instincts",
+  "master_of_strategy",
+  "magnetism",
+  "finesse",
+  "discovery",
+  "chrysalis",
+  "transmutation",
+  "panacea",
+  "purity",
+  "enlightenment",
+  "forethought",
+  "flash_of_steel",
+  "hand_of_greed",
+  "mayhem",
+  "apotheosis",
+  "secret_weapon",
+  "panache",
+  "violence",
+  "deep_breath",
+  "secret_technique",
+  "blind",
+  "the_bomb",
+  "impatience",
+  "dramatic_entrance",
+  "trip",
+  "panic_button",
+  "sadistic_nature",
+  "dark_shackles",
+];
+
+/**
+ * 按牌型随机取一张战斗内卡牌（对齐 `sts::getTrulyRandomCardInCombat(rng, cc, type)`，
+ * Game.cpp:221）。★ **消耗一次 cardRandomRng**，bound 是 `池大小 - 1`。
+ *
+ * ⚠ 参考的 `CombatTypeCardPool::getCardAt` 的 else 分支（type 既不是攻击也不是技能也不是
+ * 能力）返回的是 **powers**，不是报错——照抄，虽然当前没有调用方走到它。
+ */
+function getTrulyRandomCardInCombat(bc: BattleContext, type: "attack" | "skill" | "power"): string {
+  const pool =
+    type === "attack"
+      ? COMBAT_ATTACK_POOL
+      : type === "skill"
+        ? COMBAT_SKILL_POOL
+        : COMBAT_POWER_POOL;
+  const idx = bc.rng.cardRandomRng.random(pool.length - 1); // ★ 消耗一次 cardRandomRng
+  return pool[idx];
+}
+
+/**
+ * 不分牌型随机取一张战斗内卡牌（对齐 `sts::getTrulyRandomCardInCombat(rng, cc)`，
+ * Game.cpp:215）。★ **消耗一次 cardRandomRng**。
+ */
+function getTrulyRandomCardInCombatAnyType(bc: BattleContext): string {
+  const idx = bc.rng.cardRandomRng.random(COMBAT_CARD_POOL.length - 1); // ★ 消耗一次 cardRandomRng
+  return COMBAT_CARD_POOL[idx];
+}
+
+/**
+ * 随机取一张无色牌（对齐 `sts::getTrulyRandomColorlessCardInCombat`，Game.cpp:209）。
+ * ★ **消耗一次 cardRandomRng**。
+ */
+function getTrulyRandomColorlessCardInCombat(bc: BattleContext): string {
+  const idx = bc.rng.cardRandomRng.random(COMBAT_COLORLESS_POOL.length - 1); // ★ 消耗一次 cardRandomRng
+  return COMBAT_COLORLESS_POOL[idx];
+}
+
+/**
+ * 生成「发现」屏的 3 张候选（对齐 `sts::generateDiscoveryCards`，Game.cpp:228）。
+ *
+ * ⚠ **拒绝采样，RNG 消耗次数不定**：每转一圈掷一次，抽到与已选重复的就丢掉重来。
+ * 三张互不相同这件事是循环保证的，不是一次抽三张。
+ * ⚠ 参考用 `CardType` 当哑参数：`INVALID` = 不分牌型（走 70 张的 CombatCardPool）、
+ * `STATUS` = 无色（走 34 张的 CombatColorlessCardPool，注释自注 "status card type is
+ * being used to indicate colorless"），其余就是按牌型。发现这张牌传的是 **INVALID**。
+ */
+function generateDiscoveryCards(bc: BattleContext, type: DiscoveryPoolKind): string[] {
+  const cards: string[] = [];
+  while (cards.length < 3) {
+    const id =
+      type === "any"
+        ? getTrulyRandomCardInCombatAnyType(bc)
+        : type === "colorless"
+          ? getTrulyRandomColorlessCardInCombat(bc)
+          : getTrulyRandomCardInCombat(bc, type);
+    if (!cards.includes(id)) {
+      cards.push(id);
+    }
+  }
+  return cards;
+}
+
+/**
+ * 发现屏的取样池（对齐参考拿 `CardType` 当哑参数的那套：INVALID → any、STATUS → colorless）。
+ * 现在只有「发现」这张牌用 `any`；攻击 / 技能 / 能力三支等药水（力量药水那三个「发现」类）
+ * 登记时才会用到。
+ */
+type DiscoveryPoolKind = "any" | "colorless" | "attack" | "skill" | "power";
 
 /**
  * 这张牌能不能升级（对齐 CardInstance::canUpgrade，CardInstance.cpp:55）。
@@ -2023,6 +2347,123 @@ function drawToHandAction(bc: BattleContext, task: CardSelectTask, cardType: str
   }
   bc.cardSelect = { task, pickCount: 1 };
   bc.inputState = "card_select";
+}
+
+/**
+ * 对齐 `Actions::DiscoveryAction`（Actions.cpp:564）：先抽 3 张候选，再开屏。
+ *
+ * ⚠ **无条件开屏**，没有「候选恰好 1 张就不开屏」那条捷径——候选恒为 3 张，
+ * 参考的 `isValidSingleCardSelectAction` 对 DISCOVERY 也是写死的 `0 <= idx < 3`。
+ * ⚠ 参考在这里还置了 `bc.haveUsedDiscoveryAction = true`（打出发现那一处另置
+ * `undefinedBehaviorEvoked = true`）。两个字段全项目**只写不读**，是参考给自己的搜索层
+ * 打的标记（「这张牌会让同一局出现不一致结果」），不影响任何可观察行为，故不转写。
+ */
+function discoveryAction(bc: BattleContext, type: DiscoveryPoolKind, amount: number): void {
+  const cards = generateDiscoveryCards(bc, type); // ★ 消耗若干次 cardRandomRng（拒绝采样）
+  // 对齐 BattleContext::openDiscoveryScreen（BattleContext.cpp:2894）。
+  bc.inputState = "card_select";
+  bc.cardSelect = { task: "discovery", pickCount: 1, cards, data0: amount };
+}
+
+/**
+ * 对齐 `BattleContext::chooseDiscoveryCard`（BattleContext.cpp:3011）：把选中的那张牌
+ * 造 `amount` 份进手牌，**本回合 0 费**。
+ *
+ * ⚠ 四处照抄：
+ *  ① 用的是 `createTempCardInHand` / `createTempCardInDiscard`，**不是** `moveToHandHelper`
+ *     ——手牌满的判断写在这里，且满了那份**不**享受腐化那条钩子（moveToHandHelper 的
+ *     腐化分支在这条路径上根本不存在）。
+ *  ② 0 费走 `setCostForTurn`，即**本回合**免费，不动 `cost`（与蜕变/变形的「本场战斗」不同）。
+ *     X 费牌（嬗变，cost = -1）会被 `setCostForTurn` 的 `costForTurn >= 0` 门挡掉、维持 -1。
+ *  ③ 腐化那句 `c.setCostForTurn(-9)` 在**同一个模板**上反复生效（amount > 1 时），
+ *     但它与上一行的 `setCostForTurn(0)` 落地都是 0，**语义上无差别**——见报告的盲区一节。
+ *  ④ 候选数组与份数都来自 `cardSelectInfo`（`cards` / `data0`）。我们的 `selectCard` 是
+ *     **先关屏后派发**，所以这两个值由调用方读出来传进来。
+ */
+function chooseDiscoveryCard(bc: BattleContext, defId: string, amount: number): void {
+  const proto = cardInstanceProto(defId, false);
+  setCostForTurn(proto, 0);
+  for (let i = 0; i < amount; i += 1) {
+    if (bc.hand.length + 1 <= MAX_HAND_SIZE) {
+      if (getPower(bc.player.powers, "corruption") > 0 && getCardDef(defId).type === "skill") {
+        setCostForTurn(proto, -9);
+      }
+      bc.hand.push({ ...proto, uid: bc.nextUid++ });
+    } else {
+      bc.discardPile.push({ ...proto, uid: bc.nextUid++ });
+    }
+  }
+}
+
+// ============================================================================
+// 战斗内随机取牌（对齐 Actions::PutRandomCardsInDrawPile / InfernalBladeAction /
+// JackOfAllTradesAction）
+//
+// 三条都从上面那三个战斗内卡池里取牌定义，故都消耗 `cardRandomRng`。
+// ============================================================================
+
+/**
+ * 对齐 `Actions::PutRandomCardsInDrawPile`（Actions.cpp:546，蜕变 / 变形共用）：
+ * 把 `count` 张随机的该牌型卡洗入抽牌堆，**本场战斗 0 费**。
+ *
+ * ⚠ 四处照抄：
+ *  ① **两个循环是分开的**——先把 `count` 张牌的 id 全抽完，再逐张算插入位置。所以
+ *     cardRandomRng 的消耗形状是「count 次取牌 + 至多 count 次定位」，不是交替。
+ *  ② 0 费改的是 **`cost` 和 `costForTurn` 两个字段**（直接赋值，不走 `setCostForTurn`，
+ *     所以 X 费的 -1 哨兵也会被抹成 0——不过技能/攻击池里没有 X 费牌，观察不到）。
+ *     改 `cost` 正是「本场战斗」与「本回合」的分界：回合末 `resetAttributesAtEndOfTurn`
+ *     把 costForTurn 拉回 cost，而 cost 已经是 0。
+ *  ③ 插入位置与 `MakeTempCardInDrawPile` 同款：`random(抽牌堆张数 - 1)`，空堆取 0 且**不掷**。
+ *  ④ 造出来的牌恒为**未升级**（`CardInstance card(ids[i], false)`），全升级牌组也一样。
+ */
+function putRandomCardsInDrawPile(
+  bc: BattleContext,
+  type: "attack" | "skill" | "power",
+  count: number,
+): void {
+  const ids: string[] = [];
+  for (let i = 0; i < count; i += 1) {
+    ids.push(getTrulyRandomCardInCombat(bc, type)); // ★ 消耗一次 cardRandomRng
+  }
+  for (let i = 0; i < count; i += 1) {
+    const card = makeCardInstance(bc, ids[i], false);
+    card.cost = 0;
+    card.costForTurn = 0;
+    const idx = bc.drawPile.length === 0 ? 0 : bc.rng.cardRandomRng.random(bc.drawPile.length - 1); // ★ 消耗一次 cardRandomRng
+    bc.drawPile.splice(idx, 0, card);
+  }
+}
+
+/**
+ * 对齐 `Actions::InfernalBladeAction`（Actions.cpp:571）：随机一张攻击牌进手牌，
+ * **本回合 0 费**。
+ *
+ * ⚠ 两处照抄：① 进手是 `addToTop(MakeTempCardInHand(c))`——**不是**在这条动作里直接搬，
+ * 于是它插在队首、排在本卡后续动作（OnAfterCardUsed）之前；② 0 费走 `setCostForTurn`，
+ * 只管本回合，`cost` 保持原值。这正是让 `cost` 与 `costForTurn` 分岔的那一处。
+ */
+function infernalBladeAction(bc: BattleContext): void {
+  const defId = getTrulyRandomCardInCombat(bc, "attack"); // ★ 消耗一次 cardRandomRng
+  const proto = cardInstanceProto(defId, false);
+  setCostForTurn(proto, 0);
+  addToTop(bc, (c) => makeTempCardInstanceInHand(c, proto, 1));
+}
+
+/**
+ * 对齐 `Actions::JackOfAllTradesAction`（Actions.cpp:580）：1(升级 2) 张随机无色牌进手牌。
+ *
+ * ⚠ 三处照抄：① **不改费用**——多面手给的牌是原价，与地狱之刃 / 发现不同；
+ * ② 两张都是 `addToTop`，于是**后抽到的那张先进手牌**（也先拿到 uid）；
+ * ③ 走 `MakeTempCardInHand(CardId)` 那个重载，即 `CardInstance(cid, upgraded=false)`，
+ * 造出来的牌恒未升级。
+ */
+function jackOfAllTradesAction(bc: BattleContext, upgraded: boolean): void {
+  const c1 = getTrulyRandomColorlessCardInCombat(bc); // ★ 消耗一次 cardRandomRng
+  addToTop(bc, (c) => makeTempCardInHand(c, c1, 1));
+  if (upgraded) {
+    const c2 = getTrulyRandomColorlessCardInCombat(bc); // ★ 消耗一次 cardRandomRng
+    addToTop(bc, (c) => makeTempCardInHand(c, c2, 1));
+  }
 }
 
 /** 疯狂那个重抽循环的熔断（参考是裸 `while(true)`，见 madnessAction）。 */
@@ -3033,6 +3474,58 @@ const CARD_RULES: Record<string, CardRule> = {
   apparition: (bc) => {
     addToBot(bc, (c) => addPower(c.player.powers, "intangible", 1));
   },
+
+  // ==========================================================================
+  // 铺量第八批 · 随机卡池取牌
+  //
+  // 五张的共同点是「牌的**定义**是当场从战斗内卡池随机抽出来的」，所以都消耗
+  // `cardRandomRng`；池子与取样函数见文件上方「战斗内卡池」一节。
+  //
+  // ⚠ 「本场战斗 0 费」与「本回合 0 费」是两件事，落在两个不同的实例字段上：
+  //   * 蜕变 / 变形 —— 直接写 `cost` 与 `costForTurn`（回合末复位读的是 `cost`，拉不回来）
+  //   * 地狱之刃 / 发现 —— 只走 `setCostForTurn`，回合末 `resetAttributesAtEndOfTurn` 会复位
+  //   * 多面手 —— **不改费用**，给的牌是原价
+  // ==========================================================================
+
+  // 蜕变：把 3(升级 5) 张随机技能牌洗入抽牌堆，本场战斗费用为 0。
+  // 对齐 BattleContext.cpp:1277 CHRYSALIS → Actions::PutRandomCardsInDrawPile(SKILL, …)。
+  chrysalis: (bc, _item, up) => {
+    addToBot(bc, (c) => putRandomCardsInDrawPile(c, "skill", up ? 5 : 3));
+  },
+
+  // 变形：把 3(升级 5) 张随机攻击牌洗入抽牌堆，本场战斗费用为 0。
+  // 对齐 BattleContext.cpp:1404 METAMORPHOSIS → Actions::PutRandomCardsInDrawPile(ATTACK, …)。
+  metamorphosis: (bc, _item, up) => {
+    addToBot(bc, (c) => putRandomCardsInDrawPile(c, "attack", up ? 5 : 3));
+  },
+
+  // 发现：从 3 张随机牌里选 1 张进手牌，本回合费用 0。升级后不再消耗。
+  // 对齐 BattleContext.cpp:1301 DISCOVERY → Actions::DiscoveryAction(INVALID, 1)。
+  //
+  // ⚠ 候选来自**铁甲的 70 张 CombatCardPool**（不分牌型），不是无色池——`CardType::INVALID`
+  // 在 `generateDiscoveryCards` 里正是「不分牌型、走本职业池」那一支。走无色池的是多面手
+  // （以及药水那条 `CardType::STATUS` 的哑参数用法）。
+  // ⚠ 升级只改「份数吗」——不，只改**消耗与否**（`doesCardExhaust` 里发现是 `!upgraded`），
+  // 份数恒为 1；两个分支的效果代码完全一样。
+  discovery: (bc) => {
+    addToBot(bc, (c) => discoveryAction(c, "any", 1));
+  },
+
+  // 多面手：把 1(升级 2) 张随机无色牌加入手牌。
+  // 对齐 BattleContext.cpp:1383 JACK_OF_ALL_TRADES → Actions::JackOfAllTradesAction(up)。
+  // ⚠ 参考在这一行自注 "the game decides the random cards here and adds maketempcardtobot"
+  //   ——真实游戏在**打牌时**就定下了是哪几张牌并入队 MakeTempCard；参考把取牌推迟到动作
+  //   执行时。两者之间没有别的 cardRandomRng 消耗点，故 counter 一致，照参考写。
+  jack_of_all_trades: (bc, _item, up) => {
+    addToBot(bc, (c) => jackOfAllTradesAction(c, up));
+  },
+
+  // 地狱之刃：把 1 张随机攻击牌加入手牌，本回合费用 0。消耗。
+  // 对齐 BattleContext.cpp:1375 INFERNAL_BLADE → Actions::InfernalBladeAction()。
+  // ⚠ 升级只降费（1 → 0），效果两分支完全一样。
+  infernal_blade: (bc) => {
+    addToBot(bc, (c) => infernalBladeAction(c));
+  },
 };
 
 /**
@@ -3604,6 +4097,10 @@ export function cardSelectOptions(v: CardSelectView): CardSelectOptions | null {
   switch (info.task) {
     case "armaments":
       return single(idxsWhere(v.hand, canUpgradeCard));
+    // 对齐 `isValidSingleCardSelectAction` 的 DISCOVERY 分支：**写死** `0 <= idx < 3`，
+    // 与任何牌堆无关（下标指的是 cardSelect.cards 这三张候选）。
+    case "discovery":
+      return single([0, 1, 2]);
     case "exhaust_one":
     case "warcry":
       return single(idxsWhere(v.hand, () => true));
@@ -3638,14 +4135,24 @@ export function selectCard(bc: BattleContext, idx: number): SelectCardResult {
     return { ok: false, reason: `下标 ${idx} 不是「${info.task}」的合法候选` };
   }
 
-  // 关屏放在派发之前：本批登记的 choose* 没有一个再读 cardSelectInfo（参考里读它的只有
-  // 发现 / 双持 / 液态记忆，那三个都未登记），所以先关后派发与参考等价，而且不会让
-  // choose* 里新开的第二块屏被误关。
+  // 关屏放在派发之前，这样 choose* 里新开的第二块屏不会被误关。
+  // ⚠ 参考的 `chooseDiscoveryCard` 会**读** `cardSelectInfo`（候选数组与份数），所以那两个
+  // 值在关屏之前先从 info 里取出来传进去——先关后派发只对「不再读 cardSelectInfo」的
+  // task 才与参考等价。（双持 / 液态记忆同样读它，两张都未登记。）
+  const discoveryCards = info.cards;
+  const discoveryAmount = info.data0;
   bc.cardSelect = null;
   switch (info.task) {
     case "armaments":
       chooseArmamentsCard(bc, idx);
       break;
+    case "discovery": {
+      if (discoveryCards === undefined || discoveryAmount === undefined) {
+        throw new Error("selectCard: discovery 屏缺少候选牌或份数（cardSelect 被写坏了）");
+      }
+      chooseDiscoveryCard(bc, discoveryCards[idx], discoveryAmount);
+      break;
+    }
     case "exhaust_one":
       chooseExhaustOneCard(bc, idx);
       break;
@@ -4349,6 +4856,14 @@ export type StsCombatState = {
 };
 
 const copyPowers = (powers: PowerInstance[]): PowerInstance[] => powers.map((p) => ({ ...p }));
+/**
+ * 深拷贝选牌屏（`cards` 是数组，浅拷贝会让快照与实例共享同一份）。
+ * 存档必须与实例彻底脱钩，否则「取档之后继续打」会倒过来改掉已经导出的快照。
+ */
+const copyCardSelect = (info: CardSelectInfo | null): CardSelectInfo | null =>
+  info === null
+    ? null
+    : { ...info, ...(info.cards === undefined ? {} : { cards: [...info.cards] }) };
 const copyCards = (cards: CombatCard[]): CombatCard[] => cards.map((c) => ({ ...c }));
 
 /**
@@ -4383,7 +4898,7 @@ export function exportState(bc: BattleContext): StsCombatState {
     potionCapacity: bc.potionCapacity,
     outcome: bc.outcome,
     inputState: bc.inputState,
-    cardSelect: bc.cardSelect === null ? null : { ...bc.cardSelect },
+    cardSelect: copyCardSelect(bc.cardSelect),
     pendingActions,
     turn: bc.turn,
     player: { ...bc.player, powers: copyPowers(bc.player.powers) },
@@ -4436,7 +4951,7 @@ export function importState(s: StsCombatState): BattleContext {
     outcome: s.outcome,
     // 存档点必然是玩家可操作态（见上方注释）：player_normal 或 card_select。
     inputState: s.inputState,
-    cardSelect: s.cardSelect === null ? null : { ...s.cardSelect },
+    cardSelect: copyCardSelect(s.cardSelect),
     turn: s.turn,
     actionQueue,
     cardQueue: new CardQueue(),
