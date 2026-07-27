@@ -187,6 +187,13 @@ const CARD: Record<string, string> = {
   RUPTURE: "rupture",
   SENTINEL: "sentinel",
   PANIC_BUTTON: "panic_button",
+  // —— 第七批 6 张（卡牌实例级状态）——
+  RAMPAGE: "rampage",
+  SEARING_BLOW: "searing_blow",
+  BLOOD_FOR_BLOOD: "blood_for_blood",
+  MADNESS: "madness",
+  CORRUPTION: "corruption",
+  APPARITION: "apparition",
   // 第五批凭空造出来的状态牌。三张都**不在牌组里**，只由卡效果生成，所以不进 CARD_RULES
   // （打不出来，playCard 有一道 canUse 门拦着），但会出现在牌堆快照里，必须能映射。
   BURN: "burn",
@@ -290,6 +297,11 @@ const POWER: Record<string, string> = {
   // 应急按钮的「无法从牌获得格挡」。参考的枚举名是 NO_BLOCK，我们的 PowerId 叫
   // no_card_block（types.ts 早就这么定了，名字更准：拦的只有牌产生的格挡）。
   NO_BLOCK: "no_card_block",
+  // —— 第七批 ——
+  // 虚无缥缈：真的有层数（走 statusMap）。
+  INTANGIBLE: "intangible",
+  // 腐化：与壁垒同族的纯 bool 状态，harness 按 1 输出，我们也存 1 层。
+  CORRUPTION: "corruption",
 };
 
 const mapPotion = (p: string): string | null => (p in POTION ? POTION[p]! : p);

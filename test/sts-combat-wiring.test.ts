@@ -57,8 +57,12 @@ function nextAction(state: GameState): GameAction {
   const targetIndex = combat.monsters.findIndex((m) => m.alive);
   for (let i = combat.hand.length - 1; i >= 0; i -= 1) {
     const card = combat.hand[i];
-    const cost = costOf(getCardDef(card.defId), card.upgraded) ?? 0;
-    if (cost <= combat.player.energy) {
+    // 费用读**实例级**的 costForTurn（腐化 / 疯狂 / 血债血偿会改它）；打不出的牌
+    // （数据表 cost 为 null）直接跳过——它们的 costForTurn 是负的哨兵值。
+    if (costOf(getCardDef(card.defId), card.upgraded) === null) {
+      continue;
+    }
+    if (card.costForTurn <= combat.player.energy) {
       return { type: "play_card", handIndex: i, targetIndex };
     }
   }
@@ -198,6 +202,80 @@ describe("接线：GameState 快照可 JSON 往返", () => {
     expect(exportState(importState(state.combat!))).toEqual(state.combat);
   });
 
+  it("卡牌实例级状态跟着存档往返（暴走的成长、灼热之刃的升级次数、腐化的降费）", () => {
+    // 第七批新增的三个逐实例字段是 `GameState.combat` 的一部分，漏掉任何一个，
+    // 读回来的档就会把暴走的成长清零、把腐化压过的费用弹回去——都是静默的错。
+    const state = runWithDeck([
+      "rampage",
+      "rampage",
+      "corruption",
+      "searing_blow",
+      "shrug_it_off",
+      "shrug_it_off",
+      "shrug_it_off",
+      "shrug_it_off",
+      "shrug_it_off",
+      "shrug_it_off",
+    ]);
+    startCombat(state, "cultist");
+
+    // 手里的暴走全打掉：每打一次这一实例 +5，两张互不影响。
+    let played = 0;
+    for (let i = state.combat!.hand.length - 1; i >= 0; i -= 1) {
+      if (state.combat!.hand[i].defId === "rampage") {
+        expect(applyAction(state, { type: "play_card", handIndex: i, targetIndex: 0 })).toEqual({
+          ok: true,
+        });
+        played += 1;
+      }
+    }
+    const grown = [...state.combat!.discardPile, ...state.combat!.hand].filter(
+      (c) => c.defId === "rampage" && c.specialData > 0,
+    );
+    expect(grown).toHaveLength(played);
+    for (const card of grown) {
+      expect(card.specialData).toBe(5);
+    }
+
+    // 过一遍 JSON：三个字段都是纯数据，往返必须恒等。
+    const roundTripped = JSON.parse(JSON.stringify(state)) as GameState;
+    expect(roundTripped).toEqual(state);
+    expect(exportState(importState(state.combat!))).toEqual(state.combat);
+  });
+
+  it("腐化把技能牌压成 0 费这件事也在档里（费用是实例级的）", () => {
+    const state = runWithDeck([
+      "corruption",
+      "shrug_it_off",
+      "shrug_it_off",
+      "shrug_it_off",
+      "shrug_it_off",
+      "shrug_it_off",
+      "shrug_it_off",
+      "shrug_it_off",
+      "shrug_it_off",
+      "shrug_it_off",
+    ]);
+    startCombat(state, "cultist");
+    const idx = state.combat!.hand.findIndex((c) => c.defId === "corruption");
+    expect(idx).toBeGreaterThanOrEqual(0);
+    expect(applyAction(state, { type: "play_card", handIndex: idx })).toEqual({ ok: true });
+    // onBuffCorruption 扫的是四个牌堆，改的是 cost 本身（永久），所以抽牌堆里的也变了。
+    for (const card of [...state.combat!.hand, ...state.combat!.drawPile]) {
+      if (card.defId === "shrug_it_off") {
+        expect(card.cost).toBe(0);
+        expect(card.costForTurn).toBe(0);
+      }
+    }
+    // 之后打出的技能牌一律消耗（腐化的另一半），且不扣能量。
+    const energyBefore = state.combat!.player.energy;
+    const skillIdx = state.combat!.hand.findIndex((c) => c.defId === "shrug_it_off");
+    expect(applyAction(state, { type: "play_card", handIndex: skillIdx })).toEqual({ ok: true });
+    expect(state.combat!.player.energy).toBe(energyBefore);
+    expect(state.combat!.exhaustPile.map((c) => c.defId)).toContain("shrug_it_off");
+    expect(JSON.parse(JSON.stringify(state))).toEqual(state);
+  });
+
   // 一路打到分出胜负：邪教徒那局赢（顺带过一遍奖励结算），
   // 残血进三虱那局输（过一遍阵亡分支）。
   const cases = [
@@ -247,7 +325,15 @@ describe("接线：战斗内选牌屏", () => {
       { kind: "draw_cards", count: 2 },
       {
         kind: "after_use_card",
-        card: { uid: expect.any(Number) as number, defId: "burning_pact", upgraded: false },
+        // 卡牌实例级状态（第七批）也要跟着这条动作一起进档：焚誓 1 费、无 specialData。
+        card: {
+          uid: expect.any(Number) as number,
+          defId: "burning_pact",
+          upgraded: false,
+          cost: 1,
+          costForTurn: 1,
+          specialData: 0,
+        },
         exhaustOnUse: false,
       },
     ]);

@@ -26,9 +26,17 @@ if (src === undefined || outDir === undefined) {
 
 const all = JSON.parse(fs.readFileSync(src, "utf8")).traces;
 
-// variant 的指纹：（牌组张数, 是否升级）。只用来把同一个 variant 的行认出来，
-// 不参与先后比较——先后由首次出现顺序决定。
-const signature = (t) => `${t.deck.length}|${t.deckUpgraded === undefined ? 0 : 1}`;
+// variant 的指纹：**整副牌组的内容**（牌名序列 + 每张的升级位）。只用来把同一个 variant
+// 的行认出来，不参与先后比较——先后由首次出现顺序决定。
+//
+// ⚠ 早先这里只用「张数 + 是否升级」。那是个哑弹：两个不同 variant 只要张数相同就会被认成
+// 同一个，于是它们的行被排到一块、`variant0-rows.mjs` 数出来的段长也跟着错，而**不会有
+// 任何报错**——已提交数据被静默错位是这个项目最不能容忍的失败模式。第七批差点踩到：
+// 新加的聚焦牌组本来正好也是 23 张，与 variant 3/4 撞号。
+// 同一个 variant 内部各行的牌组是逐字节相同的（harness 按固定顺序 obtain，与种子无关），
+// 所以换成内容指纹不会把一个 variant 拆开——换之前在已提交数据上验证过分组完全不变。
+const signature = (t) =>
+  `${t.deck.join(",")}|${t.deckUpgraded === undefined ? "" : t.deckUpgraded.join("")}`;
 const variantRank = new Map();
 for (const t of all) {
   const s = signature(t);

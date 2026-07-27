@@ -14,7 +14,13 @@ import type { RngState } from "../engine/types.js";
 
 /** 策略需要的战斗视图（从 BattleContext 快照里取那么几项）。 */
 type CombatView = {
-  hand: { defId: string; upgraded: boolean }[];
+  /**
+   * ⚠ `costForTurn` 是**逐实例**的本回合费用，必须从快照里读，不能用
+   * `costOf(def, upgraded)` 现算：腐化把技能压成 0、疯狂把某张手牌置 0、血债血偿每失血
+   * 一次 -1、战斗内升级又会改写它。现算只会漏打（sts-combat 的门槛读的就是 costForTurn），
+   * 不会被拒，但那等于策略看不见半个机制。
+   */
+  hand: { defId: string; upgraded: boolean; costForTurn: number }[];
   energy: number;
   /** 贪心的攻击目标：血最低的存活怪。 */
   target: number;
@@ -36,7 +42,11 @@ function combatView(state: GameState): CombatView | null {
     }
   });
   return {
-    hand: combat.hand.map((card) => ({ defId: card.defId, upgraded: card.upgraded })),
+    hand: combat.hand.map((card) => ({
+      defId: card.defId,
+      upgraded: card.upgraded,
+      costForTurn: card.costForTurn,
+    })),
     energy: combat.player.energy,
     target,
     entangled: combat.player.powers.some((p) => p.id === "entangled" && p.amount > 0),
@@ -79,7 +89,8 @@ function legalActions(state: GameState): GameAction[] {
     const actions: GameAction[] = [];
     combat.hand.forEach((instance, handIndex) => {
       const def = getCardDef(instance.defId);
-      const cost = costOf(def, instance.upgraded);
+      // 打不出的牌（状态/诅咒）在数据表里 cost 为 null，实例上是负的哨兵值 —— 两条都要挡。
+      const cost = costOf(def, instance.upgraded) === null ? null : instance.costForTurn;
       const blockedByEntangle = combat.entangled && def.type === "attack";
       if (cost !== null && cost <= combat.energy && !blockedByEntangle) {
         actions.push({
@@ -179,7 +190,10 @@ export class GreedyPolicy implements Policy {
     for (const wantType of order) {
       for (let handIndex = 0; handIndex < combat.hand.length; handIndex += 1) {
         const def = getCardDef(combat.hand[handIndex].defId);
-        const cost = costOf(def, combat.hand[handIndex].upgraded);
+        const cost =
+          costOf(def, combat.hand[handIndex].upgraded) === null
+            ? null
+            : combat.hand[handIndex].costForTurn;
         if (combat.entangled && def.type === "attack") {
           continue; // 缠绕：本回合打不出攻击牌。
         }

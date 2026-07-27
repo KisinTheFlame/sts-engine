@@ -3324,10 +3324,13 @@ const CARD_LIST: CardDef[] = [
     targeted: false,
     exhausts: true,
     ethereal: true,
+    // 升级后**不再**虚无（对齐 Cards.h:466 isCardEthereal 对 APPARITION 的 `!upgraded`）。
+    // 这正是幻影的升级效果本身——它没有别的数值变化。
+    upgradedEthereal: false,
     effects: [{ kind: "apply_power", power: "intangible", amount: 1, on: "self" }],
     upgradedEffects: [{ kind: "apply_power", power: "intangible", amount: 1, on: "self" }],
     description: "虚无。获得 1 层虚无缥缈。消耗。",
-    upgradedDescription: "虚无。获得 1 层虚无缥缈。消耗。",
+    upgradedDescription: "获得 1 层虚无缥缈。消耗。",
   },
   {
     id: "bite",
@@ -4613,9 +4616,10 @@ const CARD_LIST: CardDef[] = [
     upgradedEffects: [{ kind: "gain_block", amount: 8 }],
     // 消耗时回能量 `up ? 3 : 2`（`bc.player.gainEnergy(c.isUpgraded() ? 3 : 2)`，
     // BattleContext.cpp:2857；CardInstance.cpp:209 同值）。`onExhaust` 与 `effects` 一样
-    // 只记**未升级**态，而 CardDef 目前没有 `upgradedOnExhaust`（只有 `upgradedOnDiscard`），
-    // 所以升级态的 3 只写在 upgradedDescription 里。加字段属于动类型定义，已写进报告等裁定。
+    // 只记**未升级**态，升级态走 `upgradedOnExhaust`（第七批新增的字段，与 `upgradedOnDiscard`
+    // 同一模式）。sts-combat 早已按 `up ? 3 : 2` 实现并有 trace 背书。
     onExhaust: [{ kind: "gain_energy", amount: 2 }],
+    upgradedOnExhaust: [{ kind: "gain_energy", amount: 3 }],
     description: "获得 5 点格挡。若本牌被消耗，获得 2 点能量。",
     upgradedDescription: "获得 8 点格挡。若本牌被消耗，获得 3 点能量。",
   },
@@ -6093,4 +6097,15 @@ export function targetedOf(def: CardDef, upgraded: boolean): boolean {
     return def.upgradedTargeted;
   }
   return def.targeted;
+}
+
+/**
+ * 取一张牌当前是否虚无（升级后不再虚无的牌用 upgradedEthereal）。
+ * 对齐参考项目 CardInstance::isEthereal → isCardEthereal(id, upgraded)。
+ */
+export function etherealOf(def: CardDef, upgraded: boolean): boolean {
+  if (upgraded && def.upgradedEthereal !== undefined) {
+    return def.upgradedEthereal;
+  }
+  return def.ethereal === true;
 }
