@@ -1020,33 +1020,47 @@ function drawOneCard(bc: BattleContext, card: CombatCard): void {
   bc.hand.push(card);
 }
 
+/**
+ * 抽牌（对齐 `BattleContext::drawCards`，BattleContext.cpp:2413）。
+ * 抽牌堆顶 = 数组尾（对齐 `CardManager::popFromDrawPile` = `drawPile.back()` + `pop_back()`）。
+ *
+ * ⚠ 四条提前返回逐字照抄，顺序不能动。第三条 `抽牌堆 + 弃牌堆 == 0` 是**唯一**能免掉下面
+ * 那次 shuffleRng 的门：两堆都空才不洗，只有抽牌堆空是**照样要洗**的（见下）。
+ * NO_DRAW（战斗恍惚）排在最前面，命中它连 reshuffle 都不做。
+ *
+ * ⚠ 抽不够时**不是**同步「抽干 → 洗回 → 补抽」，而是拆成三步、后两步走**动作队列**：
+ *   ① `addToTop(DrawCards(缺的张数))`、② `onShuffle()`、③ `addToTop(EmptyDeckShuffle())`
+ *      —— ①③ 都是 addToTop 且 ③ 后推，所以执行顺序是「先洗、再补抽」；
+ *   ④ 抽牌堆非空时**同步**把它剩下的抽干（递归调自己，参数是抽牌堆张数）。
+ *
+ * ⚠ 第十一批修掉的转写错误：原先这里写的是「弃牌堆非空才洗」，于是
+ * **「抽牌堆还剩几张、但弃牌堆是空的」这种局面白省了一次 shuffleRng**。参考的
+ * `EmptyDeckShuffle` 无条件先取 `shuffleRng.randomLong()` 再洗（Actions.cpp:181），
+ * 空弃牌堆同样消耗一次；能免掉它的只有上面那条「两堆都空」的提前返回。
+ * 第十一批炸弹那副牌组（净化 + 坚毅把牌大量消耗掉）第一次走到这个局面，对拍红了 3 例。
+ */
 function drawCards(bc: BattleContext, count: number): void {
-  // 抽牌堆顶 = 数组尾（对齐 CardManager::popFromDrawPile = drawPile.back()+pop_back()）。
-  // 对齐 BattleContext::drawCards 顶部四条提前返回里的 NO_DRAW（战斗恍惚打完那一张牌
-  // 之后本回合就再也抽不到牌）。⚠ 位置在**最前面**：命中它连 reshuffle 都不做，
-  // 所以不会白吃一次 shuffleRng。
-  if (getPower(bc.player.powers, "no_draw") > 0) {
+  if (
+    count <= 0 ||
+    getPower(bc.player.powers, "no_draw") > 0 ||
+    bc.drawPile.length + bc.discardPile.length === 0 ||
+    bc.hand.length === MAX_HAND_SIZE
+  ) {
     return;
   }
-  let toDraw = Math.min(MAX_HAND_SIZE - bc.hand.length, count);
-  if (toDraw <= 0) {
+  const amountToDraw = Math.min(MAX_HAND_SIZE - bc.hand.length, count);
+  if (bc.drawPile.length < amountToDraw) {
+    const temp = amountToDraw - bc.drawPile.length;
+    addToTop(bc, (c) => drawCards(c, temp), true, { kind: "draw_cards", count: temp });
+    onShuffle();
+    addToTop(bc, (c) => emptyDeckShuffle(c));
+    if (bc.drawPile.length > 0) {
+      drawCards(bc, bc.drawPile.length); // 同步递归（参考自注 `// the game adds this to top`）
+    }
     return;
   }
-  if (bc.drawPile.length < toDraw) {
-    // reshuffle：先抽干现有牌库（无 RNG），再把弃牌堆洗回，补抽剩余。
-    const before = bc.drawPile.length;
-    for (let i = 0; i < before; i += 1) {
-      drawOneCard(bc, bc.drawPile.pop()!);
-    }
-    toDraw -= before;
-    if (bc.discardPile.length > 0) {
-      shuffleCards(bc, bc.discardPile); // ★ 消耗一次 shuffleRng
-      bc.drawPile = bc.discardPile;
-      bc.discardPile = [];
-    }
-  }
-  const n = Math.min(toDraw, bc.drawPile.length);
-  for (let i = 0; i < n; i += 1) {
+  // 对齐 CardManager::draw：上面那道门保证抽牌堆够，所以这里不再取 min。
+  for (let i = 0; i < amountToDraw; i += 1) {
     drawOneCard(bc, bc.drawPile.pop()!);
   }
 }
@@ -2142,9 +2156,13 @@ function playTopCardInDrawPile(bc: BattleContext, target: number, exhausts: bool
 /**
  * 把弃牌堆洗回抽牌堆（对齐 `Actions::EmptyDeckShuffle`，Actions.cpp:181）。
  *
- * ⚠ 与 drawCards 里那段 reshuffle 是**两条不同的代码**：这条**不调 onShuffle**
- * （参考的 EmptyDeckShuffle 里没有），只有「洗弃牌堆 + 并入抽牌堆」两步。
- * ★ 消耗一次 shuffleRng。
+ * 两个调用方：`drawCards` 抽不够时（那边自己**同步**调 `onShuffle()`，因为参考的
+ * `BattleContext::drawCards` 是这么写的）与 `playTopCardInDrawPile`（浩劫 / 混乱，
+ * 那边**不**调 onShuffle）。这个函数自己只做「洗弃牌堆 + 并入抽牌堆」两步。
+ *
+ * ★ **无条件**消耗一次 shuffleRng：`java::Random(bc.shuffleRng.randomLong())` 在洗之前
+ * 就取好了，弃牌堆是空的照样掷。想省掉这一次只能在**调用之前**判掉（`drawCards` 的
+ * 「两堆都空」提前返回、深呼吸的「弃牌堆非空」判断都是这么做的）。
  */
 function emptyDeckShuffle(bc: BattleContext): void {
   shuffleCards(bc, bc.discardPile); // ★ 消耗一次 shuffleRng
