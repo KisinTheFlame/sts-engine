@@ -732,19 +732,34 @@ function shuffleCards(bc: BattleContext, cards: CombatCard[]): void {
 /**
  * 抽一张牌进手（对齐 CardManager::draw 的循环体，CardManager.cpp:397）。
  *
- * 参考在每张牌**离开抽牌堆之后、进手牌之前**跑一串逐张触发。本批只登记了进化：
- * 抽到**状态牌**时 `addToBot(DrawCards(层数))`——注意是入队而非当场抽，所以进化引发的
- * 补抽排在本次 drawCards 的全部牌抽完之后。
+ * 参考在每张牌**离开抽牌堆之后、进手牌之前**跑一串逐张触发。已登记两条，都是**入队**
+ * 而非当场结算，所以它们排在本次 drawCards 的全部牌抽完之后：
+ *   ① 进化 —— 抽到**状态牌**时 `addToBot(DrawCards(层数))`；
+ *   ② 烈焰吐息 —— 抽到**状态牌或诅咒牌**时 `addToBot(DamageAllEnemy(层数))`。
+ * 状态牌那支两条都走，且顺序固定「进化 → 烈焰吐息」；诅咒牌那支**只有**烈焰吐息
+ *（进化在真实游戏与参考里都只认状态牌）。
+ *
+ * ⚠ 参考把 evolve / fireBreathing 两个层数读在**循环之外**（每次 draw 只读一次）。
+ * 这里逐张读是等价的：两条触发都只入队、不同步改层数，一次 draw 内两个值不可能变。
  *
  * TODO(后续PR): 困惑（抽到时掷 cardRandomRng 改费用）、腐化（技能牌费用 -9）、
- *   火焰吐息（抽到状态/诅咒时对全体伤害）、虚无（抽到时 -1 能量）。
- *   四条都需要逐实例卡牌状态或尚未登记的 Power。
+ *   虚无（抽到时 -1 能量，位置在烈焰吐息之后）。都需要逐实例卡牌状态或尚未登记的内容。
  */
 function drawOneCard(bc: BattleContext, card: CombatCard): void {
-  if (getCardDef(card.defId).type === "status") {
+  const type = getCardDef(card.defId).type;
+  if (type === "status") {
     const evolve = getPower(bc.player.powers, "evolve");
     if (evolve > 0) {
       addToBot(bc, (c) => drawCards(c, evolve));
+    }
+    const fireBreathing = getPower(bc.player.powers, "fire_breathing");
+    if (fireBreathing > 0) {
+      addToBot(bc, (c) => damageAllEnemiesNonAttack(c, fireBreathing));
+    }
+  } else if (type === "curse") {
+    const fireBreathing = getPower(bc.player.powers, "fire_breathing");
+    if (fireBreathing > 0) {
+      addToBot(bc, (c) => damageAllEnemiesNonAttack(c, fireBreathing));
     }
   }
   // 手牌上限由调用方的 toDraw 保证不会越界（对齐参考 `if (cardsInHand < 10) moveToHand`）。
@@ -818,12 +833,18 @@ const MAX_HAND_SIZE = 10;
  * 本批登记了中间两条（都是玩家 Power），其余留 TODO。这个函数是全项目**唯一**的消耗入口，
  * 所以补触发只需改这一处、不会漏掉某条消耗路径（第四批把消耗收成单一入口就是为了这个）。
  *
- * ⚠ 两条都是 addToBot，且顺序不可换（黑暗拥抱的抽牌排在无痛之心的格挡之前）。
+ * ⚠ 两条 Power 都是 addToBot，且顺序不可换（黑暗拥抱的抽牌排在无痛之心的格挡之前）。
  * ⚠ 无痛之心走的是 `Actions::GainBlock(层数)`——**不过** calculateCardBlock，敏捷/脆弱都
  * 不参与；且 GainBlock 的 clearOnCombatVictory=false（Actions.cpp:161）。
  *
+ * ⚠ 哨兵是**卡牌自身**的消耗触发（不是 Power），排在两条 Power 之后、压入消耗堆之前，
+ * 而且是**同步**回能量：参考写 `player.gainEnergy(...)` 并自注 `// the game adds to bot
+ * here`——真实游戏入队、参考图省事直接调。预言机是参考，故照它写同步（见报告）。
+ * ⚠ 参考另有一份 `CardInstance::triggerOnExhaust`（CardInstance.cpp:207）也处理哨兵、
+ * 且是 addToTop——但那个函数**全项目无人调用**，是死代码，不要照它写。
+ *
  * TODO(遗物PR): 卡戎的骨灰（addToTop DamageAllEnemy 3）、枯枝（随机牌入手，消耗 cardRandomRng）。
- * TODO(后续PR): 死灵诅咒（消耗时自己再回手）、哨兵（**同步**回能量，不入队）。
+ * TODO(后续PR): 死灵诅咒（消耗时自己再回手，排在无痛之心与哨兵之间）。
  */
 function triggerAndMoveToExhaustPile(bc: BattleContext, card: CombatCard): void {
   const darkEmbrace = getPower(bc.player.powers, "dark_embrace");
@@ -833,6 +854,9 @@ function triggerAndMoveToExhaustPile(bc: BattleContext, card: CombatCard): void 
   const feelNoPain = getPower(bc.player.powers, "feel_no_pain");
   if (feelNoPain > 0) {
     addToBot(bc, (c) => gainBlock(c, feelNoPain), false);
+  }
+  if (card.defId === "sentinel") {
+    bc.player.energy += card.upgraded ? 3 : 2;
   }
   bc.exhaustPile.push(card);
 }
@@ -1248,8 +1272,9 @@ function useNoTriggerCard(bc: BattleContext, item: CardQueueItem): void {
   }
   if (card.defId === "burn") {
     // 灼伤：升级形态 4 点（灼伤+ 只由六焰鬼在第 9 回合后生成，我们尚无来源）。
+    // ⚠ selfDamage=true（`DamagePlayer(…, true)`）——灼伤的自伤**会**触发破裂。
     const damage = card.upgraded ? 4 : 2;
-    addToTop(bc, (c) => damagePlayerNonAttack(c, damage));
+    addToTop(bc, (c) => damagePlayerNonAttack(c, damage, true));
   }
   const idx = bc.hand.indexOf(card);
   if (idx >= 0) {
@@ -1310,7 +1335,18 @@ export function calculateCardDamage(
   return Math.max(0, Math.trunc(damage));
 }
 
+/**
+ * 牌产生的格挡（对齐 BattleContext::calculateCardBlock，BattleContext.cpp:2759）。
+ *
+ * ⚠ 无法格挡（应急按钮的 NO_BLOCK）是**整个函数的第一道门**，命中就返回 0，敏捷/脆弱
+ * 都不再参与。位置很关键：它只挡「过这个函数的格挡」，也就是**牌**产生的格挡；
+ * 金属化 / 无痛之心 / 暴怒 / 严阵以待走的是裸 GainBlock，一律不受影响——真实游戏的措辞
+ * 正是「你无法从**牌**获得格挡」。
+ */
 export function calculateCardBlock(bc: BattleContext, baseBlock: number): number {
+  if (getPower(bc.player.powers, "no_card_block") > 0) {
+    return 0;
+  }
   let block = baseBlock;
   const dex = getPower(bc.player.powers, "dexterity");
   if (dex !== 0) {
@@ -1388,11 +1424,42 @@ function checkCombat(bc: BattleContext): void {
   }
 }
 
+/**
+ * 玩家获得格挡（对齐 Player::gainBlock，Player.cpp:68）。
+ *
+ * 全项目**唯一**的加格挡入口：参考里 `Actions::GainBlock` 与 `EntrenchAction` 都走它，
+ * 只有锚（`p.block += 10`，BattleContext.cpp:226）直接改字段绕开——所以锚**不触发主宰**。
+ *
+ * ⚠ 主宰挂在这里，位置照抄：`amount <= 0` 的提前返回排在它**之前**，所以「加 0 点格挡」
+ * 不触发主宰。这不是空谈——无法格挡状态下 calculateCardBlock 返回 0，防御牌就走到这条。
+ * ⚠ 伤害是 `addToBot(DamageRandomEnemy(层数))`，入队而非当场打，clearOnCombatVictory
+ * 是默认的 true（Actions.cpp:343，参考在那行直接注了 `// juggernaut`）。
+ */
 function gainBlock(bc: BattleContext, amount: number): void {
   if (amount <= 0) {
     return;
   }
   bc.player.block += amount;
+  const juggernaut = getPower(bc.player.powers, "juggernaut");
+  if (juggernaut > 0) {
+    addToBot(bc, (c) => damageRandomEnemy(c, juggernaut));
+  }
+}
+
+/**
+ * 对随机敌人造成**非攻击**伤害（对齐 Actions::DamageRandomEnemy，Actions.cpp:343）。
+ *
+ * ⚠ 三处：① 走 Monster::damage 而非 attacked，故不触发蜷缩；② 伤害是调用方给的固定值，
+ * **不过** calculateCardDamage（力量/易伤都不参与）；③ 全灭时 getRandomMonsterIdx 返回 -1
+ * 并**不掷 RNG**，所以要先判 monstersAlive（与回旋镖同款）。
+ */
+function damageRandomEnemy(bc: BattleContext, damage: number): void {
+  if (bc.monstersAlive === 0) {
+    return;
+  }
+  const idx = getRandomMonsterIdx(bc); // ★ 消耗一次 cardRandomRng
+  monsterDamage(bc, idx, damage);
+  checkCombat(bc);
 }
 
 /**
@@ -1961,10 +2028,11 @@ const CARD_RULES: Record<string, CardRule> = {
   // 对齐 BattleContext.cpp:1061 HEMOKINESIS。
   //
   // ⚠ 伤害在**打牌时**就算好，所以失血引起的加力量（破裂）不影响这一击——参考里那两行
-  // 注释正是作者自问自答确认了这一点。失血走 PlayerLoseHp，clearOnCombatVictory=false。
+  // 注释正是作者自问自答确认了这一点。失血走 PlayerLoseHp(2, **true**)，
+  // clearOnCombatVictory=false。
   hemokinesis: (bc, item, up) => {
     const dmg = calculateCardDamage(bc, item.target, up ? 20 : 15);
-    addToBot(bc, (c) => playerLoseHp(c, 2), false);
+    addToBot(bc, (c) => playerLoseHp(c, 2, true), false);
     addToBot(bc, (c) => attackEnemy(c, item.target, dmg));
   },
 
@@ -2073,8 +2141,9 @@ const CARD_RULES: Record<string, CardRule> = {
   },
 
   // 放血：自失 3 点生命，获得 2(升级 3) 点能量。对齐 BattleContext.cpp:1251 BLOODLETTING。
+  // 失血是 `PlayerLoseHp(3, true)`，会触发破裂。
   bloodletting: (bc, _item, up) => {
-    addToBot(bc, (c) => playerLoseHp(c, 3), false);
+    addToBot(bc, (c) => playerLoseHp(c, 3, true), false);
     addToBot(bc, (c) => {
       c.player.energy += up ? 3 : 2;
     });
@@ -2131,8 +2200,9 @@ const CARD_RULES: Record<string, CardRule> = {
   intimidate: (bc, _item, up) => debuffAllEnemies(bc, "weak", up ? 2 : 1),
 
   // 杰克斯：自失 3 点生命，获得 2(升级 3) 点力量。对齐 BattleContext.cpp:1371 JAX。
+  // ⚠ 失血是 `PlayerLoseHp(3, true)`，先于加力量结算，所以破裂那份力量会叠在前面。
   jax: (bc, _item, up) => {
-    addToBot(bc, (c) => playerLoseHp(c, 3), false);
+    addToBot(bc, (c) => playerLoseHp(c, 3, true), false);
     addToBot(bc, (c) => addPower(c.player.powers, "strength", up ? 3 : 2));
   },
 
@@ -2143,8 +2213,9 @@ const CARD_RULES: Record<string, CardRule> = {
 
   // 献祭：自失 6 点生命，获得 2 点能量，抽 3(升级 5) 张牌。消耗。
   // 对齐 BattleContext.cpp:1392 OFFERING。⚠ 能量恒为 2，升级只加抽牌数。
+  // 失血是 `PlayerLoseHp(6, true)`，会触发破裂。
   offering: (bc, _item, up) => {
-    addToBot(bc, (c) => playerLoseHp(c, 6), false);
+    addToBot(bc, (c) => playerLoseHp(c, 6, true), false);
     addToBot(bc, (c) => {
       c.player.energy += 2;
     });
@@ -2521,7 +2592,89 @@ const CARD_RULES: Record<string, CardRule> = {
   // 进化：每当你抽到一张状态牌，抽 1(升级 2) 张牌。对齐 BattleContext.cpp:1547 EVOLVE。
   // 结算点见 drawOneCard。
   evolve: (bc, _item, up) => addToBot(bc, (c) => addPower(c.player.powers, "evolve", up ? 2 : 1)),
+
+  // ==========================================================================
+  // 铺量第六批 · 玩家的事件钩子
+  //
+  // 前五批做的是「回合边界」与「牌的生命周期」两类时点，这批是**事件驱动**——
+  // 「当某件事发生时」触发。五个钩子各自挂在一个已有的共享原语上：
+  //   火焰屏障 → dealDamageToPlayer（被攻击）      对齐 Player::attacked
+  //   烈焰吐息 → drawOneCard（抽到状态/诅咒牌）    对齐 CardManager::draw
+  //   怒火     → onUseAttackCard（打出攻击牌）     对齐 BattleContext::onUseAttackCard
+  //   主宰     → gainBlock（获得格挡）             对齐 Player::gainBlock
+  //   破裂     → playerHpWasLost（因牌失血）       对齐 Player::hpWasLost
+  // ⚠ 同一事件上有多个 Power 时，顺序**不是**获得顺序，而是参考在那个钩子函数里的书写
+  // 顺序（那些钩子是手写 if 链，不是遍历 statusMap，所以与枚举序也无关）。
+  // 回合边界那两个函数才是枚举序——两套规矩，别混。
+  // ==========================================================================
+
+  // 火焰屏障：获得 12(升级 16) 点格挡；本回合内每当你被攻击，对攻击者反弹 4(升级 6) 点伤害。
+  // 对齐 BattleContext.cpp:1335 FLAME_BARRIER。
+  //
+  // ⚠ 反伤那一层在**下一个回合开始时**清除（applyStartOfTurnPowers），不是本回合末——
+  // 所以整个怪物回合它都在，那正是它生效的时机。
+  flame_barrier: (bc, _item, up) => {
+    const blk = calculateCardBlock(bc, up ? 16 : 12);
+    addToBot(bc, (c) => gainBlock(c, blk), false);
+    addToBot(bc, (c) => addPower(c.player.powers, "flame_barrier", up ? 6 : 4));
+  },
+
+  // 烈焰吐息：每当你抽到一张**状态牌或诅咒牌**，对所有敌人造成 6(升级 10) 点伤害。
+  // 对齐 BattleContext.cpp:1571 FIRE_BREATHING。结算点见 drawOneCard。
+  //
+  // ⚠ 触发条件是「抽到状态/诅咒牌」，**不是**「打出攻击牌」——后者是这张牌很早的旧版本，
+  // 真实游戏与参考（CardManager.cpp:398）都已经是前者。
+  fire_breathing: (bc, _item, up) =>
+    addToBot(bc, (c) => addPower(c.player.powers, "fire_breathing", up ? 10 : 6)),
+
+  // 怒火：本回合内，每打出一张攻击牌就获得 3(升级 5) 点格挡。0 费。
+  // 对齐 BattleContext.cpp:1432 RAGE。触发见 onUseAttackCard，清除见 applyEndOfTurnPowers。
+  //
+  // ⚠ 参考的 `Cards.h getEnergyCost` **没有列举** RAGE，于是落进 `default: return 1`，
+  // 实际是 0 费。已在参考侧随本批登记一起修（与第三批的 TRIP 同款处理，见 TODOS）。
+  rage: (bc, _item, up) => addToBot(bc, (c) => addPower(c.player.powers, "rage", up ? 5 : 3)),
+
+  // 主宰：每当你获得格挡，对**随机**敌人造成 5(升级 7) 点伤害。
+  // 对齐 BattleContext.cpp:1579 JUGGERNAUT。结算点见 gainBlock。
+  // ⚠ 每次触发消耗一次 cardRandomRng（选目标），所以它会改动 counter——凡是加格挡的地方
+  // 都变成了 RNG 消耗点，这是本批对 RNG 时序影响最大的一条。
+  juggernaut: (bc, _item, up) =>
+    addToBot(bc, (c) => addPower(c.player.powers, "juggernaut", up ? 7 : 5)),
+
+  // 破裂：每当你因**打出的牌**失去生命，获得 1(升级 2) 点力量。
+  // 对齐 BattleContext.cpp:1599 RUPTURE。结算点见 playerHpWasLost 的 selfDamage 分支。
+  rupture: (bc, _item, up) => addToBot(bc, (c) => addPower(c.player.powers, "rupture", up ? 2 : 1)),
+
+  // 哨兵：获得 5(升级 8) 点格挡；若本牌被消耗，回复 2(升级 3) 点能量。
+  // 对齐 BattleContext.cpp:1452 SENTINEL。消耗触发见 triggerAndMoveToExhaustPile。
+  // ⚠ 卡效果只有格挡那一半；回能量是消耗触发，且**同步**执行（照参考）。
+  sentinel: (bc, _item, up) => {
+    const blk = calculateCardBlock(bc, up ? 8 : 5);
+    addToBot(bc, (c) => gainBlock(c, blk), false);
+  },
+
+  // 应急按钮：获得 30(升级 40) 点格挡，接下来 2 个回合无法从**牌**获得格挡。消耗。
+  // 对齐 BattleContext.cpp:1418 PANIC_BUTTON。
+  //
+  // ⚠ 两处：① 格挡在**打牌时**就过 calculateCardBlock 算好，所以本牌自己的格挡不会被
+  // 自己上的 NO_BLOCK 吃掉；② NO_BLOCK 走 DebuffPlayer，会被神器抵消一层（于是「神器在手
+  // 时打应急按钮，格挡白拿不受罚」）。递减见 applyEndOfRoundPowers。
+  panic_button: (bc, _item, up) => {
+    const blk = calculateCardBlock(bc, up ? 40 : 30);
+    addToBot(bc, (c) => gainBlock(c, blk), false);
+    addToBot(bc, (c) => debuffPlayer(c, "no_card_block", 2));
+  },
 };
+
+/**
+ * 已登记游戏级行为的卡牌 id（`CARD_RULES` 的键）。**只给测试用**，运行期不读它。
+ *
+ * 存在的理由：登记表是本仓库里唯一一处「知道某张牌属于哪个角色」的第二数据源——
+ * 本次迁移的范围就是**铁甲（红）+ 无色**，所以任何进了这张表的牌，数据表里的 `color`
+ * 必须是 `red` 或 `colorless`。`data-tables.test.ts` 拿它交叉验证 `color`
+ * （哨兵曾被记成 `blue` 而无任何测试守着，就是靠这条挡住的）。
+ */
+export const REGISTERED_CARD_IDS: readonly string[] = Object.freeze(Object.keys(CARD_RULES));
 
 /**
  * 对全体造成伤害（对齐 Actions::AttackAllEnemy）：先**逐怪算好**伤害矩阵，
@@ -2574,6 +2727,16 @@ function useCard(bc: BattleContext, item: CardQueueItem): void {
 
   rule(bc, item, card.upgraded);
 
+  // 打出后的 Power / 遗物触发。位置照抄参考 useCard 的 switch：每种牌型都是
+  // 「先 useXxxCard() 跑卡效果、紧接着 onUseXxxCard() 跑触发」，于是这里入队的动作
+  // 排在卡效果之后、OnAfterCardUsed **之前**。
+  // TODO(后续PR): onUseSkillCard（爆发 / 复制 / 回响形态）、onUsePowerCard（缠绕的眩晕 /
+  //   风采）、以及三种牌型共有的残影 / 双击 / 精力清除 / 笔尖；还有紧跟 OnAfterCardUsed
+  //   之后的 triggerOnOtherCardPlayed（千刃 / 剧痛）。都还没有对应内容登记。
+  if (def.type === "attack") {
+    onUseAttackCard(bc);
+  }
+
   // clearOnCombatVictory=false（对齐 Actions::OnAfterCardUsed 的第二参数）：
   // 打出致命一击后战斗虽已胜利，这张牌仍要落进弃牌堆。标 true 会让它凭空消失。
   //
@@ -2596,6 +2759,28 @@ function useCard(bc: BattleContext, item: CardQueueItem): void {
   }
   if (item.energyOnUse > 0 && !item.freeToPlay) {
     bc.player.energy -= item.energyOnUse;
+  }
+}
+
+/**
+ * 打出一张**攻击牌**之后的 Power 触发（对齐 BattleContext::onUseAttackCard，
+ * BattleContext.cpp:1623）。
+ *
+ * 本批只登记了怒火：`addToBot(Actions::GainBlock(层数))`。
+ * ⚠ 三处照抄：① 格挡走**裸** GainBlock，**不过** calculateCardBlock——敏捷/脆弱不参与，
+ * 无法格挡（NO_BLOCK）也拦不住它（它只拦「牌产生的格挡」）；② GainBlock 的
+ * clearOnCombatVictory=false，所以这一击打死最后一只怪时格挡照样加上；③ 只有攻击牌触发，
+ * 技能/能力牌走各自的 onUseSkillCard / onUsePowerCard，里面没有怒火。
+ * ⚠ 加格挡会走 gainBlock，因此**能连锁触发主宰**（怒火 → 格挡 → 主宰伤害）。
+ *
+ * ⚠ 参考在这里还有 `p.attacksPlayedThisTurn++` 与 `removeStatus<PS::VIGOR>()`。前者只被
+ * 遗物读（战争艺术 / 苦无 / 装饰扇，都未登记），后者没有任何已登记内容能给出精力，
+ * 都留 TODO——现在写了也没有 trace 走得到，等于无背书的代码。
+ */
+function onUseAttackCard(bc: BattleContext): void {
+  const rage = getPower(bc.player.powers, "rage");
+  if (rage > 0) {
+    addToBot(bc, (c) => gainBlock(c, rage), false);
   }
 }
 
@@ -2797,18 +2982,39 @@ function healPlayer(bc: BattleContext, amount: number): void {
 }
 
 /**
- * 玩家主动失血（对齐 Actions::PlayerLoseHp → Player::loseHp → hpWasLost）。
+ * 玩家主动失血（对齐 Actions::PlayerLoseHp → Player::loseHp，Player.cpp:259）。
  *
- * ⚠ 与受击伤害是两条路：**不过格挡**、不触发荆棘，直接扣血。归零走同一个 wouldDie
- * （瓶中仙灵仍能救回）。参考里 selfDamage 位只用来判定破裂（RUPTURE）加力量，
- * 那张能力牌尚未登记，故这里不需要该参数。
- * TODO(遗物PR): 钨钢棒减 1、百年拼图 / 鲁尼方块 / 自成型黏土的失血响应。
+ * ⚠ 与受击伤害是两条路：**不过格挡**、不触发荆棘/火焰屏障，直接扣血。归零走同一个
+ * wouldDie（瓶中仙灵仍能救回）。
+ *
+ * @param selfDamage 这次失血算不算「因你打出的牌而失去生命」——破裂（RUPTURE）只认这一种。
+ *   写成**必填**参数是故意的：漏传会静默少一次加力量，而 TS 的默认值不会报错。
+ *   各调用点传什么逐个对齐了参考的 `Actions::PlayerLoseHp(n, selfDamage)` 第二参数。
+ * TODO(遗物PR): 钨钢棒减 1（在 loseHp 里、hpWasLost 之前）。
  */
-function playerLoseHp(bc: BattleContext, amount: number): void {
+function playerLoseHp(bc: BattleContext, amount: number, selfDamage: boolean): void {
   if (amount <= 0) {
     return;
   }
+  playerHpWasLost(bc, amount, selfDamage);
+}
+
+/**
+ * 失血落地（对齐 Player::hpWasLost，Player.cpp:274）——三条失血路径共用的尾巴。
+ *
+ * ⚠ 破裂在这里触发，三处照抄：① **只在 selfDamage 为真时**触发；② 加力量是**同步**的
+ * （`buff<PS::STRENGTH>`，不入队）；③ 位置在扣血**之后**、濒死判定之前。
+ * 怪物攻击走 Player::attacked，它固定传 selfDamage=false，所以永远不触发破裂。
+ *
+ * TODO(遗物PR): 百年拼图（抽 3）、情绪芯片、自成型黏土、鲁尼方块、红骷髅；以及
+ *   `cards.onTookDamage()`（血债血偿的费用自增）。
+ */
+function playerHpWasLost(bc: BattleContext, amount: number, selfDamage: boolean): void {
   bc.player.hp = Math.max(0, bc.player.hp - amount);
+  const rupture = getPower(bc.player.powers, "rupture");
+  if (selfDamage && rupture > 0) {
+    addPower(bc.player.powers, "strength", rupture);
+  }
   if (bc.player.hp <= 0) {
     wouldDie(bc);
   }
@@ -3194,16 +3400,43 @@ function applyEndOfTurnPowers(bc: BattleContext): void {
   // ⚠ 三处照抄：① 「怪是不是已经全死了」在**入队时**判（areMonstersBasicallyDead 即
   // monstersAlive <= 0），死绝了这一回合连血都不掉；② 失血量取 combustHpLoss（打过几张
   // 燃烧），伤害取层数，两个数不一样；③ PlayerLoseHp 的 clearOnCombatVictory=false，
-  // DamageAllEnemy 是默认的 true。
+  // DamageAllEnemy 是默认的 true；④ 失血传 selfDamage=**true**，所以燃烧的自伤会触发破裂。
   const combust = getPower(bc.player.powers, "combust");
   if (combust > 0 && bc.monstersAlive > 0) {
     const hpLoss = bc.player.combustHpLoss;
-    addToBot(bc, (c) => playerLoseHp(c, hpLoss), false);
+    addToBot(bc, (c) => playerLoseHp(c, hpLoss, true), false);
     addToBot(bc, (c) => damageAllEnemiesNonAttack(c, combust));
   }
 
+  // 暴怒（RAGE=71，枚举序排在 COMBUST=41 之后）：本回合结束即整层清除。
+  // ⚠ **同步** removeStatus（不入队），与上面几条 addToBot 不同——参考在遍历 statusMap 的
+  // 循环体里直接调 `removeStatus<PS::RAGE>()`。当前没有任何东西会在这之后、这一回合内
+  // 再读暴怒，所以同步与入队观察不到差别；照抄。
+  if (getPower(bc.player.powers, "rage") > 0) {
+    removePower(bc.player.powers, "rage");
+  }
+
   // TODO(后续PR): 爆发 / 束缚 / 双重施法 / 缠绕 / 平衡 / 建立 / 敏捷流失 / 欧米茄 /
-  //   暴怒（红） / 反弹 / 再生 / 仪式（玩家侧） / 怨灵形态。
+  //   反弹 / 再生 / 仪式（玩家侧） / 怨灵形态。
+}
+
+/**
+ * 玩家 Power 的回合开始（抽牌**之前**）结算（对齐 Player::applyStartOfTurnPowers，
+ * Player.cpp:565），由 afterMonsterTurns 同步调用。
+ *
+ * ⚠ 同 applyEndOfTurnPowers：参考遍历 `statusMap`，即按枚举值升序，与获得顺序无关。
+ * 本批只有火焰屏障（FLAME_BARRIER=54）命中，且是**同步** removeStatus。
+ *
+ * ⚠ 火焰屏障是在**下一个回合开始**才清除，不是本回合末——所以整个怪物回合里它都还在，
+ * 那才是它反伤的时机。位置也要对：排在「清玩家格挡」之前、开局抽牌之前。
+ *
+ * TODO(后续PR): 战斗圣歌 / 无限之刃（造牌）、混乱 MAYHEM（打抽牌堆顶，消耗 cardRandomRng）、
+ *   下回合格挡 NEXT_TURN_BLOCK、回响形态计数复位、风采计数复位、渎神、预知。
+ */
+function applyStartOfTurnPowers(bc: BattleContext): void {
+  if (getPower(bc.player.powers, "flame_barrier") > 0) {
+    removePower(bc.player.powers, "flame_barrier");
+  }
 }
 
 /**
@@ -3434,6 +3667,23 @@ function decrementPlayerDebuff(bc: BattleContext, id: string): void {
   }
 }
 
+/**
+ * 无条件递减一层某个玩家 Power，归零即摘掉（对齐 `Player::decrementStatus<s>()`）。
+ *
+ * 与 decrementPlayerDebuff 的区别就是**不看 justApplied**。参考里两类混在
+ * applyAtEndOfRoundPowers 同一个函数里，逐项用的是哪一个不能凭直觉猜、要逐条对。
+ */
+function decrementPlayerPower(bc: BattleContext, id: string): void {
+  const p = bc.player.powers.find((x) => x.id === id);
+  if (p === undefined) {
+    return;
+  }
+  p.amount -= 1;
+  if (p.amount <= 0) {
+    bc.player.powers.splice(bc.player.powers.indexOf(p), 1);
+  }
+}
+
 /** 对齐 MonsterGroup::applyEndOfRoundPowers：回合末怪物 Power 结算。 */
 function applyEndOfRoundPowers(bc: BattleContext): void {
   // 顺序对齐 BattleContext::applyEndOfRoundPowers：怪物 endOfTurnTriggers（留后续）
@@ -3441,6 +3691,11 @@ function applyEndOfRoundPowers(bc: BattleContext): void {
   decrementPlayerDebuff(bc, "frail");
   decrementPlayerDebuff(bc, "vulnerable");
   decrementPlayerDebuff(bc, "weak");
+  // 无法格挡（应急按钮的 NO_BLOCK）：**无条件**递减一层，不走 justApplied 那一套——
+  // 参考在 Player::applyAtEndOfRoundPowers 里对它用的是裸 `decrementStatus`，而脆弱/易伤/
+  // 虚弱用的是 `decrementIfNotJustApplied`。所以 2 层 = 「本回合 + 下一回合」都封住。
+  // 位置对齐参考的顺序：脆弱 → 易伤 → 虚弱 → …… → NO_BLOCK。
+  decrementPlayerPower(bc, "no_card_block");
 
   for (const m of bc.monsters) {
     if (!m.alive) {
@@ -3484,18 +3739,30 @@ function removePower(powers: PowerInstance[], id: string): void {
   }
 }
 
+/**
+ * 玩家被怪物攻击（对齐 Player::attacked，Player.cpp:209）。
+ *
+ * ⚠ 荆棘与火焰屏障两条反伤照抄三处：
+ *   ① 都是 `addToTop(DamageEnemy(攻击者, 层数))`，且推入顺序是**荆棘先、火焰屏障后**——
+ *      都插队首，所以实际执行顺序反过来：**先火焰屏障、再荆棘**；
+ *   ② 都**不看这一击有没有被完全格挡**（判定在扣血分支之外）——挡满了照样反伤；
+ *   ③ 走非攻击伤害路径（Monster::damage），不触发蜷缩。
+ * ⚠ 扣血走 `hpWasLost(…, selfDamage=false)`，所以受击**永远不触发破裂**。
+ */
 function dealDamageToPlayer(bc: BattleContext, amount: number, attackerIdx = -1): void {
-  // 荆棘：对齐 Player::damage 的 addToTop(DamageEnemy(...))——排在队首，
-  // 且走非攻击伤害路径（不触发蜷缩）。
   const thorns = getPower(bc.player.powers, "thorns");
   if (thorns > 0 && attackerIdx >= 0) {
     addToTop(bc, (c) => damageEnemyNonAttack(c, attackerIdx, thorns));
   }
+  const flameBarrier = getPower(bc.player.powers, "flame_barrier");
+  if (flameBarrier > 0 && attackerIdx >= 0) {
+    addToTop(bc, (c) => damageEnemyNonAttack(c, attackerIdx, flameBarrier));
+  }
   const blocked = Math.min(bc.player.block, amount);
   bc.player.block -= blocked;
-  bc.player.hp -= amount - blocked;
-  if (bc.player.hp <= 0) {
-    wouldDie(bc);
+  const unblocked = amount - blocked;
+  if (unblocked > 0) {
+    playerHpWasLost(bc, unblocked, false);
   }
 }
 
@@ -3505,20 +3772,20 @@ function dealDamageToPlayer(bc: BattleContext, amount: number, attackerIdx = -1)
  * ⚠ 与 attacked（怪物出招）和 playerLoseHp（放血一类）都不同：
  *   * **过格挡**（这一点与 playerLoseHp 相反——灼伤是能被格挡挡掉的）；
  *   * **不触发荆棘 / 火焰屏障**（那两条在 attacked 里，因为需要攻击者下标）。
- * 参考里 `selfDamage` 位只用来判定破裂（RUPTURE）加力量，那张能力牌尚未登记。
+ *
+ * @param selfDamage 同 playerLoseHp：破裂只认「因打出的牌」的失血。灼伤走
+ *   `Actions::DamagePlayer(2, true)`（BattleContext.cpp:940），所以灼伤**会**触发破裂；
+ *   而缠绕那类怪物来源的 `DamagePlayer(n)` 是默认的 false。写成必填参数同理。
  * TODO(遗物PR): 钨钢棒减 1、缓冲（BUFFER）、虚无缥缈（INTANGIBLE 把伤害压成 1）。
  */
-function damagePlayerNonAttack(bc: BattleContext, amount: number): void {
+function damagePlayerNonAttack(bc: BattleContext, amount: number, selfDamage: boolean): void {
   const blocked = Math.min(bc.player.block, amount);
   bc.player.block -= blocked;
   const unblocked = amount - blocked;
   if (unblocked <= 0) {
     return;
   }
-  bc.player.hp = Math.max(0, bc.player.hp - unblocked);
-  if (bc.player.hp <= 0) {
-    wouldDie(bc);
-  }
+  playerHpWasLost(bc, unblocked, selfDamage);
 }
 
 /**
@@ -3551,9 +3818,16 @@ function applyStartOfTurnPostDrawPowers(bc: BattleContext): void {
   // 暴虐（BRUTALITY=39）排在恶魔形态（DEMON_FORM=44）**之前**——枚举序，与获得顺序无关。
   // ⚠ 失血走 PlayerLoseHp（不过格挡、clearOnCombatVictory=false），抽牌是默认的 true；
   // 两条都 addToBot，故「先失血后抽牌」。
+  //
+  // ⚠⚠ selfDamage 传 **true**，所以暴虐的失血**会触发破裂**——这是**偏离参考原文的修正**，
+  // 参考侧已同步打补丁（`Player.cpp:683` 原文是 `Actions::PlayerLoseHp(pair.second)`，
+  // 第二参数缺省即 false，而同文件 :369 的燃烧、以及 BattleContext.cpp 里所有卡牌调用点
+  // 都显式传了 true——只有暴虐漏了）。真实游戏里暴虐走的是 `LoseHPAction(owner, owner, …)`，
+  // 来源是玩家自己，`onLoseHp` 因此会跑到，破裂**会**触发（暴虐+破裂是铁甲的经典组合）。
+  // 补丁与重生成的 trace 一起落地，所以这条有预言机背书，见 TODOS「已修正」。
   const brutality = getPower(bc.player.powers, "brutality");
   if (brutality > 0) {
-    addToBot(bc, (c) => playerLoseHp(c, brutality), false);
+    addToBot(bc, (c) => playerLoseHp(c, brutality, true), false);
     addToBot(bc, (c) => drawCards(c, brutality));
   }
   const demonForm = getPower(bc.player.powers, "demon_form");
@@ -3569,7 +3843,9 @@ function afterMonsterTurns(bc: BattleContext): void {
   bc.monsterTurnIdx = 6; // 复位到「非怪物回合」
   bc.turn += 1;
   // TODO(遗物PR): applyStartOfTurnRelics（战争艺术 / 硫磺石 / 船长之轮 …），排在清格挡之前。
-  // TODO(后续PR): applyStartOfTurnPowers（战斗圣歌 / 无限之刃 / 混乱 MAYHEM …）。
+  // 回合开始的玩家 Power（抽牌之前）。位置照抄：applyStartOfTurnRelics 之后、
+  // **清格挡之前**（对齐 BattleContext.cpp:2188）。火焰屏障就在这里退场。
+  applyStartOfTurnPowers(bc);
   // 新回合：清玩家格挡、抽牌、回能量。
   // ⚠ 清格挡是一条 if/else-if 链（对齐 BattleContext.cpp:2178）：壁垒 → 模糊 → 卡钳 →
   // 归零，**只走第一个命中的分支**。壁垒那支是空的（格挡原样留着）。
@@ -3580,7 +3856,16 @@ function afterMonsterTurns(bc: BattleContext): void {
     bc.player.block = 0;
   }
   bc.player.cardsPlayedThisTurn = 0;
-  drawCards(bc, bc.player.cardDrawPerTurn);
+  // ⚠ 回合开始的抽牌必须**入队**（`addToBot(Actions::DrawCards(player.cardDrawPerTurn))`，
+  // BattleContext.cpp:2210），不能同步抽。这一条第六批才变得可观察：
+  // 抽到状态牌时烈焰吐息会 `addToBot(DamageAllEnemy)`，而紧随其后的暴虐又 addToBot 了
+  // 「失血 + 抽 1」。同步抽牌会让烈焰吐息的伤害排到暴虐那两条**之前**——它若打死最后一只怪，
+  // clearPostCombatActions 就把暴虐的抽牌（clearOnCombatVictory=true）清掉，那张牌凭空少抽。
+  // 入队之后三条的相对顺序才与参考一致：抽 5 → 暴虐失血 → 暴虐抽 1 → 烈焰吐息伤害。
+  // ⚠ 张数在**入队时**取（参考捕获的是 `player.cardDrawPerTurn` 的当时值）：紧接其后的
+  // DRAW_REDUCTION 会改这个字段，读晚了就会多抽。
+  const drawCount = bc.player.cardDrawPerTurn;
+  addToBot(bc, (c) => drawCards(c, drawCount));
   // TODO(后续PR): DRAW_REDUCTION 的 skipFirst 递减；applyStartOfTurnPostDrawRelics（怀表 / 扭曲钳）。
   applyStartOfTurnPostDrawPowers(bc);
   bc.player.energy = bc.player.energyPerTurn;

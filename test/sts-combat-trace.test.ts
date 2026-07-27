@@ -179,6 +179,14 @@ const CARD: Record<string, string> = {
   MIND_BLAST: "mind_blast",
   BRUTALITY: "brutality",
   EVOLVE: "evolve",
+  // —— 第六批 7 张（玩家的事件钩子）——
+  FLAME_BARRIER: "flame_barrier",
+  FIRE_BREATHING: "fire_breathing",
+  RAGE: "rage",
+  JUGGERNAUT: "juggernaut",
+  RUPTURE: "rupture",
+  SENTINEL: "sentinel",
+  PANIC_BUTTON: "panic_button",
   // 第五批凭空造出来的状态牌。三张都**不在牌组里**，只由卡效果生成，所以不进 CARD_RULES
   // （打不出来，playCard 有一道 canUse 门拦着），但会出现在牌堆快照里，必须能映射。
   BURN: "burn",
@@ -273,6 +281,15 @@ const POWER: Record<string, string> = {
   DARK_EMBRACE: "dark_embrace",
   EVOLVE: "evolve",
   FEEL_NO_PAIN: "feel_no_pain",
+  // —— 事件钩子 Power（第六批）——
+  FLAME_BARRIER: "flame_barrier",
+  FIRE_BREATHING: "fire_breathing",
+  JUGGERNAUT: "juggernaut",
+  RAGE: "rage",
+  RUPTURE: "rupture",
+  // 应急按钮的「无法从牌获得格挡」。参考的枚举名是 NO_BLOCK，我们的 PowerId 叫
+  // no_card_block（types.ts 早就这么定了，名字更准：拦的只有牌产生的格挡）。
+  NO_BLOCK: "no_card_block",
 };
 
 const mapPotion = (p: string): string | null => (p in POTION ? POTION[p]! : p);
