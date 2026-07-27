@@ -2478,6 +2478,22 @@ function debuffEnemy(
 }
 
 /**
+ * 给某个敌人**加**一个 Power（对齐 `Actions::BuffEnemy` → `Monster::buff`，
+ * BattleContext.h:251 / Monster.h:504）。
+ *
+ * ⚠ 与 `debuffEnemy` 的两处关键区别，都不是风格问题：
+ *  ① **不过神器**——`Monster::buff` 里没有任何神器拦截，那道门只在 `addDebuff` 里。
+ *  ② **不判存活**（参考在那行自注 `// todo check if alive?`），所以已死的怪照样落 Power。
+ */
+function buffEnemy(bc: BattleContext, idx: number, power: string, amount: number): void {
+  const m = bc.monsters[idx];
+  if (m === undefined) {
+    return;
+  }
+  addPower(m.powers, power, amount);
+}
+
+/**
  * 对全体敌人施加减益（对齐 Actions::DebuffAllEnemy）。
  *
  * ⚠ 形状照抄：外层一个 addToBot，内层从**末尾往前** addToTop，于是最终按下标升序落到
@@ -2908,6 +2924,79 @@ function drawToHandAction(bc: BattleContext, task: CardSelectTask, cardType: str
   }
   bc.cardSelect = { task, pickCount: 1 };
   bc.inputState = "card_select";
+}
+
+/**
+ * 暴力：把抽牌堆里 `count` 张**随机**攻击牌搬进手牌（对齐 `Actions::ViolenceAction`，
+ * Actions.cpp:614）。没有选牌屏——它是随机检索。
+ *
+ * 形状是参考自己都嫌绕的一段（原文首行注释 `// todo a faster algorithm ...`），逐位照抄：
+ *
+ *  ① **扫描阶段**：正序遍历抽牌堆收集攻击牌的**下标**。第一张 `push_back`，其后每一张都
+ *     `insert(cardRandomRng.random(已收集张数 - 1), i)`——★ **每张（第一张除外）消耗一次
+ *     `cardRandomRng`**，而且结果**真的被用了**（决定插在列表哪一位），与秘密技巧那条
+ *     「掷了就丢」的白吃不同族。所以这个列表既不是升序也不是随机洗过，是一种带偏的顺序。
+ *  ② 列表为空就提前返回（一次 shuffleRng 也不掷）。
+ *  ③ **取牌阶段**：第 i 轮先把列表的 `[i, end)` 这一段用
+ *     `java::Collections::shuffle(..., java::Random(shuffleRng.randomLong()))` 洗一遍
+ *     ——★ **每轮消耗一次 shuffleRng**——再取 `list[i]` 作为本轮要搬的抽牌堆下标。
+ *     只洗尾段是因为 `[0, i)` 是已经搬走的那几张，参考的注释就是在解释这一点。
+ *  ④ 手牌满 10 张时那一张改进**弃牌堆**（这个判断写在这里，所以**不走** `moveToHandHelper`
+ *     ——腐化那条「进手就压成 0 费」的钩子在这条路径上根本不存在，与检索类的其它牌不同）。
+ *  ⑤ **移除阶段**：真正把牌从抽牌堆删掉是最后统一做的，且必须把下标**升序排好后从大到小**
+ *     删，否则前面的删除会让后面的下标错位。
+ *
+ * ⚠ 参考原文 ③ 那道提前退出写的是 `return` 而不是 `break`，于是抽牌堆里攻击牌**少于
+ * `count` 张**时整个 ⑤ 被跳过：已经搬进手牌的那几张仍留在抽牌堆里，凭空多出副本。
+ * **已随本批在参考侧修成 `break`**（见 TODOS「已修正」），这里写的是修正后的形态。
+ * `i` 就是「实际搬了几张」，⑤ 本来就是按 `i` 收尾的。
+ *
+ * ⚠ 参考的 `attackIdxList` 是 `fixed_list<int, CardManager::MAX_GROUP_SIZE=64>`，而
+ * `fixed_list` 没有任何越界检查——它按**抽牌堆里的攻击牌数**算，65 张就是静默内存破坏。
+ * 当前所有 variant 的牌组都远不到（最大的全牌组 93 张里攻击牌 40 出头），安全。
+ */
+function violenceAction(bc: BattleContext, count: number): void {
+  const attackIdxList: number[] = [];
+  for (let i = 0; i < bc.drawPile.length; i += 1) {
+    if (getCardDef(bc.drawPile[i].defId).type === "attack") {
+      if (attackIdxList.length === 0) {
+        attackIdxList.push(i);
+      } else {
+        // ★ 消耗一次 cardRandomRng；结果决定插入位置，**不是**白吃
+        const randomIdx = bc.rng.cardRandomRng.random(attackIdxList.length - 1);
+        attackIdxList.splice(randomIdx, 0, i);
+      }
+    }
+  }
+  if (attackIdxList.length === 0) {
+    return;
+  }
+  const removeIdxs: number[] = [];
+  let moved = 0;
+  for (; moved < count; moved += 1) {
+    if (attackIdxList.length - moved <= 0) {
+      break; // 参考原文是 `return`（bug，已在参考侧修成 break）
+    }
+    // 只洗 [moved, end) 这一段。javaShuffle 的交换序列只取决于长度，所以「切出尾段洗完写回」
+    // 与参考的「对着迭代器区间原地洗」逐位等价。
+    const tail = attackIdxList.slice(moved);
+    javaShuffle(tail, new JavaRandom(bc.rng.shuffleRng.randomLong())); // ★ 消耗一次 shuffleRng
+    for (let k = 0; k < tail.length; k += 1) {
+      attackIdxList[moved + k] = tail[k];
+    }
+    const removeIdx = attackIdxList[moved];
+    removeIdxs.push(removeIdx);
+    const card = bc.drawPile[removeIdx];
+    if (bc.hand.length === MAX_HAND_SIZE) {
+      bc.discardPile.push(card);
+    } else {
+      bc.hand.push(card);
+    }
+  }
+  removeIdxs.sort((a, b) => a - b);
+  for (let x = moved - 1; x >= 0; x -= 1) {
+    bc.drawPile.splice(removeIdxs[x], 1);
+  }
 }
 
 /**
@@ -4323,9 +4412,11 @@ const CARD_RULES: Record<string, CardRule> = {
   // 贪婪之手：造成 20(升级 25) 点伤害；若这一击**击杀**目标，获得 20(升级 25) 金币。
   // 对齐 BattleContext.cpp:1061 HAND_OF_GREED → `Actions::HandOfGreedAction`（Actions.cpp:1103）。
   //
-  // ⚠ 四处照抄（形状与进食那条同族，但不是同一段代码）：
-  //  ① 伤害走 `Monster::damage`（我们的 `monsterDamage`）而**不是** `attacked`——所以
-  //     蜷缩那条 onAttacked 链不触发。这与绝大多数攻击牌不同。
+  // ⚠ 四处照抄（形状与进食那条同族，本就是同一份 copy-paste，只有伤害那行曾经不同）：
+  //  ① 伤害走 `Monster::attacked`（我们的 `monsterAttacked`），所以蜷缩那条 onAttacked 链
+  //     **会**触发。⚠ 参考原文写的是 `Monster::damage`，那是笔误——已随本批在参考侧修掉
+  //     （见 TODOS「已修正」）。真实游戏里贪婪之手是攻击牌、走 `DamageAction`，蜷缩该触发；
+  //     同文件的 `FeedAction` 与 `ReaperAction` 这两个同形动作都用的 `attacked`。
   //  ② 顶部先判 `isDeadOrEscaped` 直接返回，尾部**自己**调一次 checkCombat，
   //     「给金币」夹在扣血与 checkCombat 之间。
   //  ③ 伤害在**打牌时**算好（`calculateCardDamage` 在 addToBot 之外），动作里只结算。
@@ -4342,12 +4433,44 @@ const CARD_RULES: Record<string, CardRule> = {
       if (m === undefined || !m.alive) {
         return;
       }
-      monsterDamage(c, item.target, dmg);
+      monsterAttacked(c, m, dmg);
       if (!m.alive) {
         gainGold(c, gold);
       }
       checkCombat(c);
     });
+  },
+
+  // 黑暗镣铐：本回合内，使目标失去 9(升级 15) 点力量（其行动过后归还）。消耗。
+  // 对齐 BattleContext.cpp:1281 DARK_SHACKLES。
+  //
+  // ⚠ **参考侧原文有两处 bug，已随本批一起修掉**（见 TODOS「已修正」），这里写的是修正后的形态：
+  //  ① 符号：`Monster::addDebuff<MS::STRENGTH>`（Monster.h:354）是 `strength += amount`、
+  //     **不取反**，所以要减力量就必须传负数（同项目的缴械与 Monster.cpp:394/:454 都传负数）。
+  //     参考原文传的是正数，把「失去 9 点力量」写成了「获得 9 点力量」。
+  //  ② 神器条件：参考原文写的是「目标**有**神器时才上 SHACKLED」，真实游戏是神器直接吃掉
+  //     减力量、所以只有**没有**神器时才需要那条回合末归还的记账（否则神器吃掉削弱、
+  //     SHACKLED 反而白送力量）。
+  // ⚠ 三处照抄的形状：
+  //  ① 减力量走 `DebuffEnemy` 故**过神器**（与缴械同族），归还走 `buff` 故**不过**。
+  //  ② 神器判定是在**打牌那一刻**同步读的，排在那条 addToBot 的减力量**执行之前**——
+  //     也就是说它读到的是还没被这次削弱消耗掉的神器层数。这是参考自己的形状，照抄。
+  //  ③ `Actions::DebuffEnemy` 的第三参数 `isSourceMonster` **缺省是 true**（Actions.h:41），
+  //     这里参考没显式传，所以是 true（与缴械显式传 false 不同）。对力量无可观察差别
+  //     ——`justApplied` 只对虚弱/易伤设置——但照抄参数以免将来铺到别的 Power 时错位。
+  // 回合末归还见 `applyMonsterEndOfTurnTriggers`。
+  dark_shackles: (bc, item, up) => {
+    const amount = up ? 15 : 9;
+    addToBot(bc, (c) => debuffEnemy(c, item.target, "strength", -amount, true));
+    if (getPower(bc.monsters[item.target]?.powers ?? [], "artifact") === 0) {
+      addToBot(bc, (c) => buffEnemy(c, item.target, "shackled", amount));
+    }
+  },
+
+  // 暴力：将 3(升级 4) 张随机攻击牌从抽牌堆置入手牌。消耗。
+  // 对齐 BattleContext.cpp:1507 VIOLENCE → `Actions::ViolenceAction`（Actions.cpp:614）。
+  violence: (bc, _item, up) => {
+    addToBot(bc, (c) => violenceAction(c, up ? 4 : 3));
   },
 };
 
