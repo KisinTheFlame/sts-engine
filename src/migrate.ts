@@ -72,6 +72,10 @@ export function migrateLoadedState(raw: unknown): GameState {
     backfill(live, "inputState", "player_normal");
     backfill(live, "cardSelect", null);
     backfill(live, "pendingActions", []);
+    // 出牌队列残留（第九批）。同样**无损**：让它非空的只有嵌套出牌（二连击的复制项、
+    // 混乱排的第二张牌），而那三张牌是第九批才登记的——在此之前出牌队列在任何可取档
+    // 时点都必空，当时的 exportState 甚至会为此显式抛错。
+    backfill(live, "pendingCardQueue", []);
     migrateCombatCards(live);
   }
 
@@ -114,6 +118,13 @@ function migrateCombatCards(combat: Record<string, unknown>): void {
       if (desc?.["kind"] === "after_use_card") {
         fix(desc["card"]);
       }
+    }
+  }
+  // 出牌队列残留项同理（第九批起可能非空）。
+  const queued: unknown = combat["pendingCardQueue"];
+  if (Array.isArray(queued)) {
+    for (const raw of queued) {
+      fix(asRecord(raw)?.["card"]);
     }
   }
 }

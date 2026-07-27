@@ -59,6 +59,7 @@ export type PlayerInputState = "player_normal" | "card_select";
 export type CardSelectTask =
   | "armaments"
   | "discovery"
+  | "dual_wield"
   | "exhaust_one"
   | "exhaust_many"
   | "exhume"
@@ -77,8 +78,9 @@ export type CardSelectTask =
  *     直接改 `cardSelectTask` + `inputState`，于是那两个 bool 是**上一次开屏留下的残值**——
  *     正因为没人读才无害。
  * pickCount 同理：单选类 task 的校验（`isValidSingleCardSelectAction`）不读它，我们统一记 1。
- * `cards` / `data0` 只有 discovery 用（第八批新增；参考里另有双持 / 液态记忆 / 法典也用，
- * 三张都未登记）。
+ * `cards` 只有 discovery 用（第八批新增）；`data0` 由 discovery（份数）与 dual_wield
+ * （复制份数，`dualWield_CopyCount()`）共用，参考里那两个访问器就是同一个 `data0`。
+ * 参考里另有液态记忆 / 法典也用它，两张都未登记。
  */
 export type CardSelectInfo = {
   task: CardSelectTask;
@@ -89,7 +91,10 @@ export type CardSelectInfo = {
    * 只有 discovery 有：它选的不是某个牌堆里的牌，而是当场随机生成的 3 张候选。
    */
   cards?: string[];
-  /** 对齐 `cardSelectInfo.data0` / `discovery_CopyCount()`：选定后造几份。 */
+  /**
+   * 对齐 `cardSelectInfo.data0`（`discovery_CopyCount()` / `dualWield_CopyCount()`）：
+   * 选定后造几份。
+   */
   data0?: number;
 };
 
@@ -104,6 +109,7 @@ export function cardSelectSource(
 ): "hand" | "draw_pile" | "discard_pile" | "exhaust_pile" | "generated" {
   switch (task) {
     case "armaments":
+    case "dual_wield":
     case "exhaust_one":
     case "exhaust_many":
     case "warcry":
@@ -146,7 +152,7 @@ export type ActionFn = (bc: BattleContext) => void;
  * 一次结算（少抽两张牌、牌凭空消失），正是这个项目最不能容忍的静默错。
  */
 export type ActionDesc =
-  | { kind: "after_use_card"; card: CombatCard; exhaustOnUse: boolean }
+  | { kind: "after_use_card"; card: CombatCard; exhaustOnUse: boolean; purgeOnUse?: boolean }
   | { kind: "draw_cards"; count: number };
 
 export type Action = {
@@ -220,18 +226,34 @@ export class ActionQueue {
 // ============================================================================
 // 出牌队列（对齐 include/combat/CardQueue.h）
 //
-// 骨架层只保留最小可跑战斗需要的字段；autoplay / regret / randomTarget 等
-// 复杂标记随对应卡效果迁移时再补。
+// ⚠ 这个队列是**可嵌套**的：出牌过程中还能再往里塞出牌项。第九批的四张牌全靠它——
+// 浩劫 / 混乱把抽牌堆顶那张牌当作「被打出」入队（addToTopCard），二连击把**当前这张牌的
+// 一份副本**塞回队里（addPurgeCardToCardQueue）。所以 useCard → 入队 → useCard 会重入。
+//
+// 参考的 `CardQueueItem::card` 是 `CardInstance card;`，即**按值存一份副本**。我们这里存
+// 的是 `CombatCard` 对象引用：
+//   * 正常打牌 —— 传手牌里那个对象本身，于是卡效果对它的改写（暴走的 specialData、
+//     灼热之刃的升级次数）会跟着 onAfterUseCard 一起进弃牌堆，与参考「改副本、再把副本
+//     放进弃牌堆」等价；
+//   * 二连击的复制项 —— 必须显式 `{...card}` 拷一份（见 queuePurgeCard），因为参考那份
+//     副本在 onAfterUseCard 里被 purgeOnUse 提前返回**丢掉了**，对它的改写不该落到原牌上。
 // ============================================================================
 
 export type CardQueueItem = {
-  /** 被打出的牌实例 uid（引用 hand 中的牌）；endTurn 项为 null。 */
-  cardUid: number | null;
+  /** 被打出的牌实例（对齐 `CardQueueItem::card`）；endTurn 项为 null。 */
+  card: CombatCard | null;
   target: number;
   isEndTurn: boolean;
   triggerOnUse: boolean;
   energyOnUse: number;
+  /** 对齐 `CardQueueItem::freeToPlay`。当前只有死藤读它（未登记），留着与参考同形。 */
   freeToPlay: boolean;
+  /**
+   * 「不是玩家自己点出来的」（对齐 `CardQueueItem::autoplay`）。
+   * 它是 useCard 扣能量那条判断里的一项，也是 `canUse` 跳过能量检查的开关——
+   * 浩劫 / 混乱从抽牌堆顶打出的牌、二连击的复制项都是 autoplay。
+   */
+  autoplay: boolean;
   exhaustOnUse: boolean;
   purgeOnUse: boolean;
   /** 打出时才掷随机目标（对齐 CardQueueItem::randomTarget，消耗 cardRandomRng）。 */
@@ -246,12 +268,13 @@ export type CardQueueItem = {
  */
 export function noTriggerItem(card: CombatCard): CardQueueItem {
   return {
-    cardUid: card.uid,
+    card,
     target: 0,
     isEndTurn: false,
     triggerOnUse: false,
     energyOnUse: 0,
     freeToPlay: false,
+    autoplay: false,
     exhaustOnUse: false,
     purgeOnUse: false,
     randomTarget: false,
@@ -260,12 +283,13 @@ export function noTriggerItem(card: CombatCard): CardQueueItem {
 
 export function endTurnItem(): CardQueueItem {
   return {
-    cardUid: null,
+    card: null,
     target: 0,
     isEndTurn: true,
     triggerOnUse: true,
     energyOnUse: 0,
     freeToPlay: false,
+    autoplay: false,
     exhaustOnUse: false,
     purgeOnUse: false,
     randomTarget: false,
@@ -297,6 +321,30 @@ export class CardQueue {
       throw new Error("CardQueue.popFront on empty queue");
     }
     return item;
+  }
+
+  /** 队首（对齐 `CardQueue::front()`，只有 addPurgeCardToCardQueue 用）。 */
+  front(): CardQueueItem {
+    const item = this.items[0];
+    if (item === undefined) {
+      throw new Error("CardQueue.front on empty queue");
+    }
+    return item;
+  }
+
+  /** 覆写队首（对齐参考的 `cardQueue.front() = item;`，front() 返回的是引用）。 */
+  replaceFront(item: CardQueueItem): void {
+    this.items[0] = item;
+  }
+
+  /** 全部项（供 exportState；返回副本，调用方改不到内部数组）。 */
+  all(): CardQueueItem[] {
+    return [...this.items];
+  }
+
+  /** 整体替换（供 importState）。 */
+  replaceAll(items: CardQueueItem[]): void {
+    this.items = [...items];
   }
 
   get size(): number {
@@ -1757,17 +1805,191 @@ function playCardQueueItem(bc: BattleContext, item: CardQueueItem): void {
     return;
   }
   if (item.randomTarget) {
-    // ★ 随机目标走 cardRandomRng（对齐 BattleContext.cpp:844 getRandomMonsterIdx）
+    // ★ 随机目标走 cardRandomRng（对齐 BattleContext.cpp:860 getRandomMonsterIdx）
     item.target = getRandomMonsterIdx(bc);
   }
-  // 对齐 playCardQueueItem 的两道分支（BattleContext.cpp:849/867）：
-  //   canUseCard = purgeOnUse || (triggerOnUse && canUse(...))  → useCard()
-  //   if (!triggerOnUse)                                       → useNoTriggerCard()
-  // 两者互斥（purgeOnUse 未登记，恒为假），故这里写成 if/else。
-  if (item.triggerOnUse) {
+  const card = item.card;
+  if (card === null) {
+    throw new Error("playCardQueueItem: 非 endTurn 项却没有牌");
+  }
+  // 对齐 playCardQueueItem 的两道分支（BattleContext.cpp:864/882）：
+  //   canUseCard = purgeOnUse || (triggerOnUse && canUse(…) && 目标可选) → useCard()
+  //   if (!triggerOnUse)                                                → useNoTriggerCard()
+  //
+  // ⚠ `canUse` 这道门第九批才真正长出牙来：浩劫 / 混乱是把**抽牌堆顶那张**当作被打出，
+  // 而那张牌可能是眩晕/伤口（状态牌，没有医疗包就打不出）或诅咒牌。命中时这张牌
+  // **既不结算也不进任何牌堆**——它在 playTopCardInDrawPile 里就已经被 pop 出抽牌堆、
+  // 只活在队列项里，于是凭空消失。参考如此（真实游戏同样如此）。
+  //
+  // ⚠ 复制项（purgeOnUse）**不过** canUse：二连击复制的那份即使此刻已无合法目标也照打。
+  // TODO(后续PR): `if (c.isFreeToPlay(bc)) c.freeToPlayOnce = true;` —— freeToPlayOnce
+  //   与自由攻击（FREE_ATTACK_POWER）都还没有产出者，见 TODOS。
+  const canUseCard =
+    item.purgeOnUse ||
+    (item.triggerOnUse && cardCanUse(bc, card, item.target, item.autoplay) === null);
+  if (canUseCard) {
     useCard(bc, item);
-  } else {
+  }
+  if (!item.triggerOnUse) {
     useNoTriggerCard(bc, item);
+  }
+}
+
+/**
+ * 这张牌现在能不能打（对齐 `CardInstance::canUse`，CardInstance.cpp:278）。
+ * 返回 `null` 表示可以，否则是给人看的原因。
+ *
+ * 两个调用点：`playCard`（玩家点牌，对齐 `isValidCardAction` 尾部那句 `canUse(bc, t, false)`）
+ * 与 `playCardQueueItem`（自动打出的牌，`inAutoplay` 为真）。两处必须是**同一个谓词**——
+ * 早先 playCard 把这几道门内联着写，第九批浩劫/混乱要在队列里再判一次，写两份就会分岔。
+ *
+ * ⚠ `inAutoplay` 只影响**能量**那一道：自动打出的牌不看能量够不够（浩劫打出的 3 费牌
+ * 在 0 能量下照样打）。牌型那几道（诅咒/状态/缠绕/冲突/秘密技巧武器）对它一视同仁。
+ *
+ * TODO(后续PR): canUse 剩下的分支——缠绕封攻击（ENTANGLED）、冲突（手里全是攻击牌才能打）、
+ *   大结局 / 招牌动作 / 反射 / 天降神兵 / 战术家。都还没有对应内容登记。
+ */
+function cardCanUse(
+  bc: BattleContext,
+  card: CombatCard,
+  target: number,
+  inAutoplay: boolean,
+): string | null {
+  const def = getCardDef(card.defId);
+  // 顶部那道目标门：需要目标而目标已死（或全场怪已死）就打不出。
+  if (targetedOf(def, card.upgraded)) {
+    const t = bc.monsters[target];
+    if (t === undefined || !t.alive) {
+      return `目标无效: ${target}`;
+    }
+  }
+  // 打不出来的牌（对齐 canUse 的按类型分支）：诅咒牌要蓝烛、状态牌要医疗包
+  //（黏液除外，它本来就能打）。第五批开始有灼伤 / 伤口 / 眩晕真的躺在手里，少了这道门
+  // 它们会一路走到 CARD_RULES 查不到而抛「暂未登记」——而它们其实是登记了的、只是打不出来。
+  if (def.type === "curse" && !hasRelic(bc, "blue_candle")) {
+    return `「${def.name}」是诅咒牌，打不出来`;
+  }
+  if (def.type === "status" && card.defId !== "slimed" && !hasRelic(bc, "medical_kit")) {
+    return `「${def.name}」是状态牌，打不出来`;
+  }
+  // 秘密技巧 / 秘密武器：抽牌堆里得真有对应牌型（对齐 CardInstance.cpp:301-319）。
+  if (card.defId === "secret_technique" || card.defId === "secret_weapon") {
+    const want = card.defId === "secret_technique" ? "skill" : "attack";
+    if (!bc.drawPile.some((c) => getCardDef(c.defId).type === want)) {
+      return `「${def.name}」需要抽牌堆里有${want === "skill" ? "技能" : "攻击"}牌`;
+    }
+  }
+  // 费用读**实例级**的 costForTurn（对齐 `bc.player.energy < costForTurn`，
+  // CardInstance.cpp:341）。它在建实例时由 `getEnergyCost(id, upgraded)` 播种（升级降费
+  // 因此照样生效），之后可被腐化 / 疯狂 / 血债血偿 / 战斗内升级改写——从数据表现算就
+  // 看不到这些。
+  // TODO(后续PR): `isFreeToPlay`（freeToPlayOnce / 自由攻击）也能豁免这道门，两者都未登记。
+  if (bc.player.energy < card.costForTurn && !inAutoplay) {
+    return `能量不足：需要 ${card.costForTurn}，剩余 ${bc.player.energy}`;
+  }
+  return null;
+}
+
+/**
+ * 打出抽牌堆顶的那张牌（对齐 `BattleContext::playTopCardInDrawPile`，BattleContext.cpp:2531）。
+ * 浩劫（消耗它）与混乱（不消耗）共用，`Actions::PlayTopCard` 就是它的一层包装。
+ *
+ * ⚠ 四处照抄：
+ *  ① 抽牌堆空时**先看弃牌堆**：弃牌堆也空就什么都不做（连动作都不排）；否则
+ *     `addToTop(PlayTopCard)` 再 `addToTop(EmptyDeckShuffle)`——两条都插队首，
+ *     所以实际执行是「先洗回、再重新打顶牌」。顺序写反就会对着空抽牌堆再走一遍。
+ *  ② 那张牌是 `popFromDrawPile()` **拿走**的，不是拷贝——它离开抽牌堆之后只活在队列项里。
+ *     于是 canUse 不通过时（顶上是眩晕/伤口）它就真的消失了，见 playCardQueueItem。
+ *  ③ `energyOnUse` 取的是**当前全部能量**（`player.energy`），不是这张牌的费用。当前只有
+ *     X 费牌读它（未登记），但复制项会把这个值原样继承下去，所以照抄。
+ *  ④ `autoplay = freeToPlay = true`（参考自注 `// todo remove the autoplay boolean?`），
+ *     于是既不扣能量、也不受能量检查约束。
+ *  ⚠ 入的是 `addToTopCard`（出牌队列**队首**），所以它排在已经排队的其它出牌项之前。
+ */
+function playTopCardInDrawPile(bc: BattleContext, target: number, exhausts: boolean): void {
+  if (bc.drawPile.length === 0) {
+    if (bc.discardPile.length > 0) {
+      addToTop(bc, (c) => playTopCardInDrawPile(c, target, exhausts));
+      addToTop(bc, (c) => emptyDeckShuffle(c));
+    }
+    return;
+  }
+  const card = bc.drawPile.pop()!;
+  bc.cardQueue.pushFront({
+    card,
+    target,
+    isEndTurn: false,
+    triggerOnUse: true,
+    energyOnUse: bc.player.energy,
+    freeToPlay: true,
+    autoplay: true,
+    exhaustOnUse: exhausts,
+    purgeOnUse: false,
+    randomTarget: false,
+  });
+}
+
+/**
+ * 把弃牌堆洗回抽牌堆（对齐 `Actions::EmptyDeckShuffle`，Actions.cpp:181）。
+ *
+ * ⚠ 与 drawCards 里那段 reshuffle 是**两条不同的代码**：这条**不调 onShuffle**
+ * （参考的 EmptyDeckShuffle 里没有），只有「洗弃牌堆 + 并入抽牌堆」两步。
+ * ★ 消耗一次 shuffleRng。
+ */
+function emptyDeckShuffle(bc: BattleContext): void {
+  shuffleCards(bc, bc.discardPile); // ★ 消耗一次 shuffleRng
+  moveDiscardPileIntoDrawPile(bc);
+}
+
+/**
+ * 把当前这张牌的一份**副本**塞回出牌队列，让它再结算一次
+ *（对齐 `BattleContext::queuePurgeCard`，BattleContext.cpp:2777）。
+ * 二连击就靠它；同族的复制 / 回响形态 / 死藤都走同一条路（都未登记）。
+ *
+ * ⚠ 三处照抄：
+ *  ① `item.card = c` 是**按值拷贝**。所以复制项里那张牌的改写（暴走的 specialData +5、
+ *     灼热之刃的升级次数）**不会**落到原牌上——原牌在 OnAfterCardUsed 里早已带着第一次的
+ *     改写进了弃牌堆，而副本在 onAfterUseCard 顶部被 purgeOnUse 提前返回、直接丢掉。
+ *     于是「暴走被二连击」的表现是：第二击按 +10 打，但进弃牌堆那张只涨了 +5。
+ *  ② `energyOnUse` 继承当前项的值，`ignoreEnergyTotal = autoplay = true`；
+ *     purgeOnUse 本身就让 useCard 跳过「移出手牌 + 扣能量」整段。
+ *  ③ 入队位置不是队首而是**第二位**（见 addPurgeCardToCardQueue）。
+ */
+function queuePurgeCard(
+  bc: BattleContext,
+  card: CombatCard,
+  target: number,
+  energyOnUse: number,
+): void {
+  addPurgeCardToCardQueue(bc, {
+    card: { ...card },
+    target,
+    isEndTurn: false,
+    triggerOnUse: true,
+    energyOnUse,
+    freeToPlay: false,
+    autoplay: true,
+    exhaustOnUse: false,
+    purgeOnUse: true,
+    randomTarget: false,
+  });
+}
+
+/**
+ * 对齐 `BattleContext::addPurgeCardToCardQueue`（BattleContext.cpp:2788）。
+ *
+ * ⚠ 队列非空时它做的是「把队首覆写成新项，再把原队首推回队首」，
+ * 结果是 `[原队首, 新项, 其余…]`——新项排在**第二位**而不是第一位。参考自注
+ * `// not really the front but hey`。混乱叠到 2 层时（同一回合排两条 PlayTopCard）
+ * 就能走到这一支：第二张牌打出时队里还压着第一张。
+ */
+function addPurgeCardToCardQueue(bc: BattleContext, item: CardQueueItem): void {
+  if (bc.cardQueue.size > 0) {
+    const temp = bc.cardQueue.front();
+    bc.cardQueue.replaceFront(item);
+    bc.cardQueue.pushFront(temp);
+  } else {
+    bc.cardQueue.pushFront(item);
   }
 }
 
@@ -1785,9 +2007,9 @@ function playCardQueueItem(bc: BattleContext, item: CardQueueItem): void {
  *   悔恨（按 regretCardCount 失血）。四张诅咒牌都还没有入手途径。
  */
 function useNoTriggerCard(bc: BattleContext, item: CardQueueItem): void {
-  const card = bc.hand.find((c) => c.uid === item.cardUid);
-  if (card === undefined) {
-    throw new Error(`useNoTriggerCard: 手牌中找不到 uid=${String(item.cardUid)}`);
+  const card = item.card;
+  if (card === null) {
+    throw new Error("useNoTriggerCard: 队列项没有牌");
   }
   if (card.defId === "burn") {
     // 灼伤：升级形态 4 点（灼伤+ 只由六焰鬼在第 9 回合后生成，我们尚无来源）。
@@ -1795,13 +2017,24 @@ function useNoTriggerCard(bc: BattleContext, item: CardQueueItem): void {
     const damage = card.upgraded ? 4 : 2;
     addToTop(bc, (c) => damagePlayerNonAttack(c, damage, true));
   }
-  const idx = bc.hand.indexOf(card);
-  if (idx >= 0) {
-    bc.hand.splice(idx, 1);
-  }
+  removeFromHandByUid(bc, card.uid);
   addToBot(bc, (c) => {
     c.discardPile.push(card);
   });
+}
+
+/**
+ * 从手牌里按 uid 摘掉一张（对齐 `CardManager::removeFromHandById`）。
+ *
+ * ⚠ 按 uid 而不是按对象引用：出牌队列项可能装着一份**副本**（二连击的复制项、
+ * 或读档重建出来的那份），按引用比对会漏删、让同一张牌既留在手上又进弃牌堆。
+ * 找不到就什么都不做（参考同样是「找到才删」）。
+ */
+function removeFromHandByUid(bc: BattleContext, uid: number): void {
+  const idx = bc.hand.findIndex((c) => c.uid === uid);
+  if (idx >= 0) {
+    bc.hand.splice(idx, 1);
+  }
 }
 
 /** 对齐 MonsterGroup::getRandomMonsterIdx（存活怪中随机，消耗一次 cardRandomRng）。 */
@@ -2181,6 +2414,95 @@ function upgradeAllCardsInHand(bc: BattleContext): void {
   for (const card of bc.hand) {
     upgradeCard(card);
   }
+}
+
+/**
+ * 双持能复制的牌型（对齐 `DualWieldAction` / `chooseDualWieldCard` /
+ * `isValidSingleCardSelectAction` 里那句 `getType() == ATTACK || getType() == POWER`）。
+ */
+function isDualWieldable(card: CombatCard): boolean {
+  const t = getCardDef(card.defId).type;
+  return t === "attack" || t === "power";
+}
+
+/**
+ * 对齐 `BattleContext::chooseDualWieldCard`（BattleContext.cpp:2952）。
+ *
+ * ⚠ 四处照抄（参考在函数顶部自注 "dual wield is so fucking buggy"）：
+ *  ① 它顺手把手牌**重排**了：先是「其余可复制的牌（攻击/能力）」，然后是「其余不可复制的
+ *     牌」，被选中的那张排到**最后**。与军备那次重排的形状不同（军备是 valid → 选中 →
+ *     invalid），不能套用。
+ *  ② 被选中的那张牌会**换一个新 uid**（`dualWieldCard.uniqueId = nextUniqueCardId++`）。
+ *     参考注明这正是「双持仪式匕首」那个 bug 的来源。uid 不进 trace 快照，但它会推进
+ *     计数器，后续凭空造牌的 uid 全跟着挪，所以必须照抄。
+ *  ③ 副本走 `createTempCardInHand`——**整份实例拷贝**（cost / costForTurn / specialData /
+ *     upgraded 一并带走），每份再各取一个新 uid。不是「按定义重造一张原型」：一张被腐化压成
+ *     0 费的能力牌、一张已经涨过的暴走，复制出来的副本带着当时的数值。
+ *  ④ 手牌满 10 张时改进**弃牌堆**（不是丢掉），且这个判断在**每一份**副本前各做一次。
+ */
+function chooseDualWieldCard(bc: BattleContext, handIdx: number, copyCount: number): void {
+  const dualWieldCard = bc.hand[handIdx];
+  const valid: CombatCard[] = [];
+  const invalid: CombatCard[] = [];
+  for (let i = 0; i < bc.hand.length; i += 1) {
+    if (i === handIdx) {
+      continue;
+    }
+    const c = bc.hand[i];
+    if (isDualWieldable(c)) {
+      valid.push(c);
+    } else {
+      invalid.push(c);
+    }
+  }
+  dualWieldCard.uid = bc.nextUid++;
+  bc.hand = [...valid, ...invalid, dualWieldCard];
+  for (let i = 0; i < copyCount; i += 1) {
+    const copy = { ...dualWieldCard, uid: bc.nextUid++ };
+    if (bc.hand.length + 1 <= MAX_HAND_SIZE) {
+      bc.hand.push(copy);
+    } else {
+      bc.discardPile.push(copy);
+    }
+  }
+}
+
+/**
+ * 对齐 `Actions::DualWieldAction`（Actions.cpp:701）。
+ *
+ * ⚠ 三条分支的可观察结果各不相同，不能合并：
+ *  ① 没有可复制的牌 → 什么都不做（不开屏）；
+ *  ② 恰好一张 → **直接复制那一张、不开屏**，而且**不重排手牌、不改原牌的 uid**——
+ *     与走选牌屏那条路差着一次手牌重排和一次 uid 递增；
+ *  ③ ≥2 张 → 开屏，把份数存进 `data0`。
+ * ⚠ 双持自己是技能牌，且 useCard 在动作入队**之前**就把它移出了手牌，所以它不会
+ *    把自己算进候选。
+ */
+function dualWieldAction(bc: BattleContext, copyCount: number): void {
+  let validCount = 0;
+  let lastValidIdx = 0;
+  for (let i = 0; i < bc.hand.length; i += 1) {
+    if (isDualWieldable(bc.hand[i])) {
+      validCount += 1;
+      lastValidIdx = i;
+    }
+  }
+  if (validCount === 0) {
+    return;
+  }
+  if (validCount === 1) {
+    for (let i = 0; i < copyCount; i += 1) {
+      const copy = { ...bc.hand[lastValidIdx], uid: bc.nextUid++ };
+      if (bc.hand.length + 1 <= MAX_HAND_SIZE) {
+        bc.hand.push(copy);
+      } else {
+        bc.discardPile.push(copy);
+      }
+    }
+    return;
+  }
+  bc.inputState = "card_select";
+  bc.cardSelect = { task: "dual_wield", pickCount: 1, data0: copyCount };
 }
 
 /** 对齐 BattleContext::chooseExhaustOneCard。 */
@@ -3526,6 +3848,49 @@ const CARD_RULES: Record<string, CardRule> = {
   infernal_blade: (bc) => {
     addToBot(bc, (c) => infernalBladeAction(c));
   },
+
+  // ==========================================================================
+  // 铺量第九批 · 从牌堆打出 / 复制打出
+  //
+  // 四张的共同点是「把某张牌**再当作一次出牌**处理」，于是出牌队列会嵌套：
+  // useCard → 往 cardQueue 里塞新项 → executeActions 抽干动作队列后又跑一次 useCard。
+  // 机制在 playTopCardInDrawPile / queuePurgeCard / dualWieldAction 三处，见各自注释。
+  // ==========================================================================
+
+  // 浩劫：打出抽牌堆顶的那张牌，然后消耗它。
+  // 对齐 BattleContext.cpp:1353 HAVOC → `Actions::PlayTopCard(getRandomMonsterIdx(cardRandomRng,
+  // true), true)`。
+  //
+  // ⚠ 两处照抄：
+  //  ① 目标在**打牌时**就掷定（★ 一次 cardRandomRng），不是等 PlayTopCard 执行时才掷。
+  //     两者之间可能夹着别的 cardRandomRng 消耗点（主宰的加格挡就是一个），推迟就会错位。
+  //  ② 第二参数 `exhausts = true`——被打出的那张牌走消耗（连带触发黑暗拥抱 / 无痛之心 /
+  //     哨兵那条链）。混乱那边是 false，两张牌只差这一个 bool。
+  havoc: (bc) => {
+    const target = getRandomMonsterIdx(bc); // ★ 消耗一次 cardRandomRng
+    addToBot(bc, (c) => playTopCardInDrawPile(c, target, true));
+  },
+
+  // 混乱：每回合开始时，打出抽牌堆顶的那张牌。
+  // 对齐 BattleContext.cpp:1587 MAYHEM → `Actions::BuffPlayer<PS::MAYHEM>(1)`。
+  // ⚠ 层数恒为 1、**与升级无关**（升级只把费用从 2 降到 1）。叠两张就是每回合打两张。
+  // 结算点见 applyStartOfTurnPowers。
+  mayhem: (bc) => {
+    addToBot(bc, (c) => addPower(c.player.powers, "mayhem", 1));
+  },
+
+  // 二连击：接下来打出的 1(升级 2) 张攻击牌，各额外结算一次。
+  // 对齐 BattleContext.cpp:1306 DOUBLE_TAP → `Actions::BuffPlayer<PS::DOUBLE_TAP>(up ? 2 : 1)`。
+  // 触发见 onUseAttackCard，回合末清除见 applyEndOfTurnPowers。
+  double_tap: (bc, _item, up) => {
+    addToBot(bc, (c) => addPower(c.player.powers, "double_tap", up ? 2 : 1));
+  },
+
+  // 双持：复制手牌中的一张攻击牌或能力牌，把 1(升级 2) 张副本加入手牌。
+  // 对齐 BattleContext.cpp:1310 DUAL_WIELD → `Actions::DualWieldAction(up ? 2 : 1)`。
+  dual_wield: (bc, _item, up) => {
+    addToBot(bc, (c) => dualWieldAction(c, up ? 2 : 1));
+  },
 };
 
 /**
@@ -3571,9 +3936,9 @@ function damageAllEnemiesNonAttack(bc: BattleContext, damage: number): void {
 
 /** 对齐 BattleContext::useCard：分派效果入队 → OnAfterCardUsed → 移出手牌 + 扣能量。 */
 function useCard(bc: BattleContext, item: CardQueueItem): void {
-  const card = bc.hand.find((c) => c.uid === item.cardUid);
-  if (card === undefined) {
-    throw new Error(`useCard: 手牌中找不到 uid=${String(item.cardUid)}`);
+  const card = item.card;
+  if (card === null) {
+    throw new Error("useCard: 队列项没有牌");
   }
   const def = getCardDef(card.defId);
   const rule = CARD_RULES[card.defId];
@@ -3593,10 +3958,10 @@ function useCard(bc: BattleContext, item: CardQueueItem): void {
   // 「先 useXxxCard() 跑卡效果、紧接着 onUseXxxCard() 跑触发」，于是这里入队的动作
   // 排在卡效果之后、OnAfterCardUsed **之前**。
   // TODO(后续PR): onUseSkillCard（爆发 / 复制 / 回响形态）、onUsePowerCard（缠绕的眩晕 /
-  //   风采）、以及三种牌型共有的残影 / 双击 / 精力清除 / 笔尖；还有紧跟 OnAfterCardUsed
+  //   风采）、以及三种牌型共有的残影 / 精力清除 / 笔尖；还有紧跟 OnAfterCardUsed
   //   之后的 triggerOnOtherCardPlayed（千刃 / 剧痛）。都还没有对应内容登记。
   if (def.type === "attack") {
-    onUseAttackCard(bc);
+    onUseAttackCard(bc, item, card);
   } else if (def.type === "skill" && getPower(bc.player.powers, "corruption") > 0) {
     // 腐化：技能牌打出后被消耗。位置照抄——在 useSkillCard() / onUseSkillCard() **之后**，
     // 所以卡效果自己读到的 exhaustOnUse 还是原值（当前没有卡效果读它，记着以防将来有）。
@@ -3612,27 +3977,36 @@ function useCard(bc: BattleContext, item: CardQueueItem): void {
   // 且 playCard 只在 player_normal 才受理，选牌屏期间不可能有第二张牌进来覆盖它
   //（参考读的是成员 curCardQueueItem，同理不会变）。
   const exhaustOnUse = item.exhaustOnUse;
-  addToBot(bc, (c) => onAfterUseCard(c, card, exhaustOnUse), false, {
+  const purgeOnUse = item.purgeOnUse;
+  addToBot(bc, (c) => onAfterUseCard(c, card, exhaustOnUse, purgeOnUse), false, {
     kind: "after_use_card",
     card,
     exhaustOnUse,
+    purgeOnUse,
   });
 
   // 移出手牌 + 扣能量（对齐 useCard 尾部）。
-  const handIdx = bc.hand.indexOf(card);
-  if (handIdx >= 0) {
-    bc.hand.splice(handIdx, 1);
+  // ⚠ 整段包在 `if (!item.purgeOnUse)` 里：二连击的复制项既不从手牌里再拿一次
+  // （原牌早已离场），也不再扣一次能量。
+  if (item.purgeOnUse) {
+    return;
   }
-  // ⚠ 腐化那一项照抄参考的 `!(hasStatus<CORRUPTION>() && getType() == SKILL)`：腐化在场时
-  // 技能牌**一律不扣能量**。多数时候它是冗余的（腐化早把 costForTurn 压成 0 了），但
-  // 「战斗内升级一张升级后费用不同的技能牌」会把 cost/costForTurn 一起改回非 0
-  //（见 upgradeCard 的尾部），那时就只剩这一项拦着——军备 + 腐化同场即可走到。
+  removeFromHandByUid(bc, card.uid);
+  // ⚠ 四项逐字照抄 `c.costForTurn > 0 && !c.isFreeToPlay(bc) && !item.autoplay &&
+  // !(hasStatus<CORRUPTION>() && getType() == SKILL)`：
+  //   * 费用读**实例级** costForTurn（不是打牌那一刻记下的 energyOnUse——两者对普通打牌
+  //     恒等，但浩劫/混乱把 energyOnUse 设成了「当前全部能量」，靠 autoplay 那项拦着）；
+  //   * autoplay 那项是第九批新增的：浩劫 / 混乱从抽牌堆顶打出的牌不扣能量；
+  //   * 腐化在场时技能牌**一律不扣能量**。多数时候它是冗余的（腐化早把 costForTurn 压成 0
+  //     了），但「战斗内升级一张升级后费用不同的技能牌」会把 cost/costForTurn 一起改回非 0
+  //     （见 upgradeCard 的尾部），那时就只剩这一项拦着——军备 + 腐化同场即可走到。
+  // TODO(后续PR): `isFreeToPlay`（freeToPlayOnce / 自由攻击），两者都还没有产出者。
   if (
-    item.energyOnUse > 0 &&
-    !item.freeToPlay &&
+    card.costForTurn > 0 &&
+    !item.autoplay &&
     !(def.type === "skill" && getPower(bc.player.powers, "corruption") > 0)
   ) {
-    bc.player.energy -= item.energyOnUse;
+    bc.player.energy -= card.costForTurn;
   }
 }
 
@@ -3640,7 +4014,19 @@ function useCard(bc: BattleContext, item: CardQueueItem): void {
  * 打出一张**攻击牌**之后的 Power 触发（对齐 BattleContext::onUseAttackCard，
  * BattleContext.cpp:1623）。
  *
- * 本批只登记了怒火：`addToBot(Actions::GainBlock(层数))`。
+ * 已登记两条，顺序照参考的书写顺序（这一族不是遍历 statusMap，先后取决于源码里怎么写）：
+ * 残影(未登记) → **二连击** → 复制(未登记) → 回响形态(未登记) → 风采(未登记) → 怒火。
+ *
+ * 二连击：`if (!item.purgeOnUse && hasStatus<DOUBLE_TAP>()) { queuePurgeCard(c, item.target);
+ * decrementStatus<DOUBLE_TAP>(); }`。⚠ 三处照抄：
+ *  ① `!item.purgeOnUse` —— 复制出来的那一击**不会**再触发一次二连击，否则会无限自我复制；
+ *  ② 复制项走 queuePurgeCard，进的是**出牌队列**而不是动作队列，所以它排在本次出牌产生的
+ *     所有动作（伤害、OnAfterCardUsed …）**之后**才结算；
+ *  ③ 层数**同步**递减一层（不入队）。
+ * ⚠ 由此得到一条重要表现：这一击若打死了最后一只怪，executeActions 在「抽干动作队列」
+ * 与「取下一个出牌项」之间有一道 `outcome != UNDECIDED` 的门，复制项就再也轮不到了。
+ *
+ * 怒火：`addToBot(Actions::GainBlock(层数))`。
  * ⚠ 三处照抄：① 格挡走**裸** GainBlock，**不过** calculateCardBlock——敏捷/脆弱不参与，
  * 无法格挡（NO_BLOCK）也拦不住它（它只拦「牌产生的格挡」）；② GainBlock 的
  * clearOnCombatVictory=false，所以这一击打死最后一只怪时格挡照样加上；③ 只有攻击牌触发，
@@ -3651,15 +4037,33 @@ function useCard(bc: BattleContext, item: CardQueueItem): void {
  * 遗物读（战争艺术 / 苦无 / 装饰扇，都未登记），后者没有任何已登记内容能给出精力，
  * 都留 TODO——现在写了也没有 trace 走得到，等于无背书的代码。
  */
-function onUseAttackCard(bc: BattleContext): void {
+function onUseAttackCard(bc: BattleContext, item: CardQueueItem, card: CombatCard): void {
+  if (!item.purgeOnUse && getPower(bc.player.powers, "double_tap") > 0) {
+    queuePurgeCard(bc, card, item.target, item.energyOnUse);
+    decrementPlayerPower(bc, "double_tap");
+  }
   const rage = getPower(bc.player.powers, "rage");
   if (rage > 0) {
     addToBot(bc, (c) => gainBlock(c, rage), false);
   }
 }
 
-/** 对齐 onAfterUseCard 的卡去向：消耗 or 进弃牌堆。 */
-function onAfterUseCard(bc: BattleContext, card: CombatCard, exhaustOnUse: boolean): void {
+/**
+ * 对齐 onAfterUseCard 的卡去向：消耗 or 进弃牌堆。
+ *
+ * ⚠ `purgeOnUse` 那道提前返回排在**最前**（BattleContext.cpp:1979，还在能力牌那道之前）：
+ * 二连击复制出来的那份是队列项里的副本，结算完就直接丢掉——不进弃牌堆、不进消耗堆，
+ * 也不触发消耗链。少了这道门，二连击每打一次就凭空多出一张牌。
+ */
+function onAfterUseCard(
+  bc: BattleContext,
+  card: CombatCard,
+  exhaustOnUse: boolean,
+  purgeOnUse: boolean,
+): void {
+  if (purgeOnUse) {
+    return;
+  }
   // 能力牌打出后**直接离场**，不进任何牌堆（参考里是把 c.id 置为 INVALID 后 return）。
   if (getCardDef(card.defId).type === "power") {
     return;
@@ -3677,10 +4081,13 @@ function actionFromDesc(desc: ActionDesc): Action {
     case "after_use_card": {
       const card = { ...desc.card };
       const exhaustOnUse = desc.exhaustOnUse;
-      return makeAction((c) => onAfterUseCard(c, card, exhaustOnUse), false, {
+      // 老档没有 purgeOnUse（第九批新增），按 false 回填——它当时恒为假。
+      const purgeOnUse = desc.purgeOnUse ?? false;
+      return makeAction((c) => onAfterUseCard(c, card, exhaustOnUse, purgeOnUse), false, {
         kind: "after_use_card",
         card,
         exhaustOnUse,
+        purgeOnUse,
       });
     }
     case "draw_cards": {
@@ -4007,43 +4414,22 @@ export function playCard(bc: BattleContext, handIdx: number, target = 0): PlayCa
   if (card === undefined) {
     return { ok: false, reason: `手牌下标越界: ${handIdx}` };
   }
-  const def = getCardDef(card.defId);
-  // 打不出来的牌（对齐 CardInstance::canUse 的按类型分支，CardInstance.cpp:322-332）：
-  // 诅咒牌要蓝烛、状态牌要医疗包（黏液除外，它本来就能打）。本批开始有灼伤 / 伤口 / 眩晕
-  // 真的躺在手里，少了这道门它们会一路走到 CARD_RULES 查不到而抛「暂未登记」——
-  // 而它们其实是登记了的、只是打不出来，那种报错会指错方向。
-  // TODO(后续PR): canUse 剩下的分支——缠绕封攻击、冲突（手里全是攻击牌才能打）、
-  //   秘密技巧/武器（抽牌堆里得有对应牌型）。三条都还没有对应内容登记。
-  if (def.type === "curse" && !hasRelic(bc, "blue_candle")) {
-    return { ok: false, reason: `「${def.name}」是诅咒牌，打不出来` };
-  }
-  if (def.type === "status" && card.defId !== "slimed" && !hasRelic(bc, "medical_kit")) {
-    return { ok: false, reason: `「${def.name}」是状态牌，打不出来` };
-  }
-  // 费用读**实例级**的 costForTurn（对齐 CardInstance::canUse 的
-  // `bc.player.energy < costForTurn`，CardInstance.cpp:339）。它在建实例时由
-  // `getEnergyCost(id, upgraded)` 播种（升级降费因此照样生效），之后可被腐化 / 疯狂 /
-  // 血债血偿 / 战斗内升级改写——从数据表现算就看不到这些。
-  const cost = card.costForTurn;
-  if (cost > bc.player.energy) {
-    return { ok: false, reason: `能量不足：需要 ${cost}，剩余 ${bc.player.energy}` };
-  }
-  // 指向性同样是**升级相关**属性：致盲+/绊摔+ 改为对所有敌人，不再需要选目标
-  // （对齐 Cards.h:673 cardTargetsEnemy 里 BLIND / TRIP 的 `!upgraded`）。
-  if (targetedOf(def, card.upgraded)) {
-    const t = bc.monsters[target];
-    if (t === undefined || !t.alive) {
-      return { ok: false, reason: `目标无效: ${target}` };
-    }
+  // 对齐 `isValidCardAction` 尾部那句 `c.canUse(bc, target, false)`（Action.cpp:123）：
+  // 牌型门、指向性门、能量门全在 cardCanUse 里，与自动打出的牌（浩劫 / 混乱）共用同一份
+  // 谓词。⚠ 指向性是**升级相关**属性：致盲+/绊摔+ 改为对所有敌人，不再需要选目标。
+  const reason = cardCanUse(bc, card, target, false);
+  if (reason !== null) {
+    return { ok: false, reason };
   }
 
   bc.cardQueue.pushBack({
-    cardUid: card.uid,
+    card,
     target,
     isEndTurn: false,
     triggerOnUse: true,
-    energyOnUse: cost,
+    energyOnUse: card.costForTurn,
     freeToPlay: false,
+    autoplay: false,
     exhaustOnUse: false,
     purgeOnUse: false,
     randomTarget: false,
@@ -4101,6 +4487,9 @@ export function cardSelectOptions(v: CardSelectView): CardSelectOptions | null {
     // 与任何牌堆无关（下标指的是 cardSelect.cards 这三张候选）。
     case "discovery":
       return single([0, 1, 2]);
+    // 对齐 `isValidSingleCardSelectAction` 的 DUAL_WIELD 分支：手牌里的攻击牌 / 能力牌。
+    case "dual_wield":
+      return single(idxsWhere(v.hand, isDualWieldable));
     case "exhaust_one":
     case "warcry":
       return single(idxsWhere(v.hand, () => true));
@@ -4136,21 +4525,28 @@ export function selectCard(bc: BattleContext, idx: number): SelectCardResult {
   }
 
   // 关屏放在派发之前，这样 choose* 里新开的第二块屏不会被误关。
-  // ⚠ 参考的 `chooseDiscoveryCard` 会**读** `cardSelectInfo`（候选数组与份数），所以那两个
-  // 值在关屏之前先从 info 里取出来传进去——先关后派发只对「不再读 cardSelectInfo」的
-  // task 才与参考等价。（双持 / 液态记忆同样读它，两张都未登记。）
+  // ⚠ 参考的 `chooseDiscoveryCard` / `chooseDualWieldCard` 会**读** `cardSelectInfo`
+  // （候选数组与份数），所以那两个值在关屏之前先从 info 里取出来传进去——先关后派发
+  // 只对「不再读 cardSelectInfo」的 task 才与参考等价。（液态记忆 / 法典同样读它，都未登记。）
   const discoveryCards = info.cards;
-  const discoveryAmount = info.data0;
+  const copyCount = info.data0;
   bc.cardSelect = null;
   switch (info.task) {
     case "armaments":
       chooseArmamentsCard(bc, idx);
       break;
     case "discovery": {
-      if (discoveryCards === undefined || discoveryAmount === undefined) {
+      if (discoveryCards === undefined || copyCount === undefined) {
         throw new Error("selectCard: discovery 屏缺少候选牌或份数（cardSelect 被写坏了）");
       }
-      chooseDiscoveryCard(bc, discoveryCards[idx], discoveryAmount);
+      chooseDiscoveryCard(bc, discoveryCards[idx], copyCount);
+      break;
+    }
+    case "dual_wield": {
+      if (copyCount === undefined) {
+        throw new Error("selectCard: dual_wield 屏缺少复制份数（cardSelect 被写坏了）");
+      }
+      chooseDualWieldCard(bc, idx, copyCount);
       break;
     }
     case "exhaust_one":
@@ -4279,7 +4675,7 @@ function callEndOfTurnActions(bc: BattleContext): void {
  * ⚠ 参考遍历的是 `std::map<PlayerStatus, int16_t> statusMap`，即按
  * `PlayerStatusEffects.h` 的**枚举值升序**，与「先获得哪个 Power」无关。我们的 powers
  * 是获得顺序的数组，所以这里按枚举顺序**逐项显式判断**，不能改成遍历数组。
- * 本批命中的三项枚举序为：LOSE_STRENGTH(14) → NO_DRAW(16) → COMBUST(41)。
+ * 命中项的枚举序：LOSE_STRENGTH(14) → NO_DRAW(16) → DOUBLE_TAP(30) → COMBUST(41) → RAGE(71)。
  */
 function applyEndOfTurnPowers(bc: BattleContext): void {
   // TODO(后续PR): 炸弹（THE_BOMB）排在整个循环**之前**，需要「N 回合后结算」的计数器。
@@ -4296,6 +4692,13 @@ function applyEndOfTurnPowers(bc: BattleContext): void {
   // 战斗恍惚的「本回合无法再抽牌」到此为止。
   if (getPower(bc.player.powers, "no_draw") > 0) {
     addToBot(bc, (c) => removePower(c.player.powers, "no_draw"));
+  }
+
+  // 二连击（DOUBLE_TAP=30）：没用掉的层数在回合末整个清掉。
+  // ⚠ 走 `addToBot(RemoveStatus)`（**入队**，与同函数里暴怒那条的同步 removeStatus 不同），
+  // 且是 RemoveStatus 而非递减——剩几层都一次清空。
+  if (getPower(bc.player.powers, "double_tap") > 0) {
+    addToBot(bc, (c) => removePower(c.player.powers, "double_tap"));
   }
 
   // 燃烧：先失血再对全体造成伤害，两者都入队。
@@ -4327,17 +4730,31 @@ function applyEndOfTurnPowers(bc: BattleContext): void {
  * Player.cpp:565），由 afterMonsterTurns 同步调用。
  *
  * ⚠ 同 applyEndOfTurnPowers：参考遍历 `statusMap`，即按枚举值升序，与获得顺序无关。
- * 本批只有火焰屏障（FLAME_BARRIER=54）命中，且是**同步** removeStatus。
+ * 命中项的枚举序：FLAME_BARRIER(54) → MAYHEM(63)。
  *
  * ⚠ 火焰屏障是在**下一个回合开始**才清除，不是本回合末——所以整个怪物回合里它都还在，
  * 那才是它反伤的时机。位置也要对：排在「清玩家格挡」之前、开局抽牌之前。
  *
- * TODO(后续PR): 战斗圣歌 / 无限之刃（造牌）、混乱 MAYHEM（打抽牌堆顶，消耗 cardRandomRng）、
- *   下回合格挡 NEXT_TURN_BLOCK、回响形态计数复位、风采计数复位、渎神、预知。
+ * ⚠ 混乱在这里，即**抽牌之前**（Player.cpp:625 在 applyStartOfTurnPowers 里，不是
+ * applyStartOfTurnPostDrawPowers）。所以它打的是「上回合末洗牌之后的抽牌堆顶」，
+ * 而且那张牌不会先被抽进手里。
+ *
+ * TODO(后续PR): 战斗圣歌 / 无限之刃（造牌）、下回合格挡 NEXT_TURN_BLOCK、
+ *   回响形态计数复位、风采计数复位、渎神、预知。
  */
 function applyStartOfTurnPowers(bc: BattleContext): void {
   if (getPower(bc.player.powers, "flame_barrier") > 0) {
     removePower(bc.player.powers, "flame_barrier");
+  }
+  // 混乱：每一层各排一条 PlayTopCard。
+  // ⚠ 三处照抄：① 目标在**这里**就逐条掷定（★ 每层一次 cardRandomRng），不是等动作执行时；
+  // ② `exhausts = false`——与浩劫只差这一个 bool，打出的牌正常进弃牌堆；
+  // ③ 是 `addToBot`，所以两层混乱排出的两条动作按顺序执行，第二条把牌插到出牌队列**队首**，
+  //    于是**后排的那张先打**（见 playTopCardInDrawPile 的 addToTopCard）。
+  const mayhem = getPower(bc.player.powers, "mayhem");
+  for (let i = 0; i < mayhem; i += 1) {
+    const target = getRandomMonsterIdx(bc); // ★ 消耗一次 cardRandomRng
+    addToBot(bc, (c) => playTopCardInDrawPile(c, target, false));
   }
 }
 
@@ -4806,7 +5223,9 @@ function afterMonsterTurns(bc: BattleContext): void {
 // BattleContext 里只有两处不是纯数据：6 条 StsRandom（有 toState/fromState）与
 // 两条队列（存的是闭包）。
 //
-// 出牌队列在两个可取档时点都必空，故不入档。
+// **出牌队列从第九批起也可能非空**：二连击把复制项塞进出牌队列，如果那张攻击牌自己会开
+// 选牌屏（头槌），屏开着时复制项就还排在队里；混乱叠两层时同理。所以它按纯数据逐项入档。
+// 早先这里是「出牌队列在两个可取档时点都必空」的断言——从第九批起那句不再成立。
 // **动作队列不再必空**：选牌屏是第四批新增的可操作时点，开屏时队列里至少还压着
 // onAfterUseCard（那张牌去哪个牌堆），焚誓还多压一条抽牌。所以动作队列按 ActionDesc
 // 逐条入档，读回来重建。没有描述的残留动作会让 exportState **抛错**——静默丢弃一条排队
@@ -4841,6 +5260,11 @@ export type StsCombatState = {
    * player_normal 时恒为空；card_select 时至少有一条（见本节顶部注释）。
    */
   pendingActions: ActionDesc[];
+  /**
+   * 取档瞬间**出牌队列**里的残留项（按出队顺序）。第九批新增，老档回填 `[]`。
+   * 只有「二连击的复制项 / 混乱排的第二张牌」这类嵌套出牌能让它非空，见本节顶部注释。
+   */
+  pendingCardQueue: CardQueueItem[];
   turn: number;
   player: CombatPlayer;
   monsters: CombatMonster[];
@@ -4865,6 +5289,9 @@ const copyCardSelect = (info: CardSelectInfo | null): CardSelectInfo | null =>
     ? null
     : { ...info, ...(info.cards === undefined ? {} : { cards: [...info.cards] }) };
 const copyCards = (cards: CombatCard[]): CombatCard[] => cards.map((c) => ({ ...c }));
+/** 深拷贝出牌队列项（`card` 是对象，浅拷贝会让快照与实例共享同一张牌）。 */
+const copyCardQueueItems = (items: CardQueueItem[]): CardQueueItem[] =>
+  items.map((it) => ({ ...it, card: it.card === null ? null : { ...it.card } }));
 
 /**
  * 导出快照。只能在玩家可操作时取档（player_normal / card_select），且动作队列里的残留
@@ -4873,9 +5300,6 @@ const copyCards = (cards: CombatCard[]): CombatCard[] => cards.map((c) => ({ ...
 export function exportState(bc: BattleContext): StsCombatState {
   if (bc.inputState !== "player_normal" && bc.inputState !== "card_select") {
     throw new Error(`exportState: 不在玩家可操作态（inputState=${bc.inputState}），不能取档`);
-  }
-  if (!bc.cardQueue.isEmpty()) {
-    throw new Error("exportState: 出牌队列未抽干（只能在玩家可操作时取档）");
   }
   const pendingActions = bc.actionQueue.descriptors().map((desc, i) => {
     if (desc === null) {
@@ -4900,6 +5324,7 @@ export function exportState(bc: BattleContext): StsCombatState {
     inputState: bc.inputState,
     cardSelect: copyCardSelect(bc.cardSelect),
     pendingActions,
+    pendingCardQueue: copyCardQueueItems(bc.cardQueue.all()),
     turn: bc.turn,
     player: { ...bc.player, powers: copyPowers(bc.player.powers) },
     monsters: bc.monsters.map((m) => ({
@@ -4930,6 +5355,8 @@ export function exportState(bc: BattleContext): StsCombatState {
 export function importState(s: StsCombatState): BattleContext {
   const actionQueue = new ActionQueue();
   actionQueue.replaceAll(s.pendingActions.map(actionFromDesc));
+  const cardQueue = new CardQueue();
+  cardQueue.replaceAll(copyCardQueueItems(s.pendingCardQueue));
   return {
     rng: {
       aiRng: StsRandom.fromState(s.rng.aiRng),
@@ -4954,7 +5381,7 @@ export function importState(s: StsCombatState): BattleContext {
     cardSelect: copyCardSelect(s.cardSelect),
     turn: s.turn,
     actionQueue,
-    cardQueue: new CardQueue(),
+    cardQueue,
     player: { ...s.player, powers: copyPowers(s.player.powers) },
     monsters: s.monsters.map((m) => ({
       ...m,

@@ -335,8 +335,12 @@ describe("接线：战斗内选牌屏", () => {
           specialData: 0,
         },
         exhaustOnUse: false,
+        // 第九批新增：二连击复制出来的那份结算完直接丢掉，不进任何牌堆。
+        purgeOnUse: false,
       },
     ]);
+    // 出牌队列此刻是空的——只有嵌套出牌（二连击 / 混乱）才会让它非空。
+    expect(state.combat!.pendingCardQueue).toEqual([]);
   });
 
   it("选牌屏上存档读盘，再选完，结果与不落盘完全相同", () => {
