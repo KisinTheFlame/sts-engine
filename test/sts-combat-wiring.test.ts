@@ -414,6 +414,42 @@ describe("接线：战斗内选牌屏", () => {
     expect(state.combat!.exhaustPile).toHaveLength(3); // 选中的 2 张 + 净化自己
   });
 
+  it("发现的选牌屏：候选是当场生成的 3 张，且跟着存档往返", () => {
+    // 发现是**第一个**「候选不在任何牌堆里」的选牌屏——那 3 张是打牌时从战斗内卡池
+    // 随机抽出来的，只存在于 `cardSelect.cards` 里。漏存它，读回来的档就再也不知道
+    // 玩家在选什么（而 RNG 已经消耗过了，重抽会得到另外三张）。
+    const state = runWithDeck(new Array<string>(10).fill("discovery"));
+    startCombat(state, "cultist");
+    expect(applyAction(state, { type: "play_card", handIndex: 0 })).toEqual({ ok: true });
+
+    const info = state.combat!.cardSelect!;
+    expect(info.task).toBe("discovery");
+    expect(info.data0).toBe(1);
+    expect(info.cards).toHaveLength(3);
+    expect(new Set(info.cards).size).toBe(3); // 拒绝采样保证互不相同
+    // 候选取自铁甲的 70 张战斗内卡池，不是无色池。
+    for (const id of info.cards!) {
+      expect(getCardDef(id).color).toBe("red");
+    }
+    // 下标恒为 0..2（与任何牌堆无关）。
+    expect(pendingCardSelect(state)).toEqual({
+      mode: "single",
+      task: "discovery",
+      idxs: [0, 1, 2],
+    });
+
+    const roundTripped = JSON.parse(JSON.stringify(state)) as GameState;
+    expect(roundTripped).toEqual(state);
+    expect(exportState(importState(state.combat!))).toEqual(state.combat);
+
+    // 选中的那张进手牌，**本回合** 0 费：costForTurn 归零而 cost 保持数据表的值。
+    const picked = info.cards![1];
+    expect(applyAction(state, { type: "select_card", index: 1 })).toEqual({ ok: true });
+    const conjured = state.combat!.hand.find((c) => c.defId === picked)!;
+    expect(conjured.costForTurn).toBe(0);
+    expect(conjured.cost).toBe(costOf(getCardDef(picked), false));
+  });
+
   // 自动对战策略必须能应付选牌屏，否则 `pnpm sim` 会在屏上原地死循环：
   // sts-combat 在屏没关之前拒绝一切打牌 / 结束回合，策略若只在那两个里挑就永远推不动。
   for (const [name, policy] of [
