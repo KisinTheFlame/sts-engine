@@ -1101,6 +1101,14 @@ function canUpgradeCard(card: CombatCard): boolean {
 }
 
 /**
+ * 这张牌被升级过几次（对齐 CardInstance::getUpgradeCount，CardInstance.cpp:47）。
+ * 只有灼热之刃会大于 1——它的伤害公式直接读这个数。
+ */
+function getUpgradeCount(card: CombatCard): number {
+  return card.defId === "searing_blow" ? card.specialData : card.upgraded ? 1 : 0;
+}
+
+/**
  * 改基础费用并保住本回合的降费差（对齐 CardInstance::upgradeBaseCost，CardInstance.cpp:99）。
  * 只有血债血偿的升级分支调它。
  */
@@ -2017,6 +2025,88 @@ function drawToHandAction(bc: BattleContext, task: CardSelectTask, cardType: str
   bc.inputState = "card_select";
 }
 
+/** 疯狂那个重抽循环的熔断（参考是裸 `while(true)`，见 madnessAction）。 */
+const MADNESS_GUARD = 100000;
+
+/**
+ * 对齐 Actions::MadnessAction（Actions.cpp:368）：把手牌里随机一张的费用置 0。
+ *
+ * ⚠ 三处必须逐字照抄，否则 cardRandomRng 的 counter 立刻错位：
+ *  ① **预扫描的 break**。循环体是「先看 costForTurn > 0，是就置 haveNonZeroTurnCost 并
+ *     **break**；否则再看 cost > 0，是就置 haveNonZeroCost」。所以 haveNonZeroCost 只累积
+ *     到第一张「本回合费用 > 0」的牌为止——不是「全手牌有没有 cost>0 的」。
+ *  ② 两个标志决定用哪个判据重抽：有 costForTurn>0 的牌就只认 costForTurn，否则只认 cost。
+ *     两者会分岔：腐化把抽到的技能牌 costForTurn 压成 0 但 **cost 不变**，于是「全手牌
+ *     costForTurn 都是 0、却有 cost>0」是真实可达的状态，走的正是第二支。
+ *  ③ 重抽是**拒绝采样**：每转一圈掷一次 `cardRandomRng.random(手牌数-1)`，选中的牌不满足
+ *     判据就丢掉结果重来。次数不定，这正是它对 RNG 时序的影响。
+ *  命中后 cost 与 costForTurn **都**置 0（所以疯狂的 0 费是永久的，回合末复位也拉不回来）。
+ */
+function madnessAction(bc: BattleContext): void {
+  let haveNonZeroCost = false;
+  let haveNonZeroTurnCost = false;
+  for (const card of bc.hand) {
+    if (card.costForTurn > 0) {
+      haveNonZeroTurnCost = true;
+      break;
+    }
+    if (card.cost > 0) {
+      haveNonZeroCost = true;
+    }
+  }
+  if (!haveNonZeroCost && !haveNonZeroTurnCost) {
+    return;
+  }
+  // 走到这里手牌必然非空、且必然存在满足判据的牌，所以参考的 `while(true)` 一定终止。
+  // 熔断只是防我们自己抄错，触发即说明上面的预扫描与下面的判据对不上。
+  for (let guard = 0; guard < MADNESS_GUARD; guard += 1) {
+    const idx = bc.rng.cardRandomRng.random(bc.hand.length - 1); // ★ 消耗一次 cardRandomRng
+    const card = bc.hand[idx];
+    const hit = haveNonZeroTurnCost ? card.costForTurn > 0 : card.cost > 0;
+    if (hit) {
+      card.cost = 0;
+      card.costForTurn = 0;
+      return;
+    }
+  }
+  throw new Error("madnessAction 重抽熔断（预扫描与判据不一致）");
+}
+
+/**
+ * 获得腐化（对齐 `Actions::BuffPlayer<PS::CORRUPTION>`，BattleContext.h:220）。
+ *
+ * ⚠ 两处照抄：① **已经有腐化时整条什么都不做**——`player.buff<CORRUPTION>` 走的是
+ * `setHasStatus(true)` 那一支（Player.h:335 把 CORRUPTION 与壁垒/困惑/笔尖/被围攻列在一起），
+ * 是个纯 bool、没有层数，所以第二张腐化不会叠成 2 层；② 只有在**原本没有**腐化时才跑
+ * `cards.onBuffCorruption()`，把场上已有的技能牌一次性压成 0 费。
+ */
+function buffCorruption(bc: BattleContext): void {
+  if (getPower(bc.player.powers, "corruption") > 0) {
+    return;
+  }
+  onBuffCorruption(bc);
+  addPower(bc.player.powers, "corruption", 1);
+}
+
+/**
+ * 腐化落地时的一次性扫场（对齐 CardManager::onBuffCorruption，CardManager.cpp:536）。
+ *
+ * ⚠ 与进牌时那两个钩子不同：这里改的是 **cost 本身**（连带 costForTurn），所以回合末的
+ * `resetAttributesAtEndOfTurn` 拉不回来——腐化对当时在场的技能牌是**永久**降费。
+ * 而 `drawOneCard` / `moveToHandHelper` 那两条只改 costForTurn，是**每回合重新压**。
+ * ⚠ 四个牌堆都扫（含**消耗堆**），且只动 `cost > 0` 的技能牌。
+ */
+function onBuffCorruption(bc: BattleContext): void {
+  for (const pile of [bc.hand, bc.drawPile, bc.discardPile, bc.exhaustPile]) {
+    for (const card of pile) {
+      if (getCardDef(card.defId).type === "skill" && card.cost > 0) {
+        card.cost = 0;
+        card.costForTurn = 0;
+      }
+    }
+  }
+}
+
 /**
  * 一条卡牌规则。
  *
@@ -2866,6 +2956,82 @@ const CARD_RULES: Record<string, CardRule> = {
     const blk = calculateCardBlock(bc, up ? 40 : 30);
     addToBot(bc, (c) => gainBlock(c, blk), false);
     addToBot(bc, (c) => debuffPlayer(c, "no_card_block", 2));
+  },
+
+  // ==========================================================================
+  // 铺量第七批 · 卡牌实例级状态
+  //
+  // 这六张的共同点是「效果记在**这一张牌实例**上」，而不是玩家身上：暴走的成长量、
+  // 灼热之刃的升级次数记在 specialData，血债血偿 / 疯狂 / 腐化改的是 cost / costForTurn。
+  // 原语见文件上方「卡牌实例级状态的原语」一节。
+  // ==========================================================================
+
+  // 暴走：造成 8 + 本实例累计成长 点伤害；每次打出后本实例永久 +5(升级 +8)。
+  // 对齐 BattleContext.cpp:1125 RAMPAGE。
+  //
+  // ⚠ 三处：① 伤害在**打牌时**用当前 specialData 算好（所以本次打出不吃这次成长）；
+  // ② 成长是**同步**自增、排在 addToBot 之后；③ 改的是打出的那份实例，而
+  // onAfterUseCard 搬进弃牌堆的正是同一份，所以成长跟着牌走（参考那边是 CardQueueItem 的
+  // 副本，同理）。
+  // TODO(后续PR): 参考在 `item.purgeOnUse` 时还会 `findAndUpgradeSpecialData` 去回填牌堆里
+  //   的本体（双击/复制那套复制打出）。purgeOnUse 尚未登记，恒为假。
+  rampage: (bc, item, up, card) => {
+    const dmg = calculateCardDamage(bc, item.target, 8 + card.specialData);
+    addToBot(bc, (c) => attackEnemy(c, item.target, dmg));
+    card.specialData += up ? 8 : 5;
+  },
+
+  // 灼热之刃：伤害 = n(n+7)/2 + 12，n 是本实例被升级过几次。
+  // 对齐 BattleContext.cpp:1152 SEARING_BLOW。
+  //
+  // ⚠ 它是全表唯一能**反复**升级的牌（canUpgradeCard 里那条例外），升级次数记在
+  // specialData 上而不是 `upgraded` 位。n=0 → 12，n=1 → 16，n=2 → 21，n=3 → 27。
+  // `n*(n+7)` 恒为偶数（n 与 n+7 奇偶不同），所以 C++ 的整除没有截断，两边天然一致。
+  searing_blow: (bc, item, _up, card) => {
+    const n = getUpgradeCount(card);
+    const base = (n * (n + 7)) / 2 + 12;
+    const dmg = calculateCardDamage(bc, item.target, base);
+    addToBot(bc, (c) => attackEnemy(c, item.target, dmg));
+  },
+
+  // 血债血偿：造成 18(升级 22) 点伤害。4(升级 3) 费，本场每失血一次费用 -1。
+  // 对齐 BattleContext.cpp:1011 BLOOD_FOR_BLOOD。
+  //
+  // ⚠ 卡效果本身只有伤害那一句——降费不在这里，而在 `Player::hpWasLost` 里的
+  // `cards.onTookDamage()`（见 cardsOnTookDamage）。所以**被怪打一下也降费**，
+  // 不限于自伤，这一点与破裂的 selfDamage 判据不同。
+  blood_for_blood: (bc, item, up) => {
+    const dmg = calculateCardDamage(bc, item.target, up ? 22 : 18);
+    addToBot(bc, (c) => attackEnemy(c, item.target, dmg));
+  },
+
+  // 疯狂：把手牌中随机一张的费用变成 0。消耗。对齐 BattleContext.cpp:1396 MADNESS
+  // → Actions::MadnessAction。升级只降费（1 → 0）。
+  // ⚠ 那个拒绝采样循环的 RNG 消耗次数不定，见 madnessAction。
+  madness: (bc) => {
+    addToBot(bc, (c) => madnessAction(c));
+  },
+
+  // 腐化：技能牌费用变 0，但打出后被消耗。对齐 BattleContext.cpp:1547 CORRUPTION。
+  //
+  // ⚠ 它是**三处**联动，不是一条规则：① 落地时一次性把四个牌堆里 cost>0 的技能牌压成 0
+  // （onBuffCorruption，改的是 cost 本身，永久）；② 之后每张进手/被抽到的技能牌走
+  // setCostForTurn(-9)（只改本回合）；③ useCard 里技能牌 exhaustOnUse=true 且不扣能量。
+  // ⚠ 它是纯 bool 状态（参考走 setHasStatus，statusMap 里没有条目），故层数恒记 1。
+  corruption: (bc) => {
+    addToBot(bc, (c) => buffCorruption(c));
+  },
+
+  // 幻影：获得 1 层虚无缥缈。虚无（升级后**不再**虚无）。消耗。
+  // 对齐 BattleContext.cpp:1246 APPARITION。
+  //
+  // ⚠ 升级唯一改变的就是「不再虚无」，走数据表的 upgradedEthereal（第七批新增的字段），
+  // 判定在 isEtherealCard 里。层数两个分支都是 1。
+  // ⚠ 虚无缥缈**当回合末就掉一层**：参考用的是裸 `decrementStatus<INTANGIBLE>()`，
+  // 不是 `decrementIfNotJustApplied`——所以幻影护住的是紧随其后的那个怪物回合，
+  // 到玩家下个回合开始时它已经没了。见 applyEndOfRoundPowers 的注释。
+  apparition: (bc) => {
+    addToBot(bc, (c) => addPower(c.player.powers, "intangible", 1));
   },
 };
 
