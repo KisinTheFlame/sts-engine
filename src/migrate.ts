@@ -138,8 +138,12 @@ function migrateCombatCards(combat: Record<string, unknown>): void {
 }
 
 /**
- * 第十一批新增的战斗字段：`strikeCount`。
+ * 第十一批新增的战斗字段：`strikeCount`、`player.bomb1/2/3`。
  *
+ * 两组的回填理由不同：
+ *
+ *  * **`bomb1/2/3` 一律 0** —— 无损。唯一能让它们非零的是炸弹（`the_bomb`），本批才登记；
+ *    在此之前任何一场战斗里这三格恒为 0。
  *  * **`strikeCount` 要真的数一遍** —— 这一条**不是**常量回填。老档的战斗里可以有
  *    完美打击（变形/发现/多面手能从卡池里把它造出来躺在牌堆里），读回来之后玩家真的可能
  *    打出它，所以数值得对。数的范围与 `notifyAddCardToCombat` 的语义一致：
@@ -148,6 +152,12 @@ function migrateCombatCards(combat: Record<string, unknown>): void {
  *    ⚠ 两处都要排除 `purgeOnUse`：二连击的复制项是按值拷贝、从来没进过计数器。
  */
 function migrateCombatBatch11(combat: Record<string, unknown>): void {
+  const player = asRecord(combat["player"]);
+  if (player) {
+    backfill(player, "bomb1", 0);
+    backfill(player, "bomb2", 0);
+    backfill(player, "bomb3", 0);
+  }
   if (combat["strikeCount"] !== undefined) {
     return;
   }

@@ -622,6 +622,17 @@ export type CombatPlayer = {
    * 所以「打了几张燃烧」和「对所有敌人打多少」是两个独立的数。
    */
   combustHpLoss: number;
+  /**
+   * 炸弹的三格计时器（对齐 Player::bomb1 / bomb2 / bomb3，Player.h:89-91）。
+   *
+   * 炸弹**不是** statusMap 里的 Power：`Player::buff<PS::THE_BOMB>` 在写 statusMap 之前就
+   * `bomb3 += amount; return;` 了（Player.h:330）。每个回合末**先**引爆 `bomb1`，再整体
+   * 前移一格（`bomb1 = bomb2; bomb2 = bomb3; bomb3 = 0`），所以打出后要等三个回合末。
+   * 同一回合打两张就是 `bomb3` 累加，不是两个独立计时器。
+   */
+  bomb1: number;
+  bomb2: number;
+  bomb3: number;
 };
 
 // ============================================================================
@@ -1782,6 +1793,9 @@ export function initCombat(input: CombatInitInput): BattleContext {
       powers: [],
       cardsPlayedThisTurn: 0,
       combustHpLoss: 0,
+      bomb1: 0,
+      bomb2: 0,
+      bomb3: 0,
     },
     monsters: [],
     monstersAlive: 0,
@@ -1909,9 +1923,17 @@ export function executeActions(bc: BattleContext): void {
     // ③b 「打不赢了」检查（对齐 BattleContext.cpp:767）：三个牌堆全空且没有不靠牌的伤害
     // 来源，直接判负。位置必须在出牌队列**之后**、怪物回合**之前**。
     // 净化 / 恶魔之火 / 断魂斩那类清手牌的牌能把牌全消耗掉，命中这条就该输而不是空转。
-    // TODO(后续PR): 欧米茄、炸弹三格、短暂（TRANSIENT，那只怪自己会跑）也算「不靠牌」。
+    // ⚠ 炸弹的三格计时器算「不靠牌的伤害来源」（对齐 BattleContext.cpp:786-788 那三行
+    // `player.bomb1 || player.bomb2 || player.bomb3`）：手牌打空但还有炸弹在倒计时时
+    // 不能判负，得等它炸完。
+    // TODO(后续PR): 欧米茄、短暂（TRANSIENT，那只怪自己会跑）也算「不靠牌」。
     if (bc.hand.length + bc.discardPile.length + bc.drawPile.length === 0) {
-      if (getPower(bc.player.powers, "thorns") <= 0) {
+      const hasDamageWithoutCards =
+        getPower(bc.player.powers, "thorns") > 0 ||
+        bc.player.bomb1 !== 0 ||
+        bc.player.bomb2 !== 0 ||
+        bc.player.bomb3 !== 0;
+      if (!hasDamageWithoutCards) {
         bc.outcome = "player_loss";
         break;
       }
@@ -4241,6 +4263,23 @@ const CARD_RULES: Record<string, CardRule> = {
     const dmg = calculateCardDamage(bc, item.target, up ? 18 : 14);
     addToBot(bc, (c) => attackEnemy(c, item.target, dmg));
   },
+
+  // 炸弹：3 个回合后，对所有敌人造成 40(升级 50) 点伤害。
+  // 对齐 BattleContext.cpp:1470 THE_BOMB → `Actions::BuffPlayer<PS::THE_BOMB>(up ? 50 : 40)`。
+  //
+  // ⚠ 它虽然写成 BuffPlayer，却**不是**一个普通 Power：`Player::buff<PS::THE_BOMB>`
+  //（Player.h:330）在进 statusMap 之前就 `bomb3 += amount; return;` 了，所以
+  //  ① 层数记在三个专用字段上、不在 statusMap 里；
+  //  ② `setHasStatus` 一次都没调过，于是 `hasStatusRuntime(THE_BOMB)` **恒为假**——
+  //     参考自己的状态 dump 因此看不见炸弹（harness 的快照同理，见报告的盲区一节）。
+  //  两张炸弹叠加就是 `bomb3` 累加（40 + 40 = 80），不是两个独立的计时器。
+  // 结算与推进见 applyEndOfTurnPowers 的开头。
+  the_bomb: (bc, _item, up) => {
+    const amount = up ? 50 : 40;
+    addToBot(bc, (c) => {
+      c.player.bomb3 += amount;
+    });
+  },
 };
 
 /**
@@ -5105,7 +5144,25 @@ function callEndOfTurnActions(bc: BattleContext): void {
  * 命中项的枚举序：LOSE_STRENGTH(14) → NO_DRAW(16) → DOUBLE_TAP(30) → COMBUST(41) → RAGE(71)。
  */
 function applyEndOfTurnPowers(bc: BattleContext): void {
-  // TODO(后续PR): 炸弹（THE_BOMB）排在整个循环**之前**，需要「N 回合后结算」的计数器。
+  // 炸弹（对齐 Player.cpp:350-355）：排在遍历 statusMap 的循环**之前**，与枚举序无关
+  // ——它压根不在 statusMap 里（见 CombatPlayer.bomb1 的注释）。
+  //
+  // ⚠ 四处照抄：
+  //  ① 先引爆 `bomb1`（**入队** DamageAllEnemy），**再**整体前移一格。所以「打出炸弹的那个
+  //     回合末」它落在 bomb3，要经过三个回合末才轮到 bomb1 被引爆。
+  //  ② 前移是**无条件**的三行赋值，不管有没有引爆过——`bomb3 = 0` 让同一回合打的几张
+  //     炸弹合成一格。
+  //  ③ 引爆判据是 `if (bomb1)`（非零即引爆），**不看**怪是否已全死——与紧随其后的燃烧
+  //     （有 `areMonstersBasicallyDead` 门）不同。
+  //  ④ 伤害是 `Actions::DamageAllEnemy`（非攻击、全体、不过 calculateCardDamage），
+  //     clearOnCombatVictory 用默认的 true。
+  const bomb1 = bc.player.bomb1;
+  if (bomb1 !== 0) {
+    addToBot(bc, (c) => damageAllEnemiesNonAttack(c, bomb1));
+  }
+  bc.player.bomb1 = bc.player.bomb2;
+  bc.player.bomb2 = bc.player.bomb3;
+  bc.player.bomb3 = 0;
 
   // 灵活的还债：先扣力量，再摘掉标记。两条都走 addToBot。
   // ⚠ 扣力量走的是 DebuffPlayer 而不是 BuffPlayer(-n)，所以会被神器吃掉一层——
