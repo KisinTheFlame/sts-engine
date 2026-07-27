@@ -2643,8 +2643,7 @@ const CARD_RULES: Record<string, CardRule> = {
 
   // 破裂：每当你因**打出的牌**失去生命，获得 1(升级 2) 点力量。
   // 对齐 BattleContext.cpp:1599 RUPTURE。结算点见 playerHpWasLost 的 selfDamage 分支。
-  rupture: (bc, _item, up) =>
-    addToBot(bc, (c) => addPower(c.player.powers, "rupture", up ? 2 : 1)),
+  rupture: (bc, _item, up) => addToBot(bc, (c) => addPower(c.player.powers, "rupture", up ? 2 : 1)),
 
   // 哨兵：获得 5(升级 8) 点格挡；若本牌被消耗，回复 2(升级 3) 点能量。
   // 对齐 BattleContext.cpp:1452 SENTINEL。消耗触发见 triggerAndMoveToExhaustPile。
@@ -3847,7 +3846,16 @@ function afterMonsterTurns(bc: BattleContext): void {
     bc.player.block = 0;
   }
   bc.player.cardsPlayedThisTurn = 0;
-  drawCards(bc, bc.player.cardDrawPerTurn);
+  // ⚠ 回合开始的抽牌必须**入队**（`addToBot(Actions::DrawCards(player.cardDrawPerTurn))`，
+  // BattleContext.cpp:2210），不能同步抽。这一条第六批才变得可观察：
+  // 抽到状态牌时烈焰吐息会 `addToBot(DamageAllEnemy)`，而紧随其后的暴虐又 addToBot 了
+  // 「失血 + 抽 1」。同步抽牌会让烈焰吐息的伤害排到暴虐那两条**之前**——它若打死最后一只怪，
+  // clearPostCombatActions 就把暴虐的抽牌（clearOnCombatVictory=true）清掉，那张牌凭空少抽。
+  // 入队之后三条的相对顺序才与参考一致：抽 5 → 暴虐失血 → 暴虐抽 1 → 烈焰吐息伤害。
+  // ⚠ 张数在**入队时**取（参考捕获的是 `player.cardDrawPerTurn` 的当时值）：紧接其后的
+  // DRAW_REDUCTION 会改这个字段，读晚了就会多抽。
+  const drawCount = bc.player.cardDrawPerTurn;
+  addToBot(bc, (c) => drawCards(c, drawCount));
   // TODO(后续PR): DRAW_REDUCTION 的 skipFirst 递减；applyStartOfTurnPostDrawRelics（怀表 / 扭曲钳）。
   applyStartOfTurnPostDrawPowers(bc);
   bc.player.energy = bc.player.energyPerTurn;
