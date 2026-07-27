@@ -1993,9 +1993,22 @@ function playCardQueueItem(bc: BattleContext, item: CardQueueItem): void {
  * ⚠ `inAutoplay` 只影响**能量**那一道：自动打出的牌不看能量够不够（浩劫打出的 3 费牌
  * 在 0 能量下照样打）。牌型那几道（诅咒/状态/缠绕/冲突/秘密技巧武器）对它一视同仁。
  *
- * TODO(后续PR): canUse 剩下的分支——缠绕封攻击（ENTANGLED）、冲突（手里全是攻击牌才能打）、
+ * TODO(后续PR): canUse 剩下的分支——缠绕封攻击（ENTANGLED）、
  *   大结局 / 招牌动作 / 反射 / 天降神兵 / 战术家。都还没有对应内容登记。
  */
+/**
+ * 冲撞能不能打（对齐 `canUseClash`，CardInstance.cpp:260）：**手牌里**每一张都得是攻击牌。
+ *
+ * ⚠ 两处照抄：
+ *  ① 扫的是整只手牌、**不排除冲撞自己**。玩家点牌时冲撞还在手里，而它自己是攻击牌，
+ *     所以自己那一格恒通过；浩劫/混乱翻出来的那张已经离开抽牌堆、不在手牌里，也不参与。
+ *     （数据表卡面写的是「其余全为攻击牌」，与参考的实现在结果上等价。）
+ *  ② 空手牌 → 恒真（循环不进）。这不是空谈：浩劫可以在手牌打空之后才结算。
+ */
+function canUseClash(bc: BattleContext): boolean {
+  return bc.hand.every((c) => getCardDef(c.defId).type === "attack");
+}
+
 function cardCanUse(
   bc: BattleContext,
   card: CombatCard,
@@ -2009,6 +2022,12 @@ function cardCanUse(
     if (t === undefined || !t.alive) {
       return `目标无效: ${target}`;
     }
+  }
+  // 冲撞：只有**手牌全是攻击牌**时才打得出（对齐 canUse 的 ATTACK 分支，
+  // CardInstance.cpp:295 → canUseClash）。⚠ 这一道对 `inAutoplay` **一视同仁**：
+  // 浩劫 / 混乱从抽牌堆顶翻出一张冲撞时照样要过它，不过就凭空消失（那张牌已被拿走）。
+  if (def.type === "attack" && card.defId === "clash" && !canUseClash(bc)) {
+    return `「${def.name}」需要手牌全是攻击牌`;
   }
   // 打不出来的牌（对齐 canUse 的按类型分支）：诅咒牌要蓝烛、状态牌要医疗包
   //（黏液除外，它本来就能打）。第五批开始有灼伤 / 伤口 / 眩晕真的躺在手里，少了这道门
@@ -4213,6 +4232,13 @@ const CARD_RULES: Record<string, CardRule> = {
   perfected_strike: (bc, item, up) => {
     const strikeDmg = bc.strikeCount * (up ? 3 : 2);
     const dmg = calculateCardDamage(bc, item.target, 6 + strikeDmg);
+    addToBot(bc, (c) => attackEnemy(c, item.target, dmg));
+  },
+
+  // 冲撞：仅当手牌中全是攻击牌时才能打出；造成 14(升级 18) 点伤害。
+  // 对齐 BattleContext.cpp:1023 CLASH（效果本身平平无奇，门槛在 cardCanUse / canUseClash）。
+  clash: (bc, item, up) => {
+    const dmg = calculateCardDamage(bc, item.target, up ? 18 : 14);
     addToBot(bc, (c) => attackEnemy(c, item.target, dmg));
   },
 };
