@@ -111,12 +111,35 @@
   的例外），所以策略真会去打它 → 必须在 `CARD_RULES` 登记，否则 trace 不可重放。
   同理，塞进来的状态牌一律要补 `test/sts-combat-trace.test.ts` 的 `CARD` 映射
   （它会出现在牌堆快照里）。
+- ⚠ **死亡触发（亡语）天生只在「同伴还活着」时才跑。** `Monster::die` 在 `--monstersAlive`
+  之后若归零就写 `outcome` 并**当场 `return`**（`Monster.cpp:293-297`），后面的孢子云 /
+  重生 / 尸爆 / 遗物击杀响应一条都不执行。所以给带亡语的怪选批次时，**编队里必须有第二只怪**
+  ——第十六批的真菌兽只在 `exordium_wildlife` 里出现（恒有一只同伴），孢子云才拿到 181 例。
+  ⚠ 反过来，那道 `return` 本身**没有预言机**（0 例）：胜利时 `checkCombat` 会把刚
+  `addToTop` 的动作清掉，两处机制重复。照抄，别因为「量不出来」就简化掉。
+- ⚠ **怪物的开局 Power 可能只是个「有没有」的标记，但照样必须建模**：孢子云的层数
+  参考自注「the value here isn't used. it is always 2」，可它**在怪物快照里**
+  （`SPORE_CLOUD: 2`），漏了会当场抛「未映射的 power」，写错层数红 188 例。
+  同族的是抢劫者的 THIEVERY。判据：凡是 `buff<MS::X>` 出来的东西都会进快照。
+- ⚠ **参考的 `Monster::miscInfo` 是一个字段、含义逐怪种不同，别按用途给每种含义单开字段。**
+  它同时是虱子的咬击伤害、红奴隶主的 `usedEntangle`、刺穿之书的连刺计数、地精巫师的蓄力位、
+  蠕动血块的位掩码……第十六批把我们原先按用途起名的 `rolledDamage` 改回了 `miscInfo`
+  （`migrate` 无损回填）。⚠ 另有一处形状要注意：`Monster::rollMove` 把它**按引用**传进
+  `getMoveForRoll`（`Monster.cpp:629-634`：拷出去、传引用、写回），所以出招规则本身也能改它；
+  而红奴隶主那条读的却是**成员**、不是那个引用参数——当前两者等价，照抄即可。
+- ⚠ **`ALLOW_CHANGED` 用完必须拿 `git status` + `git diff --stat` 复核，并把它写进报告。**
+  那个开关只是让脚本别拦，不会告诉你「实际变的是不是恰好那几个」。第十六批的实际形态：
+  `git status` 只有放行的两个 `M` 加上本批新编队那一个 `??`，`git diff --stat` 两文件
+  各 21 / 20 行——与「补丁只改红奴隶主的出招」对得上。多出任何一个文件都说明影响面
+  超出预期，**停下来查**，不要接着装。这是「其余已冻结数据没被扰动」的唯一凭证。
 
 ### 参考项目错了怎么办
 
-北极星是**真实游戏**，参考项目只是目前最好的预言机。参考自己有 bug（已发现 6 处，
+北极星是**真实游戏**，参考项目只是目前最好的预言机。参考自己有 bug（已打十余个补丁，
 见 TODOS「已知偏离参考项目之处」）——不只是卡牌数值抄错，第五批还挖出一处**数据结构级**的：
-`clearPostCombatActions` 压缩动作环形缓冲时不修 `back`，胜利之后再 `addToBot` 就会丢动作。
+`clearPostCombatActions` 压缩动作环形缓冲时不修 `back`，胜利之后再 `addToBot` 就会丢动作；
+第十六批那个是另一种典型：**变量声明了、读了，就是从没被赋值**（红奴隶主的 `usedEntangle`），
+整段语义静默失效、另一段沦为死代码。grep 一下「这个字段谁写过」是发现它的唯一办法。
 
 判据：
 
@@ -222,7 +245,7 @@ tools/regen-traces.sh --check
 要做的只是把编队名加进 `tools/regen-traces.sh` 的 `ENC_V0`：
 
 ```bash
-ENC_V0="small_slimes lots_of_slimes large_slime blue_slaver red_slaver looter exordium_thugs"
+ENC_V0="small_slimes lots_of_slimes large_slime blue_slaver red_slaver looter exordium_thugs exordium_wildlife"
 ```
 
 `ENC_V0` 的语义是**只保留 variant 0 那 375 行，装完即永久冻结**（此后每批都必须逐字节复现
@@ -300,7 +323,7 @@ tools/regen-traces.sh --install UPPERCUT DEMON_FORM --moves SENTRY_BOLT SENTRY_B
 pnpm typecheck && pnpm lint && pnpm test && pnpm format
 ```
 
-全绿是**下限**，不是完成。`sts-combat-trace.test.ts` 现有 12180 例逐帧对拍，
+全绿是**下限**，不是完成。`sts-combat-trace.test.ts` 现有 12556 例逐帧对拍，
 其中一部分用**全升级牌组**——所以每条规则 `up ? x : y` 的两个分支都会被验证。
 
 改共享路径（`callEndOfTurnActions`、`drawCards`、`onTurnEnding`、`useCard` 之类）时，
