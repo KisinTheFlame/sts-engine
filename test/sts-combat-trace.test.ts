@@ -223,16 +223,14 @@ const CARD: Record<string, string> = {
   // 牌堆快照里**（harness 的 isReplayableCard 不让策略打出未登记的牌），但既然出现在快照里
   // 就必须能映射——漏一个会在重放时报「未知卡牌」而不是静默错。
   //
-  // 下面这 7 张仍属这一类（真去打它们会抛「暂未登记卡牌行为」）：`dark_shackles` /
-  // `violence` 是第十二批（两张都要先修参考侧的 bug），`forethought` 的升级分支在参考侧
-  // 整段被注释掉，剩下四张是别的机制。第九~十一批的 11 张已经登记，分组列在其后。
-  DARK_SHACKLES: "dark_shackles",
+  // 下面这 5 张仍属这一类（真去打它们会抛「暂未登记卡牌行为」）：`forethought` 的升级分支
+  // 在参考侧整段被注释掉，剩下四张是别的机制（都不在铁甲 + 无色的范围里 / 缺别的机制）。
+  // 第九~十二批的 13 张已经登记，分组列在其后。
   ENLIGHTENMENT: "enlightenment",
   FORETHOUGHT: "forethought",
   MAGNETISM: "magnetism",
   PANACHE: "panache",
   SADISTIC_NATURE: "sadistic_nature",
-  VIOLENCE: "violence",
   // —— 第九批 4 张（出牌队列嵌套）——
   HAVOC: "havoc",
   MAYHEM: "mayhem",
@@ -247,6 +245,9 @@ const CARD: Record<string, string> = {
   CLASH: "clash",
   THE_BOMB: "the_bomb",
   HAND_OF_GREED: "hand_of_greed",
+  // —— 第十二批 2 张（怪物回合末触发 / 从抽牌堆随机检索）——
+  DARK_SHACKLES: "dark_shackles",
+  VIOLENCE: "violence",
 };
 const ENCOUNTER: Record<string, string> = {
   CULTIST: "cultist",
@@ -355,6 +356,9 @@ const POWER: Record<string, string> = {
   DOUBLE_TAP: "double_tap",
   // 混乱：层数就是「每回合开始打几张」，两张混乱叠成 2。
   MAYHEM: "mayhem",
+  // —— 第十二批：怪物回合末触发 ——
+  // 束缚：黑暗镣铐临时拿走的力量记在这里，怪物回合末（applyEndOfTurnTriggers）归还并清除。
+  SHACKLED: "shackled",
 };
 
 const mapPotion = (p: string): string | null => (p in POTION ? POTION[p]! : p);
