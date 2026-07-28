@@ -25,14 +25,14 @@ type Snapshot = {
   turn: number;
   outcome: string;
   /**
-   * 本场战斗**赚到的**金币（第十一批新增，贪婪之手的击杀奖励）。
+   * 本场战斗金币的**变化量**（第十一批新增，当时只有贪婪之手的击杀奖励；
+   * 第十五批起抢劫者偷金会让它变成负数）。
    *
    * harness 输出的是**增量**而不是绝对值，且只在非零时才输出——参考那边战斗内金币的入场值
    * 是 GameContext 的 99，直接 dump 绝对值会重写每一个文件的每一行（含**冻结的 variant 0**），
    * 而 `regen-traces.sh` 正是拒绝这件事的。这与 `deckUpgraded` 用的是同一招。
    *
-   * 我们这边的 `initCombat` 因此**故意不传 gold**（从 0 起算），于是 `player.gold`
-   * 直接就是这个增量。差个常数没有任何影响：这五个编队里没有一样东西**读**金币。
+   * ⚠ 重放侧**必须**从同一个绝对值起算，见 `HARNESS_GOLD_BASELINE`。
    */
   goldGained?: number;
   player: {
@@ -96,6 +96,27 @@ type Trace = {
 //  * 单个编队重生成只碰它自己那份
 //  * 行结构让 git 能在版本间做增量，diff 也能看出是哪几条 trace 变了
 // 生成是确定性的：同参数重跑逐字节一致，因此不会平白产生新 blob。
+/**
+ * harness 那边战斗**入场时**的金币绝对值。
+ *
+ * 来源是两处相连的事实：`GameContext.h:224` 的 `int gold = 99`（harness 从不改它，
+ * `trace_dump.cpp:1265` 只传 character/seed/act），以及 `trace_dump.cpp:1327` 的
+ * `s_goldBaseline = gc.gold`——快照里的 `goldGained` 就是相对它的差。
+ *
+ * ⚠ **第十五批之前这里是隐含的 0**，理由写在当时的注释里：「这五个编队没有一样东西读金币，
+ * 差个常数不影响任何行为」。抢劫者一登记，这句话就不成立了——`stealGoldFromPlayer` 是
+ * `min(player.gold, 额度)`，**按金币的绝对值钳制**。从 0 起算的话我们一分钱都偷不到，
+ * 而 trace 里的 `goldGained` 是负数，当场红。所以重放侧改成与参考同起点、比对时再减掉。
+ *
+ * ⚠ 不把钳制删掉「修绿」：那是静默偏离参考，而且真实游戏里「玩家没钱了就偷不走」是真行为。
+ *
+ * 这个常数错了会不会被发现？**偏小一定会**：钳制会提前生效，偷到的金币比 trace 少，
+ * 逐帧对拍当场红（下面的断言还会先给出更直白的报错）。**偏大发现不了**，而且数据里
+ * 也没有能发现它的信息——variant 0 全 375 条 `exordium_thugs` 里偷得最狠的一场也才 -45，
+ * 离 0 还有一倍余量，钳制从没真的咬合过。这一条记在 TODOS 的盲区里。
+ */
+const HARNESS_GOLD_BASELINE = 99;
+
 const traceDir = fileURLToPath(new URL("./golden/traces", import.meta.url));
 const traces: Trace[] = readdirSync(traceDir)
   .filter((f) => f.endsWith(".jsonl"))
@@ -264,6 +285,11 @@ const ENCOUNTER: Record<string, string> = {
   LOTS_OF_SLIMES: "lots_of_slimes",
   // —— 第十四批 ——
   LARGE_SLIME: "large_slime",
+  // —— 第十五批 ——
+  BLUE_SLAVER: "blue_slaver",
+  RED_SLAVER: "red_slaver",
+  LOOTER: "looter",
+  EXORDIUM_THUGS: "exordium_thugs",
 };
 const MONSTER: Record<string, string> = {
   CULTIST: "cultist",
@@ -279,6 +305,11 @@ const MONSTER: Record<string, string> = {
   // 所以这张表同时覆盖 L 号与（第十三批已有的）M 号。
   ACID_SLIME_L: "acid_slime_l",
   SPIKE_SLIME_L: "spike_slime_l",
+  // —— 第十五批。⚠ `EXORDIUM_THUGS` 会从六个候选里各挑一只，所以这三行之外
+  // 还会真的出现邪教徒 / 红绿虱 / 两只中号史莱姆——它们前面已经有映射了。
+  BLUE_SLAVER: "blue_slaver",
+  RED_SLAVER: "red_slaver",
+  LOOTER: "looter",
 };
 const MOVE: Record<string, string> = {
   CULTIST_INCANTATION: "incantation",
@@ -309,6 +340,17 @@ const MOVE: Record<string, string> = {
   SPIKE_SLIME_L_FLAME_TACKLE: "flame_tackle_l",
   SPIKE_SLIME_L_LICK: "lick_frail_l",
   SPIKE_SLIME_L_SPLIT: "split",
+  // —— 第十五批。两位奴隶主的「刺击」在我们这边分别叫 stab / rs_stab
+  // （数据表是一张平表，怪与怪之间的招式 id 不能重名）。
+  BLUE_SLAVER_STAB: "stab",
+  BLUE_SLAVER_RAKE: "rake",
+  RED_SLAVER_STAB: "rs_stab",
+  RED_SLAVER_SCRAPE: "scrape",
+  RED_SLAVER_ENTANGLE: "entangle",
+  LOOTER_MUG: "mug",
+  LOOTER_LUNGE: "lunge",
+  LOOTER_SMOKE_BOMB: "smoke_bomb",
+  LOOTER_ESCAPE: "flee",
 };
 // 药水在 trace 里是显示名。含熵酿填回来的未登记药水——它们只占槽位、不会被喝。
 const POTION: Record<string, string | null> = {
@@ -400,6 +442,12 @@ const POWER: Record<string, string> = {
   // 脆弱：获得的格挡 ×0.75。计算侧（calculateCardBlock）与回合末递减早就实现了，
   // 缺的只是这条映射——在此之前没有任何已登记的怪会施加它。
   FRAIL: "frail",
+  // —— 第十五批 ——
+  // 缠绕：玩家身上，封住攻击牌一个回合。
+  ENTANGLED: "entangled",
+  // 偷窃：**怪物身上**，抢劫者开局自带的 15 层，就是它每次抢劫偷走的上限。
+  // 它一直挂在快照的 monsters[].powers 里，不映射会当场抛「未映射的 power」。
+  THIEVERY: "thievery",
 };
 
 const mapPotion = (p: string): string | null => (p in POTION ? POTION[p]! : p);
@@ -435,8 +483,9 @@ function shape(bc: BattleContext): Record<string, unknown> {
   return {
     turn: bc.turn,
     outcome: bc.outcome,
-    // `start()` 不传 gold，所以这就是「本场赚了多少」——与 harness 的 goldGained 同形。
-    goldGained: bc.player.gold,
+    // `start()` 传的是 HARNESS_GOLD_BASELINE，减回去就是「本场变化了多少」，
+    // 与 harness 的 goldGained 同形。
+    goldGained: bc.player.gold - HARNESS_GOLD_BASELINE,
     player: {
       hp: bc.player.hp,
       maxHp: bc.player.maxHp,
@@ -513,6 +562,8 @@ const start = (t: Trace): BattleContext =>
     })),
     playerHp: t.initial.player.hp,
     playerMaxHp: t.initial.player.maxHp,
+    // 见 HARNESS_GOLD_BASELINE：偷金按绝对值钳制，起点必须与 harness 一致。
+    gold: HARNESS_GOLD_BASELINE,
     character: "ironclad",
     relics: t.relics,
     potions: t.initial.potions.map(mapPotion),
@@ -526,6 +577,31 @@ for (const t of traces) {
   list.push(t);
   byEncounter.set(t.encounter, list);
 }
+
+describe("trace 数据自身的不变量", () => {
+  // HARNESS_GOLD_BASELINE 偏小时给一条比「第 N 步状态不符」直白得多的诊断：
+  // 参考的金币不会为负（`stealGoldFromPlayer` 按 `min(gold, 额度)` 钳制、`gainGold` 只加），
+  // 所以任何一条 `goldGained` 都不可能比入场值还负。
+  // ⚠ 反方向（常数偏大）**测不出来**，数据里没有那份信息，见 HARNESS_GOLD_BASELINE 的注释。
+  it(`每条快照的 goldGained 都不低于 -${HARNESS_GOLD_BASELINE}（金币不会为负）`, () => {
+    let worst = 0;
+    let where = "";
+    for (const t of traces) {
+      for (const s of [t.initial, ...t.steps.map((step) => step.after)]) {
+        const d = s.goldGained ?? 0;
+        if (d < worst) {
+          worst = d;
+          where = `${t.encounter} seed ${t.seed} @floor ${t.floor}`;
+        }
+      }
+    }
+    expect(
+      worst,
+      `最深的一次金币变化是 ${worst}（${where}）。它比 -HARNESS_GOLD_BASELINE 还低，` +
+        `说明重放侧的入场金币常数比 harness 的小——偷金的钳制会提前生效，见 HARNESS_GOLD_BASELINE。`,
+    ).toBeGreaterThanOrEqual(-HARNESS_GOLD_BASELINE);
+  });
+});
 
 describe("sts-combat 逐帧重放参考项目真实战斗 trace", () => {
   for (const [encounter, list] of byEncounter) {
