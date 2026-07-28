@@ -468,12 +468,19 @@ export type CombatMonster = {
    * 怪物侧的通用整数字段（对齐 `Monster::miscInfo`，Monster.h:83）。
    *
    * ⚠ 参考就是**一个 int**，含义**逐怪种不同**——我们照抄这个形状，不给每种含义单开字段，
-   * 否则同一个参考字段会在这里裂成好几份、以后逐只怪都要再加一个。当前两种用法：
+   * 否则同一个参考字段会在这里裂成好几份、以后逐只怪都要再加一个。当前三种用法：
    *   * 虱子：出生时掷定、整场固定的咬击伤害（`Monster::construct`，Monster.cpp:116）
    *   * 红色奴隶主：`usedEntangle` 标志（0/1）。⚠ 这一位是**我们给参考打的补丁**才有的——
    *     参考读了它却从没写过，见 `MOVE_RULES.red_slaver` 与
    *     `MOVE_TURN_BEGIN["red_slaver/entangle"]`
-   * 未使用该机制的怪保持 0。
+   *   * 地精巫师：蓄力计数（第十七批）。⚠ 它由**三处**协同维护，改一处就错：
+   *     `MOVE_RULES.gremlin_wizard` 置 1（起点）、`MOVE_TURN_BEGIN["gremlin_wizard/charging"]`
+   *     每回合 +1、`MOVE_TURN_END["gremlin_wizard/ultimate_blast"]` 清 0。
+   * ⚠ 参考的 `Monster::rollMove` 把它**按引用**传进 `getMoveForRoll`（Monster.cpp:629-634：
+   * 拷出去、传引用、写回），所以**出招规则本身也能改它**——地精巫师那条就是这么写的
+   * （而红色奴隶主那条读的却是**成员**，两者当前等价）。
+   * 参考里还有若干种我们没用到的含义：刺穿之书的连刺计数、暗影的咬击伤害、
+   * 六火幽魂的分割伤害、蠕动血块的位掩码。未使用该机制的怪保持 0。
    */
   miscInfo: number;
 };
@@ -1006,6 +1013,40 @@ const MOVE_RULES: Record<string, MoveForRoll> = {
     }
     return "fungi_grow";
   },
+
+  // —— 地精帮五只（第十七批）——
+  //
+  // ⚠ 五条**全部不看 roll**（roll 照掷、结果被丢掉），与邪教徒 / 尖刺史莱姆小 / 抢劫者同形。
+  //   出招的全部逻辑都在 takeTurn 的 case 尾部，见 `MOVE_TURN_END`。
+  // ⚠ 而且这五条**一场仗基本只被调用一次**：狂暴/肥胖地精的收尾是 `NoOpRollMove`
+  //   （掷 aiRng 但不改意图）、鬼祟地精与护盾地精与巫师干脆什么都不排——没有一只排
+  //   真正的 `RollMove`。所以 `MonsterGroup::init` 那一轮之后它们再也不掷新意图。
+
+  // 狂暴地精：对齐 MonsterSpecific.cpp:2527 MAD_GREMLIN——恒返回抓挠。
+  mad_gremlin: () => "scratch",
+
+  // 鬼祟地精：对齐 MonsterSpecific.cpp:2767 SNEAKY_GREMLIN——恒返回穿刺。
+  sneaky_gremlin: () => "puncture",
+
+  // 肥胖地精：对齐 MonsterSpecific.cpp:2311 FAT_GREMLIN——恒返回猛击。
+  fat_gremlin: () => "smash",
+
+  // 护盾地精：对齐 MonsterSpecific.cpp:2719 SHIELD_GREMLIN——恒返回保护。
+  // 「场上只剩自己就改出盾击」不在这里，而在保护那条 case 的尾部
+  //（见 `MOVE_TURN_END["shield_gremlin/protect"]`）。
+  shield_gremlin: () => "protect",
+
+  // 地精巫师：对齐 MonsterSpecific.cpp:2458-2461 GREMLIN_WIZARD。
+  // ⚠ **这是唯一一条会写 `miscInfo` 的出招规则**：参考写的是 `monsterData = 1;`，
+  //   而 `monsterData` 是 `Monster::rollMove` 把 `miscInfo` **按引用**传进来的那个副本
+  //   （Monster.cpp:629-634：拷出去 → 传引用 → 写回）。所以它等价于「置成员 miscInfo = 1」。
+  // ⚠ 这个 1 是蓄力计数的**起点**，直接决定第一次大招来得多早：起点 1 时只蓄 2 回合
+  //   （1→2、2→3）就放大招，而大招之后 `miscInfo = 0` 让后续每轮蓄 3 回合。
+  //   两段节奏不同是参考（与真实游戏）的原样，不是笔误。
+  gremlin_wizard: (_bc, m) => {
+    m.miscInfo = 1; // ★ 不消耗 RNG，但改变蓄力计数的起点
+    return "charging";
+  },
 };
 
 // ============================================================================
@@ -1114,6 +1155,61 @@ const MOVE_TURN_END: Record<string, MoveTurnEnd> = {
   // （MonsterSpecific.cpp:899-909）——与分裂同为 `none` 形态。逃跑之后它再也不行动，
   // 所以「意图不变」也不会被观察到。
   "looter/flee": "none",
+
+  // —— 地精帮五只（第十七批）：**没有一条排真正的 RollMove** ——
+  //
+  // ⚠ 三只只有一招的地精，收尾却**不一样**，照抄不要统一：
+  //   狂暴 / 肥胖 → `addToBot(NoOpRollMove())`（照掷一次 aiRng 丢掉）
+  //   鬼祟         → **什么都没有**（一次都不掷）
+  // 参考里就是这么写的（MonsterSpecific.cpp:650-654 / :660-664 / :670-672），
+  // 差别当场体现在 aiRng 计数器上。
+
+  // ⚠ 三条 case 的收尾其实都长这样：
+  //     if (doesEscapeNext()) { setMove(GENERIC_ESCAPE_MOVE); } else { …… }
+  //   而 `Monster::escapeNext` 在参考里**全项目没有任何写入点**（只有 Monster.h:47 的
+  //   初值 false 与 Monster.cpp:261 的 getter），所以 `doesEscapeNext()` 恒假、逃跑那支是
+  //   死代码——与第十六批修掉的红奴隶主 `usedEntangle` **同一类笔误**。
+  //   真实游戏里这一位由地精头领（GREMLIN_LEADER）被打死时置上，而那个编队不在 harness 的
+  //   20 个第一幕编队里，**没有预言机**，所以这一批既不建模 `escapeNext`、也不给参考打补丁，
+  //   只转写 else 那一支。见 TODOS「已确认但尚未打补丁」。
+  "mad_gremlin/scratch": "no_op_roll",
+  "fat_gremlin/smash": "no_op_roll",
+  "sneaky_gremlin/puncture": "none",
+
+  // 护盾地精的保护：尾部是**条件同步 setMove**（第五形态：任意函数）。
+  // 对齐 MonsterSpecific.cpp:1099-1101 `if (bc.monsters.getAliveCount() <= 1) setMove(SHIELD_BASH)`。
+  // ⚠ 三处逐位对齐点：
+  //  ① `getAliveCount()` 就是 `monstersAlive`（MonsterGroup.cpp:36-38），不是「数组里活着的个数」；
+  //  ② 判定跑在**同步**语句里，也就是排在上面那条 `addToBot(GainBlockRandomEnemy)` 之前生效
+  //     ——快照里意图当场就变成盾击，而格挡要等动作出队才加；
+  //  ③ `<= 1` 而不是 `== 1`：护盾地精自己此刻还活着，所以这就是「场上只剩我」。
+  //  ⚠ 一旦改成盾击就**再也回不去**（盾击那条 case 尾部什么都没有），所以这是单向门。
+  "shield_gremlin/protect": (bc, m) => {
+    if (bc.monstersAlive <= 1) {
+      setMove(m, "shield_bash");
+    }
+  },
+  // 盾击：`attackPlayerHelper` 之后直接 break（MonsterSpecific.cpp:1105-1107），
+  // 没有任何收尾语句——它会一直盾击到死。
+  "shield_gremlin/shield_bash": "none",
+
+  // 地精巫师的蓄力：尾部是「攒够 3 次就改出大招」（MonsterSpecific.cpp:776-778）。
+  // ⚠ 计数那句 `++miscInfo` 排在**它之前**，落在 `MOVE_TURN_BEGIN` 里；这里只判阈值。
+  // ⚠ 判的是 `== 3` 而不是 `>= 3`——配合大招那条的 `miscInfo = 0` 才不会溢出。
+  "gremlin_wizard/charging": (_bc, m) => {
+    if (m.miscInfo === 3) {
+      setMove(m, "ultimate_blast");
+    }
+  },
+  // 大招：尾部是 `if (!asc17) { miscInfo = 0; setMove(CHARGING); }`
+  // （MonsterSpecific.cpp:784-788）。asc17 时**整段不跑**——意图停在大招上，于是每回合都放，
+  // 这就是高层数地精巫师那么凶的原因。当前 trace 全是 asc0，那一支走不到但照抄。
+  "gremlin_wizard/ultimate_blast": (bc, m) => {
+    if (bc.ascension < 17) {
+      m.miscInfo = 0; // 清零蓄力计数
+      setMove(m, "charging");
+    }
+  },
 };
 
 /**
@@ -1138,6 +1234,14 @@ const MOVE_TURN_BEGIN: Record<string, (bc: BattleContext, m: CombatMonster) => v
   //   写的是**同步**语句（不入队），所以紧随其后那条 `addToBot(RollMove)` 执行时已经看得见。
   "red_slaver/entangle": (_bc, m) => {
     m.miscInfo = 1;
+  },
+  // 地精巫师的蓄力计数（对齐 MonsterSpecific.cpp:775 那条 case 的**第一句** `++miscInfo`）。
+  // ⚠ 这条 case 没有任何效果，所以「开场」与「收尾」其实是同一个时点；写在这里是为了保住
+  //   参考的语句顺序——先加一，再由 `MOVE_TURN_END` 判 `== 3`。
+  // ⚠ 计数的**起点是 1**（`MOVE_RULES.gremlin_wizard` 在 rollMove 里置的），
+  //   所以开局那轮只蓄两回合；大招之后清零，此后每轮蓄三回合。
+  "gremlin_wizard/charging": (_bc, m) => {
+    m.miscInfo += 1;
   },
 };
 
@@ -1417,6 +1521,43 @@ const ENCOUNTER_BUILDERS: Record<string, EncounterBuilder> = {
       () => "acid_slime_m",
     ]);
   },
+
+  // 地精帮（第十七批）：从 8 个候选里**不放回地抽 4 只**（对齐 MonsterGroup.cpp:100-122）。
+  //
+  // ⚠ 与 `lots_of_slimes` 同族但**不是同一段代码**，四处差别都要照抄：
+  //  ① 候选表是 8 项且**带重复**（狂暴 ×2、鬼祟 ×2、肥胖 ×2、护盾 ×1、巫师 ×1）
+  //     ——所以「同一只怪出现两次」是正常的，而护盾/巫师最多各一只；
+  //  ② 有效区间由**独立的 `lastIdx`**（初值 7）表达，每轮取完才 `--lastIdx`；
+  //     史莱姆群那段是拿循环变量 `i` 兼作上界。两者在本例里等价，但写法照抄更安全；
+  //  ③ 循环**恰好 4 轮**（`for i in 0..3`），不是把池子抽干；
+  //  ④ 取走 `pool[idx]` 之后是**整体左移**（`while (idx < lastIdx) pool[idx] = pool[idx+1]`），
+  //     **不是**「与末位交换」——两种写法分布相同、同种子下排列不同。
+  //     第十三批实测过这条：史莱姆群改成交换当场红 253 例。
+  // ⚠ RNG 交错：每轮先 `miscRng.random(lastIdx)` 选下标，**再** `createMonster` 掷血量，
+  //   所以流是 misc,hp,misc,hp,misc,hp,misc,hp（狂暴地精没有 construct 特例，不额外掷）。
+  gremlin_gang: (bc) => {
+    const pool = [
+      "mad_gremlin",
+      "mad_gremlin",
+      "sneaky_gremlin",
+      "sneaky_gremlin",
+      "fat_gremlin",
+      "fat_gremlin",
+      "shield_gremlin",
+      "gremlin_wizard",
+    ];
+    let lastIdx = 7;
+    for (let i = 0; i < 4; i += 1) {
+      let idx = bc.rng.miscRng.random(lastIdx); // ★ 消耗一次 miscRng
+      const gremlin = pool[idx];
+      while (idx < lastIdx) {
+        pool[idx] = pool[idx + 1]!;
+        idx += 1;
+      }
+      lastIdx -= 1;
+      createMonster(bc, gremlin); // ★ 消耗一次 monsterHpRng
+    }
+  },
 };
 
 // ============================================================================
@@ -1449,6 +1590,12 @@ const PRE_BATTLE_ACTION: Record<string, PreBattleAction> = {
   // 它照样必须建模：SPORE_CLOUD 会出现在 trace 的怪物 powers 快照里。
   fungi_beast: (_bc, m) => {
     addPower(m.powers, "spore_cloud", 2);
+  },
+  // 狂暴地精的狂怒（对齐 MonsterSpecific.cpp:156-158 `buff<MS::ANGRY>(asc17 ? 2 : 1)`）。
+  // **不消耗 RNG**。层数就是每次挨打涨的力量，触发在 `monsterAttacked` 里。
+  // 与孢子云 / 偷窃同理：它会进 trace 的怪物 powers 快照（`ANGRY: 1`），不建模会当场抛错。
+  mad_gremlin: (bc, m) => {
+    addPower(m.powers, "angry", bc.ascension >= 17 ? 2 : 1);
   },
 };
 
@@ -1529,6 +1676,13 @@ function overwriteMove(m: CombatMonster, move: string): void {
  *     数据表的 intent 对得上，但方向是从白名单读出来的，不是从「带不带伤害」推的。
  *   * 真菌兽（第十六批）：白名单里只有 `FUNGI_BEAST_BITE`（`:455`），`FUNGI_BEAST_GROW`
  *     **不在**，与我们的 `attack` / `buff` 一致。孢子云不是招式，不参与这道判定。
+ *   * 地精帮五只（第十七批）：白名单里有 `FAT_GREMLIN_SMASH`（`:454`）、
+ *     `GREMLIN_WIZARD_ULTIMATE_BLAST`（`:462`）、`MAD_GREMLIN_SCRATCH`（`:472`）、
+ *     `SHIELD_GREMLIN_SHIELD_BASH`（`:493`）、`SNEAKY_GREMLIN_PUNCTURE`（`:496`）。
+ *     **不在**的两条是 `SHIELD_GREMLIN_PROTECT` 与 `GREMLIN_WIZARD_CHARGING`，与我们的
+ *     `defend` / `unknown` 一致。⚠ 这两条正是「不带伤害的招式」——白名单里存在
+ *     `SPHERIC_GUARDIAN_HARDEN` 那种「带伤害却算攻击」的反例，所以方向只能从白名单读，
+ *     不能从「带不带伤害」推。狂怒（ANGRY）不是招式，不参与这道判定。
  * 新登记怪种时**必须**回白名单复核，因为白名单里存在「带伤害却不算攻击」与反向的例外
  *（如球状守卫的 HARDEN 被算作攻击）。
  */
@@ -2938,11 +3092,23 @@ function attackEnemy(bc: BattleContext, idx: number, damage: number): void {
 
 function monsterAttacked(bc: BattleContext, m: CombatMonster, rawDamage: number): void {
   let damage = Math.max(0, rawDamage);
+  // 狂怒（ANGRY，狂暴地精）：对齐 `Monster::attacked` 里那句 `if (hasStatus<ANGRY>())
+  // buff<STRENGTH>(getStatus<ANGRY>())`（Monster.cpp:424-426）。三处非直觉但照抄：
+  //  ① 位置在**格挡吸收之前**，而且这一族的判定与伤害无关——**打在格挡上照样涨力量**，
+  //     甚至 `damage == 0` 也涨。与蜷缩正相反：蜷缩在 `attackedUnblockedHelper` 里，
+  //     只有真的破了格挡才触发（见 `monsterDamageUnblocked`）。
+  //  ② 是**同步** buff、不入队——所以同一回合里排在后面的攻击已经能吃到新力量。
+  //  ③ **不会被消耗掉**：层数留着，每挨一次攻击就再涨一次。
+  // ⚠ 它只挂在 `attacked` 这条路上：非攻击伤害（燃烧 / 主宰 / 火焰药水走 `damage`）不触发。
+  const angry = getPower(m.powers, "angry");
+  if (angry > 0) {
+    addPower(m.powers, "strength", angry);
+  }
   // 格挡吸收：先扣伤害再削格挡，两者都基于进入时的原值（对齐 Monster::attacked）。
   const tempDamage = damage;
   damage -= m.block;
   m.block = Math.max(0, m.block - tempDamage);
-  // TODO(后续PR): 蜷缩/镀甲/反甲/狂怒等 onAttacked 触发。
+  // TODO(后续PR): 虚无缥缈（怪物侧，位置在狂怒**之前**）、手钻（破盾时上易伤）。
   if (damage > 0) {
     monsterDamageUnblocked(bc, m, damage);
   }
@@ -3035,6 +3201,41 @@ function monsterEscape(bc: BattleContext, m: CombatMonster): void {
   bc.monstersAlive -= 1;
   if (bc.monstersAlive === 0) {
     bc.outcome = "player_victory";
+  }
+}
+
+/**
+ * 给一名随机友军加格挡（对齐 `Actions::GainBlockRandomEnemy`，Actions.cpp:436-458）。
+ *
+ * 本项目**第一个「怪物 → 怪物」的效果**，四处逐位对齐点：
+ *
+ *  ① **候选排除自己**（`i != sourceMonster`），也排除**已死**的（`!m.isDying()`）。
+ *     ⚠ 参考用的是 `isDying()`（血 ≤ 0）而**不是** `isDeadOrEscaped()`——两者只在
+ *     「逃跑 / 假死」时分岔，而地精帮里没有这两种怪，所以当前用 `m.alive`
+ *     （= `!isDeadOrEscaped()`）与参考等价。以后若出现「逃跑的同伴还能被加格挡」的编队，
+ *     这里要拆开成两个谓词。
+ *  ② **候选为空时目标是自己**，而且那一支**一次 aiRng 都不掷**。护盾地精落单时走的就是它
+ *     ——不过它一落单就会被 `MOVE_TURN_END` 改成盾击，所以这一支只在「排队时还有同伴、
+ *     出队时同伴已死」的窄缝里出现。
+ *  ③ 掷的是 `aiRng.random(validCount - 1)`（**闭区间上界**），不是 `random(validCount)`。
+ *  ④ 加格挡走的是 `Monster::addBlock`，**不过** `calculateCardBlock`——怪物没有敏捷/脆弱。
+ */
+function gainBlockRandomEnemy(bc: BattleContext, sourceIdx: number, amount: number): void {
+  const validIdxs: number[] = [];
+  for (let i = 0; i < bc.monsters.length; i += 1) {
+    if (i !== sourceIdx && bc.monsters[i]?.alive === true) {
+      validIdxs.push(i);
+    }
+  }
+  let targetIdx: number;
+  if (validIdxs.length > 0) {
+    targetIdx = validIdxs[bc.rng.aiRng.random(validIdxs.length - 1)]!; // ★ 消耗一次 aiRng
+  } else {
+    targetIdx = sourceIdx; // 没有同伴时给自己，**不掷** aiRng
+  }
+  const target = bc.monsters[targetIdx];
+  if (target !== undefined) {
+    target.block += amount;
   }
 }
 
@@ -6330,6 +6531,14 @@ function takeTurn(bc: BattleContext, m: CombatMonster): string | null {
           m.block += eff.amount;
         });
       }
+    } else if (eff.kind === "gain_block_ally") {
+      // 给随机友军加格挡（护盾地精的保护）。参考是
+      // `addToBot(Actions::GainBlockRandomEnemy(idx, blockAmount))`（MonsterSpecific.cpp:1098）
+      // ——**入队**，所以选目标那次 aiRng 掷在动作**出队执行**的那一刻，不是排队的这一刻。
+      // 差别可观察：同一回合里排在它前面的攻击若打死了某只怪，选目标时那只已经被排除。
+      const { amount } = eff;
+      const src = bc.monsters.indexOf(m);
+      addToBot(bc, (c) => gainBlockRandomEnemy(c, src, amount));
     } else if (eff.kind === "steal_gold") {
       // 偷金：**同步**执行（参考的 `stealGoldFromPlayer` 是裸调用，不是 addToBot），
       // 排在同一条 case 里的 attackPlayerHelper **之前**。
@@ -6914,6 +7123,8 @@ export const SUPPORTED_ENCOUNTERS: readonly string[] = [
   "exordium_thugs",
   // —— 第十六批 ——
   "exordium_wildlife",
+  // —— 第十七批 ——
+  "gremlin_gang",
 ];
 
 export function isEncounterSupported(encounterId: string): boolean {
