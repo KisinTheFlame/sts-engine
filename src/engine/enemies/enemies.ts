@@ -307,31 +307,40 @@ const ENEMY_LIST: EnemyDef[] = [
   {
     id: "fungi_beast",
     name: "真菌兽",
+    // MonsterIds.h:172 `{{22,28},{24,28}}`（asc<7 取前者）。
     hpMin: 22,
     hpMax: 28,
-    deathEffects: [{ kind: "apply_power", power: "vulnerable", amount: 2, on: "target" }],
+    // ⚠ **孢子云不写在这里。** 参考把它建模成一个 Power：`preBattleAction` 里
+    // `buff<MS::SPORE_CLOUD>(2)`（MonsterSpecific.cpp:182-184，参考自注「the value here
+    // isn't used. it is always 2」），死亡时由 `Monster::die` 读 `hasStatus<SPORE_CLOUD>()`
+    // 决定放不放易伤（Monster.cpp:299-301）。两个理由让它不能退回数据表的 `deathEffects`：
+    //   ① 那个 Power **会出现在 trace 的怪物快照里**（`SPORE_CLOUD: 2`），不建模就对不上；
+    //   ② 易伤的层数 2 与 isSourceMonster 都是 `die` 里硬写的，写进数据表就是两份真相
+    //      （与第十五批 `steal_gold` 去掉 `amount` 同一条理由）。
+    // 见 sts-combat.ts 的 `PRE_BATTLE_ACTION.fungi_beast` 与 `monsterDie`。
     moves: [
       {
+        // MonsterSpecific.cpp:691 `attackPlayerHelper(bc, 6)`——**没有 asc 分档**
+        // （MonsterMoveDamage.cpp:72 同样是裸的 `{6}`）。
         id: "fungi_bite",
         name: "撕咬",
         effects: [{ kind: "deal_damage", amount: 6 }],
         intent: "attack",
       },
       {
+        // MonsterSpecific.cpp:696-700 `buff<MS::STRENGTH>(strengthBuff[hallwayIdx])`，
+        // `strengthBuff[] = {3,4,5}`、`hallwayIdx = getTriIdx(asc, 2, 17)`，故 asc0 是 3。
+        // ⚠ 是**同步** buff（不是 addToBot），与颚虫的咆哮同形。
         id: "fungi_grow",
         name: "成长",
         effects: [{ kind: "apply_power", power: "strength", amount: 3, on: "self" }],
         intent: "buff",
       },
     ],
-    // 连两次撕咬后强制成长；刚成长完回撕咬；否则随机（近似权重）。
-    intentRule: {
-      scripted: [],
-      weighted: [
-        { move: "fungi_bite", weight: 60, maxInARow: 2 },
-        { move: "fungi_grow", weight: 40, maxInARow: 1 },
-      ],
-    },
+    // 出招规则见 sts-combat.ts 的 MOVE_RULES（roll<60 那段带「连两次撕咬就成长」的连续限制，
+    // 否则「刚成长完就撕咬」）。⚠ `MonsterMoves.h:455` 的攻击白名单里只有 FUNGI_BEAST_BITE，
+    // FUNGI_BEAST_GROW **不在**，与上面的 attack / buff 一致。
+    intentRule: { scripted: [], weighted: [] },
   },
 
   // —— 地精帮（狂暴/鬼祟/肥胖/护盾/巫师）——
@@ -500,15 +509,17 @@ const ENEMY_LIST: EnemyDef[] = [
         intent: "attack",
       },
       {
-        // MonsterSpecific.cpp:1018 `addToBot(DebuffPlayer<PS::ENTANGLED>(1))`。
+        // MonsterSpecific.cpp:1017 那条 case：`addToBot(DebuffPlayer<PS::ENTANGLED>(1))`。
+        // ⚠ 同一条 case 里还有一句**第十六批给参考补上的** `miscInfo = 1`（置 usedEntangle），
+        //   它不是效果、是引擎侧记账，写在 sts-combat.ts 的 `MOVE_TURN_BEGIN`。
         id: "entangle",
         name: "缠绕",
         effects: [{ kind: "apply_power", power: "entangled", amount: 1, on: "target" }],
         intent: "debuff",
       },
     ],
-    // 出招规则见 sts-combat.ts 的 MOVE_RULES（首招刺击；⚠ 参考的「缠绕一场只能用一次」
-    // 因为 miscInfo 从没被写过而**不成立**，照抄，理由写在那里）。
+    // 出招规则见 sts-combat.ts 的 MOVE_RULES（首招刺击；「缠绕一场只放一次」自第十六批的
+    // 参考侧补丁起真的生效，随之复活的 `roll >= 50` 那段阈值**未经验证**，见那里的注释）。
     intentRule: { scripted: [], weighted: [] },
   },
 
@@ -2089,6 +2100,16 @@ const ENCOUNTERS: Record<string, EncounterDef> = {
   exordium_thugs: {
     id: "exordium_thugs",
     enemies: ["acid_slime_m", "looter"],
+    isBoss: false,
+  },
+  // 荒野二人组：一只「强野生动物」+ 一只「弱野生动物」，同样是「先把候选全部造出来再挑一个」
+  // （`createStrongWildlife` / `createWeakWildlife`，MonsterGroup.cpp:487/:497）。
+  // ⚠ 顺序与恶棍二人组**相反**：这里是先 strong 后 weak（MonsterGroup.cpp:168-170）。
+  // 见 sts-combat.ts 的 `ENCOUNTER_BUILDERS.exordium_wildlife`。
+  // 这里的 `enemies` 只是占位——有 builder 时 `initCombat` 根本不读它。
+  exordium_wildlife: {
+    id: "exordium_wildlife",
+    enemies: ["fungi_beast", "acid_slime_m"],
     isBoss: false,
   },
   // 第二幕

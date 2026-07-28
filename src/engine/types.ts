@@ -44,7 +44,9 @@ export type PowerId =
   | "regen" // 再生：每回合结束回复 = 层数的生命，然后层数 -1
   | "plated_armor" // 镀甲：每回合结束获得 = 层数的格挡；受到穿透格挡的攻击伤害时 -1 层
   | "angry" // 狂怒：每次受到攻击伤害，获得 = 层数的力量（狂暴地精）
-  | "spore_cloud" // 孢子云：死亡时给玩家施加易伤（真菌兽，显示用；实际死亡效果在 deathEffects）
+  // 孢子云：真菌兽开局自带（preBattleAction 里 buff 2 层），死亡时给玩家 2 层易伤。
+  // ⚠ 层数只是标记：参考的 `Monster::die` 硬写 `DebuffPlayer<VULNERABLE>(2, …)`，不读层数。
+  | "spore_cloud"
   | "mode_shift" // 模式切换累计（守卫者，内部计数用）
   // —— 玩家能力牌触发型 power（在对应触发点由 combat 结算，玩家专属）——
   | "combust" // 燃烧：每个玩家回合结束，失 1 生命并对所有敌人造成 = 层数的伤害
@@ -134,7 +136,7 @@ export type Effect =
   | { kind: "deal_damage_equal_to_block" }
   // 敌人用：伤害取自本敌人锁定的固定值（红虱咬击；六火之灵分割 times 连击）。
   | { kind: "deal_damage_rolled"; times?: number }
-  // 敌人用：按玩家当前生命锁定一个每击伤害存入 rolledDamage（六火之灵激活：floor(hp/divisor)+add）。
+  // 敌人用：按玩家当前生命锁定一个每击伤害存入 miscInfo（六火之灵激活：floor(hp/divisor)+add）。
   | { kind: "store_hp_scaled_damage"; divisor: number; add: number }
   // sync：敌人专用。参考的怪物加格挡有**两种写法并存**——绝大多数是**同步** `addBlock(n)`
   // （拾荒者烟雾弹 MonsterSpecific.cpp:937 等 20 余处），少数是 `addToBot(MonsterGainBlock)`
