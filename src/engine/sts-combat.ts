@@ -1351,7 +1351,11 @@ const ENCOUNTER_BUILDERS: Record<string, EncounterBuilder> = {
   // ⚠ 顺序不能换：先野生动物后人形，两段的 RNG 消耗是串在一条流上的。
   exordium_thugs: (bc) => {
     // createWeakWildlife（MonsterGroup.cpp:497）：红/绿虱二选一 → 尖刺史莱姆中 → 酸液史莱姆中。
-    createFromConstructedPool(bc, [() => getLouse(bc), () => "spike_slime_m", () => "acid_slime_m"]);
+    createFromConstructedPool(bc, [
+      () => getLouse(bc),
+      () => "spike_slime_m",
+      () => "acid_slime_m",
+    ]);
     // createStrongHumanoid（MonsterGroup.cpp:477）：邪教徒 → 红/蓝奴隶主二选一 → 抢劫者。
     createFromConstructedPool(bc, [() => "cultist", () => getSlaver(bc), () => "looter"]);
   },

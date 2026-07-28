@@ -1849,11 +1849,7 @@ const ENEMY_LIST: EnemyDef[] = [
       {
         id: "mugger_lunge",
         name: "扑击逃窜",
-        effects: [
-          { kind: "steal_gold" },
-          { kind: "deal_damage", amount: 16 },
-          { kind: "escape" },
-        ],
+        effects: [{ kind: "steal_gold" }, { kind: "deal_damage", amount: 16 }, { kind: "escape" }],
         intent: "attack",
       },
     ],

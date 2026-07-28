@@ -85,6 +85,27 @@
 - ⚠ **`getMoveForRoll` 可以完全不看 `roll`**。酸液史莱姆小（asc<17）直接
   `bc.aiRng.randomBoolean()` 二选一，顶部那次 `random(99)` 照掷但结果被丢掉——
   于是它一次 rollMove 消耗 **2** 次 aiRng。别以为「不追加 RNG」等于「只消耗 1 次」。
+- ⚠ **收尾其实有第五形态：任意函数。** 抢劫者的抢劫收尾按怪物回合数分岔、还带一次 aiRng
+  （`if (回合数==1) setMove(抢劫) else setMove(randomBoolean(0.5) ? 烟雾弹 : 猛扑)`），
+  四个静态形态一个都表达不了。同一条 case 还可能在**效果之前**有语句（抢劫者首回合白掷一次
+  `randomBoolean(0.6f)` 作对白，结果丢弃、只影响计数器）——那种进 `MOVE_TURN_BEGIN`。
+  判据很简单：**照着 case 从上到下读，效果之外的每一句都要有地方放**。
+- ⚠ **`isDeadOrEscaped` 有三位，「死」只是其中一位。** `isDying()`（血 ≤ 0）/ `isHalfDead()`
+  （僧侣、觉醒者的假死）/ `isEscaping()`（抢劫者、劫匪逃跑）。我们的 `m.alive` 建模的是
+  **`!isDeadOrEscaped()`**（harness 的快照字段就是这么算的），所以逃跑也置 `alive = false`
+  并减 `monstersAlive`，但**不走死亡链**、血量不动。⚠ 逃跑判胜是直接写 `outcome`，
+  参考在那里**没有**调 `checkCombat`，别顺手补上。
+- ⚠ **「候选表」本身可能带 RNG，而且掷在那一只的血量之前。**
+  `createWeakWildlife` 的第 0 项是 `getLouse(bc.miscRng)`、`createStrongHumanoid` 的第 1 项是
+  `getSlaver(bc.miscRng)`——它们是 `construct(...)` 的**实参**，C++ 先算实参再进函数。
+  ⚠ `getSlaver` 是 **true = 红**；`getLouse` true=红虱、`small_slimes` true=尖刺、
+  `large_slime` true=酸液——**四条各写各的，照抄上一批必错**，逐个回参考看。
+- ⚠ **登记一只怪可能会推翻此前「这个字段没人读」的前提。** 抢劫者的偷金是
+  `min(player.gold, 额度)`——按玩家金币的**绝对值**钳制。在此之前战斗内金币只进不出、
+  没有任何东西读它，于是 trace 重放故意从 0 起算（`player.gold` 直接就是增量）；
+  登记抢劫者之后那样做会让一分钱都偷不到。**修法是让重放侧与 harness 同起点起算
+  （`HARNESS_GOLD_BASELINE`），比对时减掉，绝不是把钳制删了「修绿」。**
+  下次遇到同类：先 grep 一遍参考里**读**这个字段的地方，别信旧注释里的「无人读」。
 - ⚠ **怪物会往玩家牌堆塞状态牌，而 harness 的 `isReplayableCard` 默认放行任何牌。**
   黏液是**唯一不需要医疗包就能打出的状态牌**（`CardInstance.cpp:329` 有个 `id != SLIMED`
   的例外），所以策略真会去打它 → 必须在 `CARD_RULES` 登记，否则 trace 不可重放。
@@ -201,7 +222,7 @@ tools/regen-traces.sh --check
 要做的只是把编队名加进 `tools/regen-traces.sh` 的 `ENC_V0`：
 
 ```bash
-ENC_V0="small_slimes lots_of_slimes large_slime"
+ENC_V0="small_slimes lots_of_slimes large_slime blue_slaver red_slaver looter exordium_thugs"
 ```
 
 `ENC_V0` 的语义是**只保留 variant 0 那 375 行，装完即永久冻结**（此后每批都必须逐字节复现
@@ -228,6 +249,12 @@ ENC_V0="small_slimes lots_of_slimes large_slime"
 ——黏液被打出 46 次，第十三批那三个「0 例」的变异一次性转成 36 例。
 所以：选批次时先量一眼战斗长度，**并把「这一批能救回哪条旧盲区」写进计划**；
 真需要长战斗的东西，等带它的长仗编队（Boss / 大怪）那一批。
+
+⚠ **「换编队」这条逃生口也有救不到的东西：编队的成员结构本身。** 第十五批实测：
+抢劫者的逃跑执行了 16 次，但**每一次场上都只剩它自己**（harness 的策略专打最左侧的活怪，
+同伴总是先死），于是逃跑当场判胜、`doMonsterTurn` 那句「结局已定就直接返回」抢在收尾之前
+——`MOVE_TURN_END` 那一格因此零背书，而且在**任何**第一幕编队上都救不回来。
+判据：一条分支要被看到，光有「够长的仗」不够，还得有**能让它在中途发生的场上局面**。
 
 ### 生成并安装
 
@@ -273,7 +300,7 @@ tools/regen-traces.sh --install UPPERCUT DEMON_FORM --moves SENTRY_BOLT SENTRY_B
 pnpm typecheck && pnpm lint && pnpm test && pnpm format
 ```
 
-全绿是**下限**，不是完成。`sts-combat-trace.test.ts` 现有 9555 例逐帧对拍，
+全绿是**下限**，不是完成。`sts-combat-trace.test.ts` 现有 12180 例逐帧对拍，
 其中一部分用**全升级牌组**——所以每条规则 `up ? x : y` 的两个分支都会被验证。
 
 改共享路径（`callEndOfTurnActions`、`drawCards`、`onTurnEnding`、`useCard` 之类）时，
@@ -291,11 +318,19 @@ pnpm typecheck && pnpm lint && pnpm test && pnpm format
 做法：改坏一处 → 跑对拍 → 看失败例数 → **还原**。
 
 ```bash
-cp src/engine/sts-combat.ts /tmp/sc.bak
+git stash list >/dev/null   # 前提：本批的代码**已提交**，还原才有兜底
 # ...改坏一处...
 npx vitest run test/sts-combat-trace.test.ts 2>&1 | grep -E "^\s+Tests "
-cp /tmp/sc.bak src/engine/sts-combat.ts
+git checkout -- src/engine/sts-combat.ts
 ```
+
+⚠ **还原走 `git checkout --`，不要走 `cp x.bak x`，也不要在 `set -e` 的 shell 里批量跑。**
+第十五批踩过：批量脚本里 `vitest ... | grep ... | head -1` 的 `head` 提前关管道，
+`grep` 吃到 SIGPIPE 返回非 0，`set -e -o pipefail` 让脚本**当场退出**，
+于是「还原」那一句永远轮不到——变异被静默留在工作区，接着往下跑的几条又叠在上面，
+`.bak` 也被后一条覆写成了「已经坏掉」的内容。表现是若干条变异**一个字都不打印**、
+工作区悄悄坏掉。批量跑的话：本批代码先提交、还原用 git、并在**全部跑完后再跑一次对拍
+自检是否回到全绿**。
 
 每个「非直觉但照抄」的点都值得来一次——那些正是最可能抄错、也最难靠肉眼发现的地方。
 已确认的结果（括号内为变异后失败例数）与**已知盲区**记录在 TODOS 的「验证方式」一节，
