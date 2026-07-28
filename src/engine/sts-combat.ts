@@ -640,7 +640,11 @@ export type CombatPlayer = {
    * 在 `exitBattle` 里 `g.gold = player.gold` 写回去（BattleContext.cpp:55 / :484）。
    * 我们照同一形状：`initCombat` 从入参带进来，`combat-bridge.settleCombat` 写回
    * `GameState.gold`。战斗内唯一的增点是贪婪之手（`gainGold`），唯一的减点是
-   * 盗贼/劫掠者偷金币（`Monster::stealGoldFromPlayer`，那两只怪还没登记）。
+   * 抢劫者/劫匪偷金币（`stealGoldFromPlayer`，第十五批登记了抢劫者）。
+   *
+   * ⚠ **入场值有语义，不能随便填 0**：偷金是 `min(player.gold, 额度)`，按金币的**绝对值**
+   * 钳制。第十五批之前 trace 重放故意从 0 起算（那时没有任何东西读金币），登记抢劫者之后
+   * 那样做会让一分钱都偷不到——见 `test/sts-combat-trace.test.ts` 的 `HARNESS_GOLD_BASELINE`。
    */
   gold: number;
 };
@@ -923,6 +927,56 @@ const MOVE_RULES: Record<string, MoveForRoll> = {
     }
     return "lick_frail_l";
   },
+
+  // —— 奴隶主两只 + 抢劫者（第十五批）——
+
+  // 蓝色奴隶主：纯 roll 分支，不追加 aiRng。对齐 MonsterSpecific.cpp:2046 BLUE_SLAVER。
+  // ⚠ **没有首回合特例**——第一次 rollMove 也照常走这三条分支（此时 moveHistory 全空，
+  //   两个 lastTwoMoves 都为假，于是 roll>=40 出刺击、否则出耙击）。
+  // ⚠ 第二段那个 `|| (asc17 && !lastMove(RAKE))` 是**内联**在同一表达式里的，一并转写。
+  blue_slaver: (bc, m, roll) => {
+    if (roll >= 40 && !lastTwoMoves(m, "stab")) {
+      return "stab";
+    }
+    if (!lastTwoMoves(m, "rake") || (bc.ascension >= 17 && !lastMove(m, "rake"))) {
+      return "rake";
+    }
+    return "stab";
+  },
+
+  // 红色奴隶主：对齐 MonsterSpecific.cpp:2773 RED_SLAVER。
+  //
+  // ⚠⚠ **参考的「缠绕一场只能用一次」在参考里根本没生效，本批照抄。**
+  // 参考开头是 `const bool usedEntangle = miscInfo;`（:2777），可是**全项目没有任何地方
+  // 给红色奴隶主写过 `miscInfo`**（`RED_SLAVER_ENTANGLE` 那条 case 只有 DebuffPlayer +
+  // RollMove 两句，MonsterSpecific.cpp:1017）。于是 `usedEntangle` 恒为 false，后果两条：
+  //   ① `roll >= 75 && !usedEntangle` 退化成 `roll >= 75`——缠绕**可以反复放**
+  //      （实测 375 条 variant 0 的 trace 里有一条放了 8 次）；
+  //   ② `roll >= 50 && usedEntangle && !lastTwoMoves(STAB)` 那一整段是**死代码**，
+  //      所以下面没有写它。
+  // 看着像参考的笔误（真实游戏的 SlaverRed 在 takeTurn 的缠绕分支里置 `usedEntangle = true`），
+  // 但按 WORKFLOW 第 5 步不自行拍板：**这一批照抄参考**，写进报告等裁定。
+  // 真要修就得连带裁定第二段那个阈值（参考写 50，真实游戏疑似 55）——那是发明不是转写。
+  // TODO(裁定后): 若判定为笔误，参考侧补上 `miscInfo = true`，这里加回 usedEntangle 两段。
+  red_slaver: (bc, m, roll) => {
+    // 参考写的是 `lastMove(MMID::INVALID)`，即 moveHistory[0] 还是初值——就是首回合。
+    if (firstTurn(m)) {
+      return "rs_stab";
+    }
+    if (roll >= 75) {
+      return "entangle";
+    }
+    if (!lastTwoMoves(m, "scrape") || (bc.ascension >= 17 && !lastMove(m, "scrape"))) {
+      return "scrape";
+    }
+    return "rs_stab";
+  },
+
+  // 抢劫者：对齐 MonsterSpecific.cpp:2501 LOOTER——恒返回抢劫，roll 照掷但被丢掉
+  // （与邪教徒 / 尖刺史莱姆小同形）。
+  // ⚠ 参考在这行注了 `// called first turn only`，而且是真的：抢劫者的四条 case 尾部
+  //   全是**同步 setMove**（或什么都没有），一次都不排 RollMove，所以整场只会调用它一次。
+  looter: () => "mug",
 };
 
 // ============================================================================
@@ -976,8 +1030,15 @@ function monsterOnHpLost(bc: BattleContext, m: CombatMonster, amount: number): v
 //                                                       `largeSlimeSplit(...)` 之后直接 `break`，
 //                                                       收尾（两次 noOpRollMove）在那个函数**内部**，
 //                                                       见 `splitMonster`。
+//   (bc, m) => …  任意收尾语句                        —— 第十五批新增的第五形态。抢劫者的
+//                                                       抢劫是 `if (回合数==1) setMove(抢劫)
+//                                                       else setMove(aiRng.randomBoolean(0.5)
+//                                                       ? 烟雾弹 : 猛扑)`——**下一招与
+//                                                       aiRng 消耗都取决于运行时状态**，
+//                                                       静态表达不了，只能写成函数。
 //
-// ⚠ 四者对 aiRng 的消耗完全不同（1 / 1 / 0 / 由效果自己负责），选错就是 counter 当场对不上。
+// ⚠ 五者对 aiRng 的消耗完全不同（1 / 1 / 0 / 由效果自己负责 / 函数自己负责），
+//   选错就是 counter 当场对不上。
 // ⚠ `no_op_roll` 与 `roll` 消耗相同但语义不同：前者不写 moveHistory，所以
 //   `lastMove` / `lastTwoMoves` 看到的历史也不同。
 //
@@ -985,7 +1046,12 @@ function monsterOnHpLost(bc: BattleContext, m: CombatMonster, amount: number): v
 // 表里没有的招式一律按 `roll` 处理，这是参考的多数形态。
 // ============================================================================
 
-type MoveTurnEnd = "roll" | "no_op_roll" | "none" | { readonly setMove: string };
+type MoveTurnEnd =
+  | "roll"
+  | "no_op_roll"
+  | "none"
+  | { readonly setMove: string }
+  | ((bc: BattleContext, m: CombatMonster) => void);
 
 const MOVE_TURN_END: Record<string, MoveTurnEnd> = {
   // 酸液史莱姆（小）：舔舐 ↔ 冲撞严格交替，两条都是**同步** setMove、不消耗 aiRng。
@@ -999,7 +1065,56 @@ const MOVE_TURN_END: Record<string, MoveTurnEnd> = {
   // （MonsterSpecific.cpp:364 / :1198）。收尾在 largeSlimeSplit 内部，见 `splitMonster`。
   "acid_slime_l/split": "none",
   "spike_slime_l/split": "none",
+
+  // —— 抢劫者（第十五批）：四条 case 的收尾**一次都不掷 RollMove** ——
+  //
+  // 抢劫：对齐 MonsterSpecific.cpp:924-932。首个怪物回合锁死「再抢一次」且**不掷** aiRng；
+  // 之后每次抢劫都 `aiRng.randomBoolean(0.5f)` 二选一。⚠ true 那支是**烟雾弹**。
+  "looter/mug": (bc, m) => {
+    if (getMonsterTurnNumber(bc) === 1) {
+      setMove(m, "mug");
+      return;
+    }
+    setMove(m, bc.rng.aiRng.randomBoolean(Math.fround(0.5)) ? "smoke_bomb" : "lunge"); // ★ 消耗一次 aiRng
+  },
+  // 猛扑 → 烟雾弹 → 逃跑，两条都是**同步** setMove、不消耗 aiRng
+  // （MonsterSpecific.cpp:914 / :938）。
+  "looter/lunge": { setMove: "smoke_bomb" },
+  "looter/smoke_bomb": { setMove: "flee" },
+  // 逃跑：case 里只有「置逃跑位 + monstersAlive--（+判胜）」然后 break，**没有任何收尾语句**
+  // （MonsterSpecific.cpp:899-909）——与分裂同为 `none` 形态。逃跑之后它再也不行动，
+  // 所以「意图不变」也不会被观察到。
+  "looter/flee": "none",
 };
+
+/**
+ * 招式的**开场**语句（对齐参考 `Monster::takeTurn` 各 case 里排在效果之前的那几句）。
+ *
+ * 只有一个用户，而且它纯粹是 RNG 消耗：抢劫者在**第一个怪物回合**的抢劫开头
+ * `bc.aiRng.randomBoolean(0.6f)`，参考在那行注了 `// for a dialog message in game`
+ * ——结果被完全丢弃，只有「掷了一次」这件事会体现在 aiRng 计数器上
+ * （MonsterSpecific.cpp:919-921）。
+ *
+ * 之所以单开一张表而不是塞进数据表的 effects：它不是效果，是引擎侧的 RNG 记账，
+ * `enemies.ts` 不该知道这种东西。键与 `MOVE_TURN_END` 同构（`${怪 id}/${招式 id}`）。
+ */
+const MOVE_TURN_BEGIN: Record<string, (bc: BattleContext, m: CombatMonster) => void> = {
+  "looter/mug": (bc) => {
+    if (getMonsterTurnNumber(bc) === 1) {
+      bc.rng.aiRng.randomBoolean(Math.fround(0.6)); // ★ 消耗一次 aiRng，结果丢弃（游戏里的对白）
+    }
+  },
+};
+
+/**
+ * 「这是第几个怪物回合」（对齐 `BattleContext::getMonsterTurnNumber`，BattleContext.cpp:643）。
+ *
+ * 参考就是一句 `return turn + 1;`：`bc.turn` 在 `afterMonsterTurns` 里才自增，所以怪物阶段
+ * 里读到的还是**上一个**玩家回合的编号，首个怪物回合恰好得 1。
+ */
+function getMonsterTurnNumber(bc: BattleContext): number {
+  return bc.turn + 1;
+}
 
 // ============================================================================
 // 编队开局特例（对齐 MonsterGroup::createMonsters 中各 encounter 的额外初始化）
@@ -1015,7 +1130,14 @@ const MOVE_TURN_END: Record<string, MoveTurnEnd> = {
 // 且紧挨着，中间不会插入别的怪。变体编队因此呈现 misc,hp,hp,misc,hp,hp… 的交错。
 // ============================================================================
 
-function createMonster(bc: BattleContext, defId: string): CombatMonster {
+/**
+ * 只**造**一只怪，不入场（对齐 `Monster::construct`，Monster.cpp:107）。
+ *
+ * 拆出来是因为 `createWeakWildlife` / `createStrongHumanoid` 那类编队会把候选
+ * **全部 construct 一遍**（每只都掷血量）、然后只留一只，其余直接丢弃——
+ * 丢弃的那些照样消耗了 monsterHpRng，见 `ENCOUNTER_BUILDERS.exordium_thugs`。
+ */
+function constructMonster(bc: BattleContext, defId: string): CombatMonster {
   const def = getEnemyDef(defId);
   const hp = bc.rng.monsterHpRng.random(def.hpMin, def.hpMax); // ★ 消耗一次 monsterHpRng
   const m: CombatMonster = {
@@ -1034,6 +1156,11 @@ function createMonster(bc: BattleContext, defId: string): CombatMonster {
     m.rolledDamage =
       bc.ascension >= 2 ? bc.rng.monsterHpRng.random(6, 8) : bc.rng.monsterHpRng.random(5, 7); // ★ 再消耗一次 monsterHpRng
   }
+  return m;
+}
+
+function createMonster(bc: BattleContext, defId: string): CombatMonster {
+  const m = constructMonster(bc, defId);
   bc.monsters.push(m);
   return m;
 }
@@ -1119,9 +1246,42 @@ function splitMonster(bc: BattleContext, m: CombatMonster): void {
 
 type EncounterBuilder = (bc: BattleContext) => void;
 
-/** 对齐 MonsterGroup::getLouse：一次 miscRng.randomBoolean 决定红/绿。 */
+/** 对齐 MonsterGroup::getLouse（MonsterGroup.cpp:553）：一次 miscRng.randomBoolean，true = 红。 */
 function getLouse(bc: BattleContext): string {
   return bc.rng.miscRng.randomBoolean() ? "louse" : "green_louse";
+}
+
+/**
+ * 对齐 MonsterGroup::getSlaver（MonsterGroup.cpp:563）：一次 miscRng.randomBoolean。
+ *
+ * ⚠ **true = 红色**。这个方向必须逐个回参考看，不能照抄别的同族函数：`getLouse` 是
+ * true=红虱、`small_slimes` 是 true=尖刺、`large_slime` 却是 true=酸液——四条各写各的。
+ */
+function getSlaver(bc: BattleContext): string {
+  return bc.rng.miscRng.randomBoolean() ? "red_slaver" : "blue_slaver";
+}
+
+/**
+ * 「先把候选全部造出来，再挑一个」（对齐 `MonsterGroup::createWeakWildlife` /
+ * `createStrongHumanoid`，MonsterGroup.cpp:497 / :477）。
+ *
+ * ⚠ 这是本批最容易「优化」错的地方，照抄不要改成「先选后造」：
+ *  ① 三个候选**全部** `construct` 一遍——每只都掷一次 monsterHpRng，虱子还要再掷一次
+ *     咬击伤害。落选的两只的 RNG 消耗**不会退回**。
+ *  ② 候选表本身可能带 RNG：`createWeakWildlife` 的第 0 项是 `getLouse(bc.miscRng)`、
+ *     `createStrongHumanoid` 的第 1 项是 `getSlaver(bc.miscRng)`——它们是**实参**，
+ *     所以在那一只的血量之前就掷了。
+ *  ③ 最后才 `miscRng.random(2)` 选下标（**恒掷**，即使只有一个候选活得下来）。
+ * 于是一场 `EXORDIUM_THUGS` 开局固定消耗 7 次 monsterHpRng、4 次 miscRng。
+ */
+function createFromConstructedPool(bc: BattleContext, defIds: (() => string)[]): void {
+  const temp = defIds.map((pick) => constructMonster(bc, pick())); // ★ 每只一次（虱子两次）monsterHpRng
+  const idx = bc.rng.miscRng.random(temp.length - 1); // ★ 消耗一次 miscRng
+  const chosen = temp[idx];
+  if (chosen === undefined) {
+    throw new Error(`sts-combat 候选池取样越界: ${idx}/${temp.length}`);
+  }
+  bc.monsters.push(chosen);
 }
 
 const ENCOUNTER_BUILDERS: Record<string, EncounterBuilder> = {
@@ -1185,6 +1345,16 @@ const ENCOUNTER_BUILDERS: Record<string, EncounterBuilder> = {
     const id = bc.rng.miscRng.randomBoolean() ? "acid_slime_l" : "spike_slime_l"; // ★ 消耗一次 miscRng
     createMonster(bc, id);
   },
+
+  // 恶棍二人组：`createWeakWildlife` 再 `createStrongHumanoid`（对齐 MonsterGroup.cpp:163）。
+  // 两段都是「构造全部再选一个」，见 `createFromConstructedPool`。
+  // ⚠ 顺序不能换：先野生动物后人形，两段的 RNG 消耗是串在一条流上的。
+  exordium_thugs: (bc) => {
+    // createWeakWildlife（MonsterGroup.cpp:497）：红/绿虱二选一 → 尖刺史莱姆中 → 酸液史莱姆中。
+    createFromConstructedPool(bc, [() => getLouse(bc), () => "spike_slime_m", () => "acid_slime_m"]);
+    // createStrongHumanoid（MonsterGroup.cpp:477）：邪教徒 → 红/蓝奴隶主二选一 → 抢劫者。
+    createFromConstructedPool(bc, [() => "cultist", () => getSlaver(bc), () => "looter"]);
+  },
 };
 
 // ============================================================================
@@ -1204,6 +1374,12 @@ const PRE_BATTLE_ACTION: Record<string, PreBattleAction> = {
     const amount =
       bc.ascension >= 7 ? bc.rng.monsterHpRng.random(4, 8) : bc.rng.monsterHpRng.random(3, 7);
     addPower(m.powers, "curl_up", amount);
+  },
+  // 抢劫者的偷窃额度（对齐 MonsterSpecific.cpp:233 `buff<MS::THIEVERY>(asc17 ? 20 : 15)`，
+  // 与劫匪共用同一条 case）。**不消耗 RNG**，但它是抢劫/猛扑偷多少的唯一数值来源，
+  // 而且会出现在 trace 的怪物 powers 快照里（`THIEVERY: 15`）。
+  looter: (bc, m) => {
+    addPower(m.powers, "thievery", bc.ascension >= 17 ? 20 : 15);
   },
 };
 
@@ -1276,6 +1452,12 @@ function overwriteMove(m: CombatMonster, move: string): void {
  *     `ACID_SLIME_L_TACKLE`（`:417-418`）与 `SPIKE_SLIME_L_FLAME_TACKLE`（`:503`）。
  *     两条舔舐与**两条分裂**（`ACID_SLIME_L_SPLIT` / `SPIKE_SLIME_L_SPLIT`）都不在，
  *     与我们的 `intent: "debuff"` / `"unknown"` 一致。
+ *   * 奴隶主两只 + 抢劫者（第十五批）：白名单里有 `BLUE_SLAVER_STAB` / `BLUE_SLAVER_RAKE`
+ *     （`:428-429`）、`RED_SLAVER_STAB` / `RED_SLAVER_SCRAPE`（`:484-485`）、
+ *     `LOOTER_MUG` / `LOOTER_LUNGE`（`:470-471`）。**不在**的三条是 `RED_SLAVER_ENTANGLE`、
+ *     `LOOTER_SMOKE_BOMB`、`LOOTER_ESCAPE`，与我们的 `debuff` / `defend` / `unknown` 一致。
+ *     ⚠ 耙击与刮擦「攻击 + 减益」两栏都算攻击，烟雾弹「只加格挡」不算——两条都与
+ *     数据表的 intent 对得上，但方向是从白名单读出来的，不是从「带不带伤害」推的。
  * 新登记怪种时**必须**回白名单复核，因为白名单里存在「带伤害却不算攻击」与反向的例外
  *（如球状守卫的 HARDEN 被算作攻击）。
  */
@@ -2404,6 +2586,13 @@ function cardCanUse(
       return `目标无效: ${target}`;
     }
   }
+  // 缠绕（ENTANGLED）：有这个状态时**一张攻击牌都打不出**（对齐 CardInstance.cpp:292，
+  // 排在同一个 ATTACK 分支里、冲撞那道门**之前**）。
+  // ⚠ 与冲撞同理，对 `inAutoplay` **一视同仁**：浩劫 / 混乱翻出攻击牌照样被它拦住。
+  // ⚠ 它是「有没有」而不是「几层」——参考用的是 `hasStatus`。清除见 applyEndOfTurnPowers。
+  if (def.type === "attack" && getPower(bc.player.powers, "entangled") > 0) {
+    return `「${def.name}」被缠绕封住了（本回合无法打出攻击牌）`;
+  }
   // 冲撞：只有**手牌全是攻击牌**时才打得出（对齐 canUse 的 ATTACK 分支，
   // CardInstance.cpp:295 → canUseClash）。⚠ 这一道对 `inAutoplay` **一视同仁**：
   // 浩劫 / 混乱从抽牌堆顶翻出一张冲撞时照样要过它，不过就凭空消失（那张牌已被拿走）。
@@ -2723,6 +2912,35 @@ function monsterDie(bc: BattleContext, m: CombatMonster): void {
     bc.outcome = "player_victory";
   }
   // TODO(后续PR): 孢子云/重生/尸爆/地精角等死亡触发。
+}
+
+/**
+ * 怪物逃离战斗（对齐 `MMID::LOOTER_ESCAPE` 那条 case，MonsterSpecific.cpp:899-909）。
+ *
+ * ⚠ **逃跑不是死亡**，两者在参考里是不同的位：
+ *   `isDeadOrEscaped() = isDying() || isHalfDead() || isEscaping()`（Monster.cpp:253）
+ * 我们的 `m.alive` 建模的正是 `!isDeadOrEscaped()`（harness 的快照字段就是这么算的），
+ * 所以这里置 `alive = false`——但**生命保持原样、不为 0**，`monsterDie` 那条路
+ * （亡语 / 遗物击杀响应 / 孢子云…）一概不走。逃跑之后它：
+ *   * 不再行动（`doMonsterTurn` 的 `!isDeadOrEscaped()` 门）
+ *   * 不能被指向、不参与 `getRandomMonsterIdx`、不吃全体伤害
+ *   * `applyPreTurnLogic` / `applyEndOfRoundPowers` 两个循环都跳过它
+ *   * 仍然占着数组下标，快照里照旧带着它的血量与最后一个意图
+ *
+ * ⚠ 判胜是**直接写 outcome**，参考在这里**没有**调 `checkCombat`——所以动作队列不被
+ * `clearPostCombatActions` 清扫。当前观察不到差别（逃跑那条 case 尾部什么都不排，
+ * 而主循环在进下一只怪之前已经把队列抽干了），但照抄。
+ *
+ * TODO(run 层): 参考的 `exitBattle` 会把「没逃掉的抢劫者」偷走的金币还给玩家
+ * （`g.info.stolenGold`，BattleContext.cpp:496-508，累加在 `Monster::miscInfo` 上）。
+ * 那是战斗后的奖励结算（TODOS 一.7），战斗内没有任何东西读它，故本批不建模 `miscInfo`。
+ */
+function monsterEscape(bc: BattleContext, m: CombatMonster): void {
+  m.alive = false;
+  bc.monstersAlive -= 1;
+  if (bc.monstersAlive === 0) {
+    bc.outcome = "player_victory";
+  }
 }
 
 /** 对齐 BattleContext::checkCombat：胜利时清扫「战斗后不该再跑」的排队动作。 */
@@ -5273,6 +5491,29 @@ function gainGold(bc: BattleContext, amount: number): void {
 }
 
 /**
+ * 怪物偷走玩家金币（对齐 `Monster::stealGoldFromPlayer`，MonsterSpecific.cpp:3333）。
+ *
+ * ⚠ 偷多少来自本怪的 `thievery` Power（开局 `preBattleAction` 掷定 15 / asc17 20），
+ * 不是招式自带的常数——所以数据表那条 `steal_gold` 效果不带数值。
+ *
+ * ⚠ **按玩家金币的绝对值钳制**：`min(player.gold, amount)`。这一句让「战斗内金币」
+ * 从「谁都不读的记账」变成了**真的有语义**——玩家只剩 5 块钱时抢劫者也只能偷 5 块。
+ * 因此 trace 重放必须从与参考相同的绝对值起算（harness 那边是 `GameContext` 的初始
+ * 99，见 `test/sts-combat-trace.test.ts` 的 `HARNESS_GOLD_BASELINE`），不能像以前那样
+ * 从 0 起算——从 0 起算的话这里恒偷到 0，而 trace 里的 `goldGained` 是负数。
+ *
+ * ⚠ 只有真的偷到（`theftAmount > 0`）才记账，参考另有一句
+ * `miscInfo += theftAmount`（战斗后还钱用）与 `setRequiresStolenGoldCheck(true)`，
+ * 两者战斗内都没人读，见 `monsterEscape` 的 TODO。
+ */
+function stealGoldFromPlayer(bc: BattleContext, m: CombatMonster): void {
+  const theftAmount = Math.min(bc.player.gold, getPower(m.powers, "thievery"));
+  if (theftAmount > 0) {
+    bc.player.gold -= theftAmount;
+  }
+}
+
+/**
  * 玩家主动失血（对齐 Actions::PlayerLoseHp → Player::loseHp，Player.cpp:259）。
  *
  * ⚠ 与受击伤害是两条路：**不过格挡**、不触发荆棘/火焰屏障，直接扣血。归零走同一个
@@ -5694,7 +5935,8 @@ function callEndOfTurnActions(bc: BattleContext): void {
  * ⚠ 参考遍历的是 `std::map<PlayerStatus, int16_t> statusMap`，即按
  * `PlayerStatusEffects.h` 的**枚举值升序**，与「先获得哪个 Power」无关。我们的 powers
  * 是获得顺序的数组，所以这里按枚举顺序**逐项显式判断**，不能改成遍历数组。
- * 命中项的枚举序：LOSE_STRENGTH(14) → NO_DRAW(16) → DOUBLE_TAP(30) → COMBUST(41) → RAGE(71)。
+ * 命中项的枚举序：ENTANGLED(10) → LOSE_STRENGTH(14) → NO_DRAW(16) → DOUBLE_TAP(30) →
+ * COMBUST(41) → RAGE(71)。
  */
 function applyEndOfTurnPowers(bc: BattleContext): void {
   // 炸弹（对齐 Player.cpp:350-355）：排在遍历 statusMap 的循环**之前**，与枚举序无关
@@ -5716,6 +5958,13 @@ function applyEndOfTurnPowers(bc: BattleContext): void {
   bc.player.bomb1 = bc.player.bomb2;
   bc.player.bomb2 = bc.player.bomb3;
   bc.player.bomb3 = 0;
+
+  // 缠绕（ENTANGLED=10，枚举序排在 LOSE_STRENGTH=14 之前）：本回合结束即**整条清除**。
+  // ⚠ 是 `addToBot(RemoveStatus<ENTANGLED>)` 而不是递减（Player.cpp:382），所以红色奴隶主
+  // 连着放两次缠绕也只是「下一个玩家回合打不出攻击牌」，不会累积成两回合。
+  if (getPower(bc.player.powers, "entangled") > 0) {
+    addToBot(bc, (c) => removePower(c.player.powers, "entangled"));
+  }
 
   // 灵活的还债：先扣力量，再摘掉标记。两条都走 addToBot。
   // ⚠ 扣力量走的是 DebuffPlayer 而不是 BuffPlayer(-n)，所以会被神器吃掉一层——
@@ -5905,7 +6154,7 @@ function doMonsterTurn(bc: BattleContext, idx: number): void {
   if (bc.outcome !== "undecided") {
     return;
   }
-  // 收尾三形态见 MOVE_TURN_END。默认（也是绝大多数怪）是：
+  // 收尾五形态见 MOVE_TURN_END。默认（也是绝大多数怪）是：
   // ★ 滚下一意图必须**入队**（对齐 takeTurn 末尾的 addToBot(Actions::RollMove)）。
   // 同步调用会抢在荆棘之前：荆棘伤害走 addToTop 会插到 RollMove 前面，若它打死了
   // 最后一只怪，这次 RollMove 就该被 clearPostCombatActions 清掉、不消耗 aiRng。
@@ -5920,7 +6169,11 @@ function doMonsterTurn(bc: BattleContext, idx: number): void {
       c.rng.aiRng.random(99); // ★ 消耗一次 aiRng
     });
   } else if (turnEnd === "none") {
-    // case 尾部什么都没有（当前只有分裂）：收尾由效果自己负责，见 `splitMonster`。
+    // case 尾部什么都没有（分裂 / 抢劫者逃跑）：收尾由效果自己负责或压根没有。
+  } else if (typeof turnEnd === "function") {
+    // 任意收尾语句（抢劫者的抢劫）：与同步 setMove 一样跑在本次排的动作**执行之前**，
+    // 掷不掷 aiRng 由函数自己决定。
+    turnEnd(bc, m);
   } else {
     // 同步 setMove：**不消耗任何 aiRng**。参考写在 takeTurn 的 case 尾部（那里是纯同步语句），
     // 所以它在本次出招排的那些动作**执行之前**就生效了——快照里的 move 当场就变。
@@ -5940,6 +6193,8 @@ function takeTurn(bc: BattleContext, m: CombatMonster): string | null {
   if (move === undefined) {
     return null;
   }
+  // 开场语句（当前只有抢劫者首回合那次白掷的 aiRng），见 MOVE_TURN_BEGIN。
+  MOVE_TURN_BEGIN[`${m.defId}/${move.id}`]?.(bc, m);
   for (const eff of move.effects) {
     // 同理：一旦分出胜负，后续排队效果在参考里也不会再执行。
     if (bc.outcome !== "undecided") {
@@ -5969,10 +6224,24 @@ function takeTurn(bc: BattleContext, m: CombatMonster): string | null {
       // 怪物给玩家上减益：isSourceMonster=true，故虚弱/易伤**跳过**首次递减。
       addToBot(bc, (c) => debuffPlayer(c, eff.power, eff.amount, true));
     } else if (eff.kind === "gain_block") {
-      // 对齐 addToBot(Actions::MonsterGainBlock)——排队，不能当场加。
-      addToBot(bc, () => {
+      // 参考有两种写法并存，数据表用 `sync` 区分（见 Effect 的注释）：
+      //   省略      `addToBot(Actions::MonsterGainBlock(idx, n))` —— 颚虫的猛击/咆哮
+      //   sync:true 同步 `addBlock(n)`                            —— 抢劫者的烟雾弹
+      // 差别在于「这次加格挡与本回合排的其它动作谁先」，例如荆棘的 addToTop 反伤。
+      if (eff.sync === true) {
         m.block += eff.amount;
-      });
+      } else {
+        addToBot(bc, () => {
+          m.block += eff.amount;
+        });
+      }
+    } else if (eff.kind === "steal_gold") {
+      // 偷金：**同步**执行（参考的 `stealGoldFromPlayer` 是裸调用，不是 addToBot），
+      // 排在同一条 case 里的 attackPlayerHelper **之前**。
+      stealGoldFromPlayer(bc, m);
+    } else if (eff.kind === "escape") {
+      // 逃跑：同样是裸调用（MonsterSpecific.cpp:899）。
+      monsterEscape(bc, m);
     } else if (eff.kind === "add_card") {
       // 塞状态牌（史莱姆的黏液）。参考是 `addToBot(Actions::MakeTempCardInDiscard(SLIMED))`
       //（MonsterSpecific.cpp:375 / :1180），**排在攻击那条 addToBot 之后**，故顺序就是
@@ -6120,8 +6389,8 @@ function applyMonsterEndOfTurnTriggers(m: CombatMonster): void {
 function applyEndOfRoundPowers(bc: BattleContext): void {
   // 顺序对齐 BattleContext::applyEndOfRoundPowers（BattleContext.cpp:2148）：
   // 怪物 endOfTurnTriggers → **玩家减益递减** → 怪物 endOfRoundPowers。
-  // ⚠ 两个怪物循环各自带 `isDying() || isEscaping()` 的跳过（`isDying()` 就是 `curHp <= 0`，
-  // 即我们的 `!alive`；逃跑还没建模，没有已登记的怪会逃）。
+  // ⚠ 两个怪物循环各自带 `isDying() || isEscaping()` 的跳过。`isDying()` 就是 `curHp <= 0`，
+  // `isEscaping()` 是抢劫者逃跑那一位——两者在我们这边都体现为 `!alive`（见 `monsterEscape`）。
   for (const m of bc.monsters) {
     if (!m.alive) {
       continue;
@@ -6543,6 +6812,11 @@ export const SUPPORTED_ENCOUNTERS: readonly string[] = [
   "lots_of_slimes",
   // —— 第十四批 ——
   "large_slime",
+  // —— 第十五批 ——
+  "blue_slaver",
+  "red_slaver",
+  "looter",
+  "exordium_thugs",
 ];
 
 export function isEncounterSupported(encounterId: string): boolean {
