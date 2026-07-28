@@ -49,6 +49,28 @@
 - 伤害/格挡走 `calculateCardDamage` / `calculateCardBlock`，不要自己算力量与易伤。
 - 遇到还缺别的机制的分支：留 `TODO(后续PR)` 注释跳过，**不要顺手做第二个机制**。
 
+### 怪物与编队特有的规矩
+
+卡牌那条线的形状是「一个机制 + 它解锁的一批卡」，怪物这条线是**「一组编队 + 它们要的怪」**——
+选批次的单位是**编队**，因为预言机是按编队分文件的。
+
+- **`enemies.ts` 的数值不可信，要跟着一起校准。** 卡牌那边 `cards.ts` 早就齐全，
+  怪物这边不是：文件头自己写着「精确权重 / 连续限制 / 守卫者阈值待真机 ground truth 校准」。
+  所以一只怪的工作量是**三份**：`enemies.ts` 的血量区间与招式数值、`MOVE_RULES` 的
+  `getMoveForRoll`、以及 `takeTurn` 走得通的 `effects`。三份都要逐位对参考。
+- **`isMonsterAttacking` 现在读数据表的 `intent`，参考读的是招式 id 白名单**
+  （`MonsterMoves.h:414` 的大 switch）。当前四只怪两边判定一致纯属巧合——白名单里
+  **存在反例**（球状守卫的 HARDEN 带伤害却被算作攻击）。**每登记一只怪都必须回白名单逐条复核**，
+  不一致就改成白名单。
+- **`construct` 里的怪种特例会消耗 `monsterHpRng`**（虱子的咬击伤害就是这么定的）。
+  漏掉不会静默——`rng.hp` 计数器当场对不上。
+- ⚠ **「构造全部再选一个」**：`createWeakWildlife` / `createStrongHumanoid` /
+  `createStrongWildlife` 把**候选全部 construct 一遍**（每只都掷血量、掷怪种特例），
+  然后才 `miscRng.random(n)` 选一个，其余**直接丢弃**。所以一场 `EXORDIUM_THUGS`
+  会为三只没出场的怪消耗 RNG。这类地方照抄，不要「优化」成先选后造。
+- **`preBattleAction` 在全部 `rollMove` 之后**（`MonsterGroup::init`：createMonsters →
+  逐怪 rollMove → 逐怪 preBattleAction），不是建怪时。
+
 ### 参考项目错了怎么办
 
 北极星是**真实游戏**，参考项目只是目前最好的预言机。参考自己有 bug（已发现 6 处，
@@ -146,14 +168,52 @@ tools/regen-traces.sh --check
 才进消耗堆的，只有一张时那个过滤器**永远走不到**——变异测试当场证实了它是盲区（0 例失败），
 加第二张之后变成 52 例。
 
+### 把本批的编队加进保留策略（怪物批次专用）
+
+**harness 一直就在跑第一幕全部 20 个编队**——`encounters` 那个列表从第一个 commit 起
+一个字没变过，我们过去只安装了其中五个，另外十五个每次生成完就丢掉。所以铺量怪物
+**完全不需要改 `trace_dump.cpp`**。
+
+> ⚠ 反过来说：**绝对不要动那个 `encounters` 列表**。增删任何一项都会平移其后所有 trace 的
+> `traceIdx`，把遗物/药水轮换整体错位，已提交数据全线作废。真要加第二幕的编队，
+> 得在**现有双重循环跑完之后**再追加一遍循环，让老的 `traceIdx` 原样保留。
+
+要做的只是把编队名加进 `tools/regen-traces.sh` 的 `ENC_V0`：
+
+```bash
+ENC_V0="small_slimes lots_of_slimes"
+```
+
+`ENC_V0` 的语义是**只保留 variant 0 那 375 行，装完即永久冻结**（此后每批都必须逐字节复现
+整份文件）。与卡牌那五个编队的 `ENC_ALL`（整份保留、每批随全牌组重生成）是两套策略。
+
+为什么怪物走 variant 0：
+
+- 怪物行为几乎与牌组无关，拉开差异的是**种子**——而 variant 0 恰恰是种子最多的那个
+  （125 个，其余 variant 只有 40 个），牌组还最弱（21 张），战斗更长 = 怪物回合更多。
+- 体积是实测的：15 个第一幕编队整份保留合计约 **500MB**，只留 variant 0 是 **100MB**。
+- 附带好处：这些文件从此不再重写，git 里只有一份 blob。
+
+**本批给参考打了补丁、确实改变了某个已冻结编队的行为时**，用
+`ALLOW_CHANGED="编队名..."` 显式放行，并把理由写进报告与 TODOS。不要拿它绕过意外的扰动。
+
 ### 生成并安装
 
 ```bash
-tools/regen-traces.sh --install UPPERCUT DEMON_FORM METALLICIZE ...
+tools/regen-traces.sh --install UPPERCUT DEMON_FORM --moves SENTRY_BOLT SENTRY_BEAM ...
 ```
 
-参数是本批新卡的**参考枚举名**。脚本会：生成 → 校验 variant 0 未被扰动 →
-校验每张新卡两个分支（未升级 / 已升级）都真的被打出过 → 才安装。任一条不过就拒绝安装。
+`--moves` 之前是本批新卡的参考枚举名，之后是本批新怪物招式的参考枚举名
+（`monsterMoveStrings` 里那个，自带怪物前缀）。脚本会：生成 → 校验冻结数据未被扰动 →
+校验每张新卡两个分支都被打出过、每个新招式都**出现且执行**过 → 才安装。
+
+**「出现」与「执行」必须都非 0**，这是怪物侧的不变量 ③：
+
+- 只有出现 → 意图选出来了但从没轮到执行。`MOVE_RULES` 有背书，`takeTurn` 那条效果**没有**。
+- ⚠ 这不是理论风险，**第一批怪物就撞上了**：`LOOTER_ESCAPE` 在 `looter.jsonl` 里
+  出现 16 次、**执行 0 次**——单挑抢劫者的战斗永远在第 5 回合的怪物阶段之前就结束了。
+  它唯一有背书的地方是 `exordium_thugs`（执行 16 次），因为那里抢劫者有同伴、仗打得更久。
+  **结论：选批次之前先量一遍招式 × 编队矩阵**，别假设「登记这只怪就装它的单怪编队」够用。
 
 ### 别忘了
 
