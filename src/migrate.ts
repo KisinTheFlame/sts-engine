@@ -78,9 +78,36 @@ export function migrateLoadedState(raw: unknown): GameState {
     backfill(live, "pendingCardQueue", []);
     migrateCombatCards(live);
     migrateCombatBatch11(live, state);
+    migrateMonsterMiscInfo(live);
   }
 
   return state as unknown as GameState;
+}
+
+/**
+ * 怪物的 `rolledDamage` 改名为 `miscInfo`（第十六批）。
+ *
+ * 参考侧本来就只有**一个** `Monster::miscInfo`（Monster.h:83），含义逐怪种不同；我们早先
+ * 只用到虱子那一种（整场固定的咬击伤害），就按那个用途起名叫 `rolledDamage`。第十六批给
+ * 参考补上「红色奴隶主用它记 usedEntangle」之后，一个字段两种含义，名字必须回到参考的形状。
+ *
+ * 回填是**无损**的：老档里这个字段只可能是虱子的咬击伤害（唯一的写入点），原样搬过去即可；
+ * 没有该字段的更老档（或没用到它的怪）落到 0，与当时的行为一致。
+ */
+function migrateMonsterMiscInfo(combat: Record<string, unknown>): void {
+  const monsters: unknown = combat["monsters"];
+  if (!Array.isArray(monsters)) {
+    return;
+  }
+  for (const raw of monsters) {
+    const m = asRecord(raw);
+    if (!m) {
+      continue;
+    }
+    const old: unknown = m["rolledDamage"];
+    delete m["rolledDamage"];
+    backfill(m, "miscInfo", typeof old === "number" ? old : 0);
+  }
 }
 
 /**

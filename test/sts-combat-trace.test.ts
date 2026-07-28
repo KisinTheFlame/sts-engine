@@ -290,6 +290,8 @@ const ENCOUNTER: Record<string, string> = {
   RED_SLAVER: "red_slaver",
   LOOTER: "looter",
   EXORDIUM_THUGS: "exordium_thugs",
+  // —— 第十六批 ——
+  EXORDIUM_WILDLIFE: "exordium_wildlife",
 };
 const MONSTER: Record<string, string> = {
   CULTIST: "cultist",
@@ -310,6 +312,9 @@ const MONSTER: Record<string, string> = {
   BLUE_SLAVER: "blue_slaver",
   RED_SLAVER: "red_slaver",
   LOOTER: "looter",
+  // —— 第十六批。⚠ `EXORDIUM_WILDLIFE` 的另一半候选（颚虫 / 红绿虱 / 两只中号史莱姆）
+  // 也会真的出现，它们前面都已有映射。
+  FUNGI_BEAST: "fungi_beast",
 };
 const MOVE: Record<string, string> = {
   CULTIST_INCANTATION: "incantation",
@@ -351,6 +356,9 @@ const MOVE: Record<string, string> = {
   LOOTER_LUNGE: "lunge",
   LOOTER_SMOKE_BOMB: "smoke_bomb",
   LOOTER_ESCAPE: "flee",
+  // —— 第十六批 ——
+  FUNGI_BEAST_BITE: "fungi_bite",
+  FUNGI_BEAST_GROW: "fungi_grow",
 };
 // 药水在 trace 里是显示名。含熵酿填回来的未登记药水——它们只占槽位、不会被喝。
 const POTION: Record<string, string | null> = {
@@ -448,6 +456,10 @@ const POWER: Record<string, string> = {
   // 偷窃：**怪物身上**，抢劫者开局自带的 15 层，就是它每次抢劫偷走的上限。
   // 它一直挂在快照的 monsters[].powers 里，不映射会当场抛「未映射的 power」。
   THIEVERY: "thievery",
+  // —— 第十六批 ——
+  // 孢子云：**怪物身上**，真菌兽开局自带的 2 层（层数从不被读，只是「有没有」的标记）。
+  // 与 THIEVERY 同理，它全程挂在 monsters[].powers 快照里。
+  SPORE_CLOUD: "spore_cloud",
 };
 
 const mapPotion = (p: string): string | null => (p in POTION ? POTION[p]! : p);

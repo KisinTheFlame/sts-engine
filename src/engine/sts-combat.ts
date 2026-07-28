@@ -465,10 +465,17 @@ export type CombatMonster = {
   powers: PowerInstance[];
   alive: boolean;
   /**
-   * 出生时掷定、整场固定的招式伤害（对齐 Monster::miscInfo）。虱子的咬击用它。
+   * 怪物侧的通用整数字段（对齐 `Monster::miscInfo`，Monster.h:83）。
+   *
+   * ⚠ 参考就是**一个 int**，含义**逐怪种不同**——我们照抄这个形状，不给每种含义单开字段，
+   * 否则同一个参考字段会在这里裂成好几份、以后逐只怪都要再加一个。当前两种用法：
+   *   * 虱子：出生时掷定、整场固定的咬击伤害（`Monster::construct`，Monster.cpp:116）
+   *   * 红色奴隶主：`usedEntangle` 标志（0/1）。⚠ 这一位是**我们给参考打的补丁**才有的——
+   *     参考读了它却从没写过，见 `MOVE_RULES.red_slaver` 与
+   *     `MOVE_TURN_BEGIN["red_slaver/entangle"]`
    * 未使用该机制的怪保持 0。
    */
-  rolledDamage: number;
+  miscInfo: number;
 };
 
 /**
@@ -946,25 +953,28 @@ const MOVE_RULES: Record<string, MoveForRoll> = {
 
   // 红色奴隶主：对齐 MonsterSpecific.cpp:2773 RED_SLAVER。
   //
-  // ⚠⚠ **参考的「缠绕一场只能用一次」在参考里根本没生效，本批照抄。**
-  // 参考开头是 `const bool usedEntangle = miscInfo;`（:2777），可是**全项目没有任何地方
-  // 给红色奴隶主写过 `miscInfo`**（`RED_SLAVER_ENTANGLE` 那条 case 只有 DebuffPlayer +
-  // RollMove 两句，MonsterSpecific.cpp:1017）。于是 `usedEntangle` 恒为 false，后果两条：
-  //   ① `roll >= 75 && !usedEntangle` 退化成 `roll >= 75`——缠绕**可以反复放**
-  //      （实测 375 条 variant 0 的 trace 里有一条放了 8 次）；
-  //   ② `roll >= 50 && usedEntangle && !lastTwoMoves(STAB)` 那一整段是**死代码**，
-  //      所以下面没有写它。
-  // 看着像参考的笔误（真实游戏的 SlaverRed 在 takeTurn 的缠绕分支里置 `usedEntangle = true`），
-  // 但按 WORKFLOW 第 5 步不自行拍板：**这一批照抄参考**，写进报告等裁定。
-  // 真要修就得连带裁定第二段那个阈值（参考写 50，真实游戏疑似 55）——那是发明不是转写。
-  // TODO(裁定后): 若判定为笔误，参考侧补上 `miscInfo = true`，这里加回 usedEntangle 两段。
+  // ⚠⚠ **这四条分支里的 `usedEntangle` 依赖第十六批给参考打的补丁。**
+  // 参考开头是 `const bool usedEntangle = miscInfo;`（:2777），但在补丁之前**全项目没有
+  // 任何地方给红色奴隶主写过 `miscInfo`**——于是它恒为 false，「缠绕一场只用一次」失效
+  // （第十五批实测：375 条 variant 0 里有一条放了 8 次缠绕），第二段整段是死代码。
+  // 第十六批按 TODOS 的裁定在 `RED_SLAVER_ENTANGLE` 那条 case 补上了 `miscInfo = 1`
+  // （MonsterSpecific.cpp:1017），两段因此都活了过来，这里跟着转写。
+  // ⚠ 第二段的阈值 **50 未经验证**（真实游戏疑似 55，我们没有预言机能判它）——补丁注释里
+  //   也标了。它现在是活代码，改它会改变行为，不要以为是死分支。
+  // 我们侧的写入点在 `MOVE_TURN_BEGIN["red_slaver/entangle"]`（对齐参考写在 case 开头）。
   red_slaver: (bc, m, roll) => {
+    // 对齐 `const bool usedEntangle = miscInfo;`——读的是**成员**，不是 rollMove 传进来的副本。
+    const usedEntangle = m.miscInfo !== 0;
     // 参考写的是 `lastMove(MMID::INVALID)`，即 moveHistory[0] 还是初值——就是首回合。
     if (firstTurn(m)) {
       return "rs_stab";
     }
-    if (roll >= 75) {
+    if (roll >= 75 && !usedEntangle) {
       return "entangle";
+    }
+    // ⚠ 这一段在补丁之前是死代码，第十六批起才可达。阈值 50 未验证，见上。
+    if (roll >= 50 && usedEntangle && !lastTwoMoves(m, "rs_stab")) {
+      return "rs_stab";
     }
     if (!lastTwoMoves(m, "scrape") || (bc.ascension >= 17 && !lastMove(m, "scrape"))) {
       return "scrape";
@@ -977,6 +987,25 @@ const MOVE_RULES: Record<string, MoveForRoll> = {
   // ⚠ 参考在这行注了 `// called first turn only`，而且是真的：抢劫者的四条 case 尾部
   //   全是**同步 setMove**（或什么都没有），一次都不排 RollMove，所以整场只会调用它一次。
   looter: () => "mug",
+
+  // —— 真菌兽（第十六批）——
+  //
+  // 对齐 MonsterSpecific.cpp:2294 FUNGI_BEAST。纯 roll 分支，不追加 aiRng，也**没有首回合特例**
+  // （首次 rollMove 时 moveHistory 全空，两个 last* 都为假，于是 roll<60 出撕咬、否则出成长）。
+  // ⚠ 两段的连续限制**不同宽**，照抄不要统一：第一段是 `lastTwoMoves(BITE)`（连咬两次才逼成长），
+  //   第二段是 `lastMove(GROW)`（刚成长过就必须咬）——与酸液史莱姆中号那条「一段看两回合、
+  //   一段只看一回合」同族。
+  // ⚠ 这只怪的 `getMoveForRoll` 里**一条 asc 分档都没有**（阈值 60 恒定），所以这就是全部，
+  //   不像史莱姆/奴隶主那样还欠一块 asc17。
+  fungi_beast: (_bc, m, roll) => {
+    if (roll < 60) {
+      return lastTwoMoves(m, "fungi_bite") ? "fungi_grow" : "fungi_bite";
+    }
+    if (lastMove(m, "fungi_grow")) {
+      return "fungi_bite";
+    }
+    return "fungi_grow";
+  },
 };
 
 // ============================================================================
@@ -1090,19 +1119,25 @@ const MOVE_TURN_END: Record<string, MoveTurnEnd> = {
 /**
  * 招式的**开场**语句（对齐参考 `Monster::takeTurn` 各 case 里排在效果之前的那几句）。
  *
- * 只有一个用户，而且它纯粹是 RNG 消耗：抢劫者在**第一个怪物回合**的抢劫开头
- * `bc.aiRng.randomBoolean(0.6f)`，参考在那行注了 `// for a dialog message in game`
- * ——结果被完全丢弃，只有「掷了一次」这件事会体现在 aiRng 计数器上
- * （MonsterSpecific.cpp:919-921）。
- *
- * 之所以单开一张表而不是塞进数据表的 effects：它不是效果，是引擎侧的 RNG 记账，
- * `enemies.ts` 不该知道这种东西。键与 `MOVE_TURN_END` 同构（`${怪 id}/${招式 id}`）。
+ * 两个用户，都不是「效果」而是引擎侧的记账，所以单开一张表、不塞进数据表的 effects
+ * （`enemies.ts` 不该知道 aiRng 与 miscInfo 这种东西）。键与 `MOVE_TURN_END` 同构
+ * （`${怪 id}/${招式 id}`）。
  */
 const MOVE_TURN_BEGIN: Record<string, (bc: BattleContext, m: CombatMonster) => void> = {
+  // 抢劫者：**第一个怪物回合**的抢劫开头 `bc.aiRng.randomBoolean(0.6f)`，参考在那行注了
+  // `// for a dialog message in game`——结果被完全丢弃，只有「掷了一次」体现在 aiRng
+  // 计数器上（MonsterSpecific.cpp:919-921）。
   "looter/mug": (bc) => {
     if (getMonsterTurnNumber(bc) === 1) {
       bc.rng.aiRng.randomBoolean(Math.fround(0.6)); // ★ 消耗一次 aiRng，结果丢弃（游戏里的对白）
     }
+  },
+  // 红色奴隶主的缠绕：置 `usedEntangle`（对齐**第十六批给参考打的补丁**
+  // ——`miscInfo = 1;`，MonsterSpecific.cpp:1017 那条 case 的第一句）。
+  // ⚠ 它在补丁之前根本不存在：参考读 `miscInfo` 却从没写过，于是「一场只放一次缠绕」失效。
+  //   写的是**同步**语句（不入队），所以紧随其后那条 `addToBot(RollMove)` 执行时已经看得见。
+  "red_slaver/entangle": (_bc, m) => {
+    m.miscInfo = 1;
   },
 };
 
@@ -1149,11 +1184,11 @@ function constructMonster(bc: BattleContext, defId: string): CombatMonster {
     moveHistory: [],
     powers: [],
     alive: true,
-    rolledDamage: 0,
+    miscInfo: 0,
   };
   // construct 的怪种特例：虱子的咬击伤害整场固定，出生时掷定（对齐 Monster.cpp:116）。
   if (defId === "louse" || defId === "green_louse") {
-    m.rolledDamage =
+    m.miscInfo =
       bc.ascension >= 2 ? bc.rng.monsterHpRng.random(6, 8) : bc.rng.monsterHpRng.random(5, 7); // ★ 再消耗一次 monsterHpRng
   }
   return m;
@@ -1215,7 +1250,7 @@ function splitMonster(bc: BattleContext, m: CombatMonster): void {
       moveHistory: [],
       powers: [],
       alive: true,
-      rolledDamage: 0,
+      miscInfo: 0,
     };
     // 先落位再 rollMove，对齐 `arr[idx] = Monster(); arr[idx].initSpawnedMonster(...)`。
     bc.monsters[at] = nm;
@@ -1359,6 +1394,29 @@ const ENCOUNTER_BUILDERS: Record<string, EncounterBuilder> = {
     // createStrongHumanoid（MonsterGroup.cpp:477）：邪教徒 → 红/蓝奴隶主二选一 → 抢劫者。
     createFromConstructedPool(bc, [() => "cultist", () => getSlaver(bc), () => "looter"]);
   },
+
+  // 荒野二人组（第十六批）：`createStrongWildlife` 再 `createWeakWildlife`
+  // （对齐 MonsterGroup.cpp:168-171）。
+  // ⚠⚠ **顺序与恶棍二人组相反**：这里是**先 strong 后 weak**。两段的 RNG 消耗串在同一条流上，
+  //    换个顺序 monsterHpRng / miscRng 会整体错位（恶棍二人组是先 weak 后 strong）。
+  // ⚠ `createStrongWildlife` 的候选只有两个，所以选下标那次是 `miscRng.random(1)`
+  //   （`createFromConstructedPool` 用 `候选数 - 1` 表达，不写死 2）。
+  // ⚠ 参考给这两只 construct 传的 idx 是**常量 0** 而不是 `monsterCount`
+  //   （MonsterGroup.cpp:489-490）——本编队里 strong 排第一，两者恰好相等；而且我们的
+  //   下标是数组位置，`Monster::idx` 只被 RollMove 用来指回自己，故不受影响。
+  // 一场 EXORDIUM_WILDLIFE 因此固定消耗 **6 次 monsterHpRng**（真菌兽 1 + 颚虫 1 + 虱子 2
+  // + 尖刺中 1 + 酸液中 1）与 **3 次 miscRng**（getLouse 1 + 两次选下标）。
+  exordium_wildlife: (bc) => {
+    // createStrongWildlife（MonsterGroup.cpp:487）：真菌兽 → 颚虫，二选一。
+    createFromConstructedPool(bc, [() => "fungi_beast", () => "jaw_worm"]);
+    // createWeakWildlife（MonsterGroup.cpp:497）：红/绿虱二选一 → 尖刺史莱姆中 → 酸液史莱姆中。
+    // 与 exordium_thugs 那段是同一个函数、同一份候选表。
+    createFromConstructedPool(bc, [
+      () => getLouse(bc),
+      () => "spike_slime_m",
+      () => "acid_slime_m",
+    ]);
+  },
 };
 
 // ============================================================================
@@ -1384,6 +1442,13 @@ const PRE_BATTLE_ACTION: Record<string, PreBattleAction> = {
   // 而且会出现在 trace 的怪物 powers 快照里（`THIEVERY: 15`）。
   looter: (bc, m) => {
     addPower(m.powers, "thievery", bc.ascension >= 17 ? 20 : 15);
+  },
+  // 真菌兽的孢子云（对齐 MonsterSpecific.cpp:182-184 `buff<MS::SPORE_CLOUD>(2)`）。
+  // **不消耗 RNG、也没有 asc 分档**，层数恒 2 且**从不被读**（参考在那行自注
+  // 「the value here isn't used. it is always 2」，`Monster::die` 只判 `hasStatus`）。
+  // 它照样必须建模：SPORE_CLOUD 会出现在 trace 的怪物 powers 快照里。
+  fungi_beast: (_bc, m) => {
+    addPower(m.powers, "spore_cloud", 2);
   },
 };
 
@@ -1462,6 +1527,8 @@ function overwriteMove(m: CombatMonster, move: string): void {
  *     `LOOTER_SMOKE_BOMB`、`LOOTER_ESCAPE`，与我们的 `debuff` / `defend` / `unknown` 一致。
  *     ⚠ 耙击与刮擦「攻击 + 减益」两栏都算攻击，烟雾弹「只加格挡」不算——两条都与
  *     数据表的 intent 对得上，但方向是从白名单读出来的，不是从「带不带伤害」推的。
+ *   * 真菌兽（第十六批）：白名单里只有 `FUNGI_BEAST_BITE`（`:455`），`FUNGI_BEAST_GROW`
+ *     **不在**，与我们的 `attack` / `buff` 一致。孢子云不是招式，不参与这道判定。
  * 新登记怪种时**必须**回白名单复核，因为白名单里存在「带伤害却不算攻击」与反向的例外
  *（如球状守卫的 HARDEN 被算作攻击）。
  */
@@ -2909,13 +2976,37 @@ function monsterDamageUnblocked(bc: BattleContext, m: CombatMonster, damage: num
   }
 }
 
+/**
+ * 怪物死亡（对齐 `Monster::die`，Monster.cpp:283）。
+ *
+ * ⚠ **判胜那一支是 `return`，不是 `if/else` 的一半**（Monster.cpp:293-297）：最后一只怪
+ * 死掉时函数当场返回，后面所有死亡触发（孢子云 / 重生 / 尸爆 / 地精角 / 活体样本）
+ * **一个都不跑**。所以「秒掉场上最后一只真菌兽不会吃到易伤」是参考的行为，不是我们漏了
+ * ——这也是本批唯一需要格外小心的时点：死亡触发天然只在「还有同伴活着」时才可观察。
+ *
+ * ⚠ 孢子云是 `addToTop` 而不是 `addToBot`（Monster.cpp:301）。可观察面：这一击若还排着
+ * 别的动作（多段攻击的后续段、荆棘反伤…），易伤会插在它们**之前**生效。
+ * `clearOnCombatVictory` 用的是 `Action` 的默认值 true（ActionQueue.h:22，参考那行走的是
+ * 单参构造）——于是「同一批动作里后来又打死了最后一只怪」时它会被清扫掉。
+ */
 function monsterDie(bc: BattleContext, m: CombatMonster): void {
   m.alive = false;
   bc.monstersAlive -= 1;
   if (bc.monstersAlive === 0) {
     bc.outcome = "player_victory";
+    return; // ★ 参考在这里 return，下面的死亡触发一概不跑
   }
-  // TODO(后续PR): 孢子云/重生/尸爆/地精角等死亡触发。
+  // 孢子云（真菌兽）：死亡时给玩家 2 层易伤。
+  // ⚠ 层数 2 是 `die` 里**硬写**的，不读 Power 的层数（参考在 preBattleAction 那行自注
+  //   「the value here isn't used. it is always 2」）。
+  // ⚠ 第二个参数 `isSourceMonster` 传的是 **`bc.turnHasEnded`**，不是常量 true——
+  //   而且它是 C++ 的**实参**，在建动作那一刻就求值并按值捕获，不是执行时再读。
+  //   语义上就是「怪物阶段里死的算怪物来源（本回合末不递减），玩家回合里死的不算」。
+  if (getPower(m.powers, "spore_cloud") > 0) {
+    const isSourceMonster = bc.turnHasEnded;
+    addToTop(bc, (c) => debuffPlayer(c, "vulnerable", 2, isSourceMonster));
+  }
+  // TODO(后续PR): 重生（暗黑之种）/ 尸爆 / 停滞 / 地精角 / 活体样本，以及觉醒者的假死。
 }
 
 /**
@@ -6220,7 +6311,7 @@ function takeTurn(bc: BattleContext, m: CombatMonster): string | null {
     } else if (eff.kind === "deal_damage" || eff.kind === "deal_damage_rolled") {
       // 伤害在**入队时**按当下状态算好（attackPlayerHelper 先 calculateDamageToPlayer
       // 再 addToBot(AttackPlayer)）；deal_damage_rolled 取出生时掷定的固定值。
-      const base = eff.kind === "deal_damage_rolled" ? m.rolledDamage : eff.amount;
+      const base = eff.kind === "deal_damage_rolled" ? m.miscInfo : eff.amount;
       const dmg = calculateDamageToPlayer(bc, m, base);
       const idx = bc.monsters.indexOf(m);
       addToBot(bc, (c) => dealDamageToPlayer(c, dmg, idx));
@@ -6821,6 +6912,8 @@ export const SUPPORTED_ENCOUNTERS: readonly string[] = [
   "red_slaver",
   "looter",
   "exordium_thugs",
+  // —— 第十六批 ——
+  "exordium_wildlife",
 ];
 
 export function isEncounterSupported(encounterId: string): boolean {
