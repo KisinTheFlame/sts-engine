@@ -71,10 +71,17 @@
 - **`preBattleAction` 在全部 `rollMove` 之后**（`MonsterGroup::init`：createMonsters →
   逐怪 rollMove → 逐怪 preBattleAction），不是建怪时。
 - ⚠ **一只怪的工作量其实是四份，第四份最容易漏：招式的「收尾」。** `takeTurn` 每条 case
-  的**最后一句**决定下回合出什么，参考里**三种形态并存**，对 `aiRng` 的消耗各不相同：
+  的**最后一句**决定下回合出什么，参考里**四种形态并存**，对 `aiRng` 的消耗各不相同：
   `addToBot(RollMove(idx))`（掷 1 次并选新意图）/ `addToBot(NoOpRollMove())`（**照样掷
-  1 次**然后丢掉、意图不变）/ 同步 `setMove(x)`（**一次都不掷**）。第十三批四只怪就占了三种。
+  1 次**然后丢掉、意图不变）/ 同步 `setMove(x)`（**一次都不掷**）/ **什么都没有**
+  （第十四批的分裂：收尾藏在 `largeSlimeSplit` 函数内部，`MOVE_TURN_END` 记作 `"none"`）。
+  第十三批四只怪占了三种，第十四批补上第四种。
   收尾选错不会被伤害数值掩盖——`rng.ai` 计数器当场对不上。登记表在 `MOVE_TURN_END`。
+- ⚠ **不是所有意图都由 `getMoveForRoll` 掷出来。** 分裂 / 守卫者模式切换走的是
+  `Monster::onHpLost`（`Monster.cpp:499`）——在**掉血那一刻**直接改写意图，两条伤害路径
+  （`attacked` / `damage`）末尾各有一处，且**只在这一击没打死它时**才跑。
+  登记表在 `MONSTER_ON_HP_LOST`。写法上还有个坑：参考在这里是裸的
+  `moveHistory[0] = X`（**不前移历史**），不是 `setMove`——同一个 switch 里两种写法并存。
 - ⚠ **`getMoveForRoll` 可以完全不看 `roll`**。酸液史莱姆小（asc<17）直接
   `bc.aiRng.randomBoolean()` 二选一，顶部那次 `random(99)` 照掷但结果被丢掉——
   于是它一次 rollMove 消耗 **2** 次 aiRng。别以为「不追加 RNG」等于「只消耗 1 次」。
@@ -194,7 +201,7 @@ tools/regen-traces.sh --check
 要做的只是把编队名加进 `tools/regen-traces.sh` 的 `ENC_V0`：
 
 ```bash
-ENC_V0="small_slimes lots_of_slimes"
+ENC_V0="small_slimes lots_of_slimes large_slime"
 ```
 
 `ENC_V0` 的语义是**只保留 variant 0 那 375 行，装完即永久冻结**（此后每批都必须逐字节复现
@@ -210,12 +217,17 @@ ENC_V0="small_slimes lots_of_slimes"
 **本批给参考打了补丁、确实改变了某个已冻结编队的行为时**，用
 `ALLOW_CHANGED="编队名..."` 显式放行，并把理由写进报告与 TODOS。不要拿它绕过意外的扰动。
 
-⚠ **`ENC_V0` 的代价：这些文件里只有 variant 0 那副 21 张牌组，且战斗都很短。**
-「要靠长战斗才走到的东西」在它们上面**结构性不可达**，而且**没有逃生口**——新开一对聚焦
-variant 只会产出 variant 0 之后的行，那些行按定义会被 `head -n` 裁掉。第十三批实测：
-史莱姆塞进弃牌堆的黏液出现了 426 帧，**进手牌 0 帧**（`small_slimes` 最长 3 回合、
-`lots_of_slimes` 最长 5 回合，抽牌堆一次都没洗回来），于是「打出黏液」这条路零背书。
-选批次时先量一眼战斗长度：真需要长战斗的东西，得等带它的**长仗编队**（Boss / 大怪）那一批。
+⚠ **`ENC_V0` 的代价：这些文件里只有 variant 0 那副 21 张牌组。**
+「要靠长战斗才走到的东西」在**短仗编队**上结构性不可达，而且**在 variant 那一维没有逃生口**
+——新开一对聚焦 variant 只会产出 variant 0 之后的行，那些行按定义会被 `head -n` 裁掉。
+第十三批实测：史莱姆塞进弃牌堆的黏液出现了 426 帧，**进手牌 0 帧**（`small_slimes` 最长
+3 回合、`lots_of_slimes` 最长 5 回合，抽牌堆一次都没洗回来），于是「打出黏液」这条路零背书。
+
+⚠ **逃生口在「编队」那一维：换一个更耐打的编队。** 第十四批的 `large_slime` 用的还是
+同一副 21 张牌组、同样只留 variant 0，但那只 64~70 血的单怪把仗拖得够久，抽牌堆真的洗回来了
+——黏液被打出 46 次，第十三批那三个「0 例」的变异一次性转成 36 例。
+所以：选批次时先量一眼战斗长度，**并把「这一批能救回哪条旧盲区」写进计划**；
+真需要长战斗的东西，等带它的长仗编队（Boss / 大怪）那一批。
 
 ### 生成并安装
 
