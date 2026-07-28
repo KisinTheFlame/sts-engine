@@ -172,7 +172,7 @@ tools/regen-traces.sh --install UPPERCUT DEMON_FORM METALLICIZE ...
 pnpm typecheck && pnpm lint && pnpm test && pnpm format
 ```
 
-全绿是**下限**，不是完成。`sts-combat-trace.test.ts` 现有 8115 例逐帧对拍，
+全绿是**下限**，不是完成。`sts-combat-trace.test.ts` 现有 9555 例逐帧对拍，
 其中一部分用**全升级牌组**——所以每条规则 `up ? x : y` 的两个分支都会被验证。
 
 改共享路径（`callEndOfTurnActions`、`drawCards`、`onTurnEnding`、`useCard` 之类）时，
@@ -273,7 +273,8 @@ cp /tmp/sc.bak src/engine/sts-combat.ts
   ——牌堆那份 `fixed_list<CardInstance, 64>` 声明在 `#ifdef sts_card_manager_use_fixed_list`
   里，而 `sts_common.h:12` 的 `#define` 是注释掉的，实际编译成 `std::vector`。
   真正会被 64 卡住的是 `ViolenceAction` 的 `attackIdxList`（`Actions.cpp:616`），按
-  **抽牌堆里的攻击牌数**算——85 张牌组远够不到，但登记 `violence` 时要重新数一遍。
+  **抽牌堆里的攻击牌数**算。第十二批登记 `violence` 时数过了：最大的牌组（93 张）里攻击牌
+  40 出头，远够不到 64。以后新加牌组按「攻击牌数」而不是牌组张数来数。
   `UpgradeRandomCardAction` 的 `upgradeableHandIdxs`（`:942`）是 `fixed_list<int,10>`，
   手牌上限本就是 10，安全。
 - **harness 的策略可以比 `enumerateCardSelectActions` 更聪明**。那个枚举器对多选屏
