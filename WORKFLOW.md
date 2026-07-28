@@ -70,6 +70,19 @@
   会为三只没出场的怪消耗 RNG。这类地方照抄，不要「优化」成先选后造。
 - **`preBattleAction` 在全部 `rollMove` 之后**（`MonsterGroup::init`：createMonsters →
   逐怪 rollMove → 逐怪 preBattleAction），不是建怪时。
+- ⚠ **一只怪的工作量其实是四份，第四份最容易漏：招式的「收尾」。** `takeTurn` 每条 case
+  的**最后一句**决定下回合出什么，参考里**三种形态并存**，对 `aiRng` 的消耗各不相同：
+  `addToBot(RollMove(idx))`（掷 1 次并选新意图）/ `addToBot(NoOpRollMove())`（**照样掷
+  1 次**然后丢掉、意图不变）/ 同步 `setMove(x)`（**一次都不掷**）。第十三批四只怪就占了三种。
+  收尾选错不会被伤害数值掩盖——`rng.ai` 计数器当场对不上。登记表在 `MOVE_TURN_END`。
+- ⚠ **`getMoveForRoll` 可以完全不看 `roll`**。酸液史莱姆小（asc<17）直接
+  `bc.aiRng.randomBoolean()` 二选一，顶部那次 `random(99)` 照掷但结果被丢掉——
+  于是它一次 rollMove 消耗 **2** 次 aiRng。别以为「不追加 RNG」等于「只消耗 1 次」。
+- ⚠ **怪物会往玩家牌堆塞状态牌，而 harness 的 `isReplayableCard` 默认放行任何牌。**
+  黏液是**唯一不需要医疗包就能打出的状态牌**（`CardInstance.cpp:329` 有个 `id != SLIMED`
+  的例外），所以策略真会去打它 → 必须在 `CARD_RULES` 登记，否则 trace 不可重放。
+  同理，塞进来的状态牌一律要补 `test/sts-combat-trace.test.ts` 的 `CARD` 映射
+  （它会出现在牌堆快照里）。
 
 ### 参考项目错了怎么办
 
@@ -197,6 +210,13 @@ ENC_V0="small_slimes lots_of_slimes"
 **本批给参考打了补丁、确实改变了某个已冻结编队的行为时**，用
 `ALLOW_CHANGED="编队名..."` 显式放行，并把理由写进报告与 TODOS。不要拿它绕过意外的扰动。
 
+⚠ **`ENC_V0` 的代价：这些文件里只有 variant 0 那副 21 张牌组，且战斗都很短。**
+「要靠长战斗才走到的东西」在它们上面**结构性不可达**，而且**没有逃生口**——新开一对聚焦
+variant 只会产出 variant 0 之后的行，那些行按定义会被 `head -n` 裁掉。第十三批实测：
+史莱姆塞进弃牌堆的黏液出现了 426 帧，**进手牌 0 帧**（`small_slimes` 最长 3 回合、
+`lots_of_slimes` 最长 5 回合，抽牌堆一次都没洗回来），于是「打出黏液」这条路零背书。
+选批次时先量一眼战斗长度：真需要长战斗的东西，得等带它的**长仗编队**（Boss / 大怪）那一批。
+
 ### 生成并安装
 
 ```bash
@@ -208,6 +228,10 @@ tools/regen-traces.sh --install UPPERCUT DEMON_FORM --moves SENTRY_BOLT SENTRY_B
 校验每张新卡两个分支都被打出过、每个新招式都**出现且执行**过 → 才安装。
 
 **「出现」与「执行」必须都非 0**，这是怪物侧的不变量 ③：
+
+⚠ **`--moves` 之前那半（卡牌）同时要求「未升级」与「已升级」两栏都非 0，所以状态牌不能放进去。**
+状态/诅咒牌参考侧 `canUpgrade` 恒假，永远不会出现在升级栏里，写进去就是必然失败、整批装不上。
+第十三批的黏液因此没进这个列表，只能靠肉眼看覆盖表——这是工具的一个已知缺口。
 
 - 只有出现 → 意图选出来了但从没轮到执行。`MOVE_RULES` 有背书，`takeTurn` 那条效果**没有**。
 - ⚠ 这不是理论风险，**第一批怪物就撞上了**：`LOOTER_ESCAPE` 在 `looter.jsonl` 里
