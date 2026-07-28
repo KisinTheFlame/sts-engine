@@ -292,6 +292,8 @@ const ENCOUNTER: Record<string, string> = {
   EXORDIUM_THUGS: "exordium_thugs",
   // —— 第十六批 ——
   EXORDIUM_WILDLIFE: "exordium_wildlife",
+  // —— 第十七批 ——
+  GREMLIN_GANG: "gremlin_gang",
 };
 const MONSTER: Record<string, string> = {
   CULTIST: "cultist",
@@ -315,6 +317,13 @@ const MONSTER: Record<string, string> = {
   // —— 第十六批。⚠ `EXORDIUM_WILDLIFE` 的另一半候选（颚虫 / 红绿虱 / 两只中号史莱姆）
   // 也会真的出现，它们前面都已有映射。
   FUNGI_BEAST: "fungi_beast",
+  // —— 第十七批。⚠ `GREMLIN_GANG` 从 8 个候选里抽 4 只，候选表带重复
+  // （狂暴/鬼祟/肥胖各 ×2），所以同一种地精会在一场仗里出现两次。
+  MAD_GREMLIN: "mad_gremlin",
+  SNEAKY_GREMLIN: "sneaky_gremlin",
+  FAT_GREMLIN: "fat_gremlin",
+  SHIELD_GREMLIN: "shield_gremlin",
+  GREMLIN_WIZARD: "gremlin_wizard",
 };
 const MOVE: Record<string, string> = {
   CULTIST_INCANTATION: "incantation",
@@ -359,6 +368,14 @@ const MOVE: Record<string, string> = {
   // —— 第十六批 ——
   FUNGI_BEAST_BITE: "fungi_bite",
   FUNGI_BEAST_GROW: "fungi_grow",
+  // —— 第十七批 ——
+  MAD_GREMLIN_SCRATCH: "scratch",
+  SNEAKY_GREMLIN_PUNCTURE: "puncture",
+  FAT_GREMLIN_SMASH: "smash",
+  SHIELD_GREMLIN_PROTECT: "protect",
+  SHIELD_GREMLIN_SHIELD_BASH: "shield_bash",
+  GREMLIN_WIZARD_CHARGING: "charging",
+  GREMLIN_WIZARD_ULTIMATE_BLAST: "ultimate_blast",
 };
 // 药水在 trace 里是显示名。含熵酿填回来的未登记药水——它们只占槽位、不会被喝。
 const POTION: Record<string, string | null> = {
@@ -460,6 +477,10 @@ const POWER: Record<string, string> = {
   // 孢子云：**怪物身上**，真菌兽开局自带的 2 层（层数从不被读，只是「有没有」的标记）。
   // 与 THIEVERY 同理，它全程挂在 monsters[].powers 快照里。
   SPORE_CLOUD: "spore_cloud",
+  // —— 第十七批 ——
+  // 狂怒：**怪物身上**，狂暴地精开局自带的 1 层。与 SPORE_CLOUD / THIEVERY 不同的是
+  // 它的层数**真的被读**——每次挨攻击就照这个层数涨力量（连打在格挡上也算）。
+  ANGRY: "angry",
 };
 
 const mapPotion = (p: string): string | null => (p in POTION ? POTION[p]! : p);
