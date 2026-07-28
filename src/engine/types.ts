@@ -162,6 +162,10 @@ export type Effect =
   | { kind: "heal_ally"; amount: number }
   // 敌人用：召唤若干敌人加入战斗（地精首领召唤地精；新生者本回合不行动）。
   | { kind: "summon"; defIds: string[] }
+  // 敌人用：**分裂**——本敌人当场被 `splitInto` 那两只顶替（对齐 `Monster::largeSlimeSplit`）。
+  // 分裂出来的怪继承分裂瞬间的当前生命（同时也是它们的生命上限），不重掷 monsterHpRng。
+  // 它不带参数：分裂成什么写在 `EnemyDef.splitInto` 上，时点与 RNG 消耗写在 sts-combat.ts。
+  | { kind: "split" }
   | { kind: "add_card"; cardId: string; pile: "draw" | "discard" | "hand"; count: number }
   // —— X 费牌：xValue = 打出时的能量，以下效果按 X 次 / X 倍结算 ——
   | { kind: "deal_damage_all_x"; amount: number } // 对所有敌人造成 amount 伤害，X 次（旋风斩）

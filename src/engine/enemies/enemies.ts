@@ -1629,15 +1629,30 @@ const ENEMY_LIST: EnemyDef[] = [
     intentRule: { scripted: [], weighted: [] },
   },
 
-  // —— 大史莱姆（半血分裂成两只中史莱姆）——
+  // —— 大史莱姆两只（第十四批校准）——
+  //
+  // 血量取自 `MonsterIds.h:152 / :202 monsterHpRange` 的**第一组**（两只都走
+  // `setRandomHp(hpRng, ascension >= 7)`，见 `MonsterSpecific.cpp:37 / :68`）；招式数值取自
+  // `MonsterSpecific.cpp` 的 `Monster::takeTurn`，行号逐条标在招式上。
+  // ⚠ 与参考逐字比对过，五条已有招式与两段血量区间**一条都没有出入**，本批只**新增**了分裂。
+  // ⚠ 两只都**没有** `Monster::construct` 的怪种特例（`Monster.cpp:109` 的 switch 只有虱子与
+  //   暗黑爬虫），也**没有** `preBattleAction`（`MonsterSpecific.cpp:140` 的 switch 里没有它们），
+  //   所以建怪只掷一次 monsterHpRng。
+  // ⚠ 它们也**没有易塑**（MALLEABLE）：参考全项目只有蛇草与蠕动血块 buff 它
+  //   （`MonsterSpecific.cpp:213 / :249`）。TODOS 早先记的「L 号与史莱姆王有易塑」是错的，
+  //   本批已改正。
+  // ⚠ `intentRule` 同 M/S 号：**旧近似战斗的遗留数据**，游戏级实现不读它。
   {
     id: "acid_slime_l",
     name: "酸液史莱姆（大）",
+    // MonsterIds.h:152 `{{65,69},{68,72}}`（asc<7 取前者）。
     hpMin: 65,
     hpMax: 69,
     splitInto: ["acid_slime_m", "acid_slime_m"],
     moves: [
       {
+        // MonsterSpecific.cpp:353 `attackPlayerHelper(asc2 ? 12 : 11)`
+        //   + `addToBot(MakeTempCardInDiscard({SLIMED}, 2))`。
         id: "corrosive_spit_l",
         name: "腐蚀喷吐",
         effects: [
@@ -1647,16 +1662,31 @@ const ENEMY_LIST: EnemyDef[] = [
         intent: "attack",
       },
       {
+        // MonsterSpecific.cpp:368 `attackPlayerHelper(asc2 ? 18 : 16)`。
         id: "tackle_l",
         name: "冲撞",
         effects: [{ kind: "deal_damage", amount: 16 }],
         intent: "attack",
       },
       {
+        // MonsterSpecific.cpp:359 `addToBot(DebuffPlayer<WEAK>(2, true))`。
         id: "lick_l",
         name: "舔舐",
         effects: [{ kind: "apply_power", power: "weak", amount: 2, on: "target" }],
         intent: "debuff",
+      },
+      {
+        // 分裂（MonsterSpecific.cpp:364 → `largeSlimeSplit(bc, ACID_SLIME_M, idx, curHp)`）。
+        // ⚠ 它**不由 getMoveForRoll 掷出**：`Monster::onHpLost`（Monster.cpp:502）在掉到
+        //   `curHp <= maxHp/2` 时**直接改写** `moveHistory[0]`。整套时点与 RNG 消耗写在
+        //   sts-combat.ts 的 `splitMonster`，这里只登记「这是一招、意图不是攻击」。
+        // ⚠ 意图必须**不是** attack：`MonsterMoves.h:416` 的 `isMoveAttack` 白名单里
+        //   只有 `ACID_SLIME_L_CORROSIVE_SPIT` / `ACID_SLIME_L_TACKLE`（:417-418），
+        //   `ACID_SLIME_L_SPLIT` 与 `ACID_SLIME_L_LICK` 都不在。
+        id: "split",
+        name: "分裂",
+        effects: [{ kind: "split" }],
+        intent: "unknown",
       },
     ],
     // 权重近似（对齐中酸液史莱姆的手感，L 精确权重待校准）。
@@ -1672,11 +1702,14 @@ const ENEMY_LIST: EnemyDef[] = [
   {
     id: "spike_slime_l",
     name: "尖刺史莱姆（大）",
+    // MonsterIds.h:202 `{{64,70},{67,73}}`。
     hpMin: 64,
     hpMax: 70,
     splitInto: ["spike_slime_m", "spike_slime_m"],
     moves: [
       {
+        // MonsterSpecific.cpp:1187 `attackPlayerHelper(asc2 ? 18 : 16)`
+        //   + `addToBot(MakeTempCardInDiscard({SLIMED}, 2))`。
         id: "flame_tackle_l",
         name: "火焰冲撞",
         effects: [
@@ -1686,10 +1719,21 @@ const ENEMY_LIST: EnemyDef[] = [
         intent: "attack",
       },
       {
+        // MonsterSpecific.cpp:1193 `addToBot(DebuffPlayer<FRAIL>(asc17 ? 3 : 2, true))`。
         id: "lick_frail_l",
         name: "舔舐",
         effects: [{ kind: "apply_power", power: "frail", amount: 2, on: "target" }],
         intent: "debuff",
+      },
+      {
+        // 分裂（MonsterSpecific.cpp:1198 → `largeSlimeSplit(bc, SPIKE_SLIME_M, idx, curHp)`）。
+        // 触发与酸液大号完全同源（`Monster::onHpLost`，Monster.cpp:514）。
+        // 白名单里只有 `SPIKE_SLIME_L_FLAME_TACKLE`（`MonsterMoves.h:503`），
+        // `SPIKE_SLIME_L_SPLIT` / `SPIKE_SLIME_L_LICK` 都不在 → 意图不是攻击。
+        id: "split",
+        name: "分裂",
+        effects: [{ kind: "split" }],
+        intent: "unknown",
       },
     ],
     intentRule: {
@@ -2000,6 +2044,13 @@ const ENCOUNTERS: Record<string, EncounterDef> = {
   gremlin_nob: { id: "gremlin_nob", enemies: ["gremlin_nob"], isBoss: false },
   lagavulin: { id: "lagavulin", enemies: ["lagavulin"], isBoss: false },
   three_sentries: { id: "three_sentries", enemies: ["sentry", "sentry", "sentry"], isBoss: false },
+  // 大史莱姆（游戏级）：种类在**战斗开始时**由一次 miscRng.randomBoolean 掷定，见
+  // sts-combat.ts 的 `ENCOUNTER_BUILDERS.large_slime`（对齐 MonsterGroup.cpp:157）。
+  // 这里的 `enemies` 只是占位——有 builder 时 `initCombat` 根本不读它。
+  large_slime: { id: "large_slime", enemies: ["acid_slime_l"], isBoss: false },
+  // ⚠ 下面两个是**旧的近似实现**留下的静态展开（run 层 `pickEncounter` 用玩具 rng 50/50
+  // 选一个），与上面的 `small_slimes_a/b` 同族。游戏级的编队 id 是上面的 `large_slime`，
+  // 接 `sts-encounters`（TODOS 一.4）时这两个应当一并删掉。
   large_slime_acid: { id: "large_slime_acid", enemies: ["acid_slime_l"], isBoss: false },
   large_slime_spike: { id: "large_slime_spike", enemies: ["spike_slime_l"], isBoss: false },
   two_fungi_beasts: {

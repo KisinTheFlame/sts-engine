@@ -262,6 +262,8 @@ const ENCOUNTER: Record<string, string> = {
   // —— 第十三批 ——
   SMALL_SLIMES: "small_slimes",
   LOTS_OF_SLIMES: "lots_of_slimes",
+  // —— 第十四批 ——
+  LARGE_SLIME: "large_slime",
 };
 const MONSTER: Record<string, string> = {
   CULTIST: "cultist",
@@ -273,6 +275,10 @@ const MONSTER: Record<string, string> = {
   ACID_SLIME_S: "acid_slime_s",
   SPIKE_SLIME_M: "spike_slime_m",
   SPIKE_SLIME_S: "spike_slime_s",
+  // —— 第十四批。分裂会让同一场战斗里的怪从 1 只变成 2 只中号，
+  // 所以这张表同时覆盖 L 号与（第十三批已有的）M 号。
+  ACID_SLIME_L: "acid_slime_l",
+  SPIKE_SLIME_L: "spike_slime_l",
 };
 const MOVE: Record<string, string> = {
   CULTIST_INCANTATION: "incantation",
@@ -294,6 +300,15 @@ const MOVE: Record<string, string> = {
   SPIKE_SLIME_M_FLAME_TACKLE: "flame_tackle",
   SPIKE_SLIME_M_LICK: "lick_frail",
   SPIKE_SLIME_S_TACKLE: "tackle_s",
+  // —— 第十四批。两条分裂在我们这边**同名**（各自怪的命名空间里都叫 `split`），
+  // 与三条舔舐同理：比对是逐怪进行的，重名不要紧。
+  ACID_SLIME_L_CORROSIVE_SPIT: "corrosive_spit_l",
+  ACID_SLIME_L_LICK: "lick_l",
+  ACID_SLIME_L_TACKLE: "tackle_l",
+  ACID_SLIME_L_SPLIT: "split",
+  SPIKE_SLIME_L_FLAME_TACKLE: "flame_tackle_l",
+  SPIKE_SLIME_L_LICK: "lick_frail_l",
+  SPIKE_SLIME_L_SPLIT: "split",
 };
 // 药水在 trace 里是显示名。含熵酿填回来的未登记药水——它们只占槽位、不会被喝。
 const POTION: Record<string, string | null> = {

@@ -57,8 +57,8 @@ shift || true
 #     （单个文件最大 slime_boss 17.4MB，离 GitHub 的 100MB 硬上限还很远。）
 #   * 附带好处：这些文件从此不再重写，git 里只有一份 blob，也不会逐批产生大 diff。
 ENC_ALL="cultist jaw_worm jaw_worm_horde three_louse two_louse"
-# 每批新增的编队加到这里（用小写文件名）。第十三批：史莱姆两个编队。
-ENC_V0="small_slimes lots_of_slimes"
+# 每批新增的编队加到这里（用小写文件名）。第十三批：史莱姆两个编队；第十四批：大史莱姆。
+ENC_V0="small_slimes lots_of_slimes large_slime"
 
 policy_of() {
   case " $ENC_ALL " in *" $1 "*) echo all; return;; esac

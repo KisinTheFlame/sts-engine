@@ -878,7 +878,89 @@ const MOVE_RULES: Record<string, MoveForRoll> = {
   // 尖刺史莱姆（小）：对齐 MonsterSpecific.cpp:2769 SPIKE_SLIME_S——恒返回冲撞。
   // roll 照掷（rollMove 顶部那次），但结果被丢掉，与邪教徒同形。
   spike_slime_s: () => "tackle_s",
+
+  // —— 大史莱姆两只（第十四批）——
+  //
+  // ⚠ 两只的 `getMoveForRoll` 里都**没有分裂**。分裂不是掷出来的意图，而是
+  // `Monster::onHpLost`（Monster.cpp:499）在掉到半血时**直接改写 moveHistory[0]**
+  // ——见下方 `MONSTER_ON_HP_LOST`。所以这里的分支表与 M 号完全同构。
+
+  // 酸液史莱姆（大）：对齐 MonsterSpecific.cpp:1976 ACID_SLIME_L。
+  // 与 acid_slime_m 逐分支同构（阈值 30/70、三条追加 randomBoolean 的概率 0.5/0.4/0.4、
+  // 连续限制 lastTwoMoves/lastMove/lastTwoMoves），只有返回的招式 id 换成 L 号自己的。
+  // ⚠ 同样是「第一段看两回合、第二段只看一回合」那个非直觉但照抄的形状。
+  // TODO(后续PR): asc>=17 是另一整块（阈值 40/80）。⚠ 参考那一块的第一段写的是
+  //   `lastTwoMoves(ACID_SLIME_M_CORROSIVE_SPIT)`——**M 号**的枚举，看着像笔误，
+  //   但当前 trace 全是 asc0，没有预言机能判它，故连同整块一起不转写。
+  acid_slime_l: (bc, m, roll) => {
+    if (roll < 30) {
+      if (lastTwoMoves(m, "corrosive_spit_l")) {
+        return bc.rng.aiRng.randomBoolean() ? "tackle_l" : "lick_l"; // ★ 追加一次 aiRng
+      }
+      return "corrosive_spit_l";
+    }
+    if (roll < 70) {
+      if (lastMove(m, "tackle_l")) {
+        return bc.rng.aiRng.randomBoolean(Math.fround(0.4)) ? "corrosive_spit_l" : "lick_l"; // ★ 追加一次 aiRng
+      }
+      return "tackle_l";
+    }
+    if (lastTwoMoves(m, "lick_l")) {
+      return bc.rng.aiRng.randomBoolean(Math.fround(0.4)) ? "corrosive_spit_l" : "tackle_l"; // ★ 追加一次 aiRng
+    }
+    return "lick_l";
+  },
+
+  // 尖刺史莱姆（大）：对齐 MonsterSpecific.cpp:2799 SPIKE_SLIME_L。
+  // 纯 roll 分支，不追加 aiRng；asc17 那条判断**内联**在同一表达式里，故一并转写。
+  // 与 spike_slime_m 逐分支同构。
+  spike_slime_l: (bc, m, roll) => {
+    if (roll < 30) {
+      return lastTwoMoves(m, "flame_tackle_l") ? "lick_frail_l" : "flame_tackle_l";
+    }
+    if (lastTwoMoves(m, "lick_frail_l") || (bc.ascension >= 17 && lastMove(m, "lick_frail_l"))) {
+      return "flame_tackle_l";
+    }
+    return "lick_frail_l";
+  },
 };
+
+// ============================================================================
+// 掉血触发（对齐 `Monster::onHpLost`，Monster.cpp:499）
+//
+// ⚠ 只在**这一击没打死它**时调用（`curHp > 0`），打死了走 `die`。两条伤害路径
+// （`attacked` → `attackedUnblockedHelper`、`damage` → `damageUnblockedHelper`）末尾各有一处。
+//
+// ⚠ 大史莱姆的分裂靠它触发，写法是**直接赋值 `moveHistory[0]`**，而不是 `setMove`：
+// 所以 `moveHistory[1]`（上上步）**不前移**，被顶掉的那个意图就此消失。这个差别是可观察的
+// ——分裂之后那两只是新怪、历史全空，但同族的守卫者模式切换（第十九批）会接着用历史。
+//
+// ⚠ 阈值是 `curHp <= maxHp/2` 的 **C++ 整除**（向零截断）：65 血的 maxHp/2 = 32，
+// 掉到 32 才分裂，不是 32.5。
+// ============================================================================
+
+type OnHpLost = (bc: BattleContext, m: CombatMonster, amount: number) => void;
+
+const MONSTER_ON_HP_LOST: Record<string, OnHpLost> = {
+  // 酸液史莱姆（大）：对齐 Monster.cpp:501-506。
+  acid_slime_l: (_bc, m) => {
+    if (m.hp <= Math.trunc(m.maxHp / 2)) {
+      overwriteMove(m, "split");
+    }
+  },
+  // 尖刺史莱姆（大）：对齐 Monster.cpp:514-518，与上一条逐字同构。
+  spike_slime_l: (_bc, m) => {
+    if (m.hp <= Math.trunc(m.maxHp / 2)) {
+      overwriteMove(m, "split");
+    }
+  },
+  // TODO(后续PR): SLIME_BOSS（第十九批，同样的半血判定）、THE_GUARDIAN 的模式切换
+  //   （读 MODE_SHIFT 层数、归零时 setMove + addToBot(MonsterGainBlock)）。
+};
+
+function monsterOnHpLost(bc: BattleContext, m: CombatMonster, amount: number): void {
+  MONSTER_ON_HP_LOST[m.defId]?.(bc, m, amount);
+}
 
 // ============================================================================
 // 招式收尾：下一个意图怎么定（对齐参考 `Monster::takeTurn` 各 case 的最后一句）
@@ -890,8 +972,12 @@ const MOVE_RULES: Record<string, MoveForRoll> = {
 //                                                       `aiRng.random(99)`（BattleContext.cpp:2814）
 //                                                       但**不改意图**。只出招唯一的怪用它。
 //   { setMove } 同步 `setMove(下一招)`               —— **不掷任何 aiRng**，当场锁定。
+//   none        case 尾部**什么都没有**             —— 第十四批新增的第四形态。分裂就是这样：
+//                                                       `largeSlimeSplit(...)` 之后直接 `break`，
+//                                                       收尾（两次 noOpRollMove）在那个函数**内部**，
+//                                                       见 `splitMonster`。
 //
-// ⚠ 三者对 aiRng 的消耗完全不同（1 / 1 / 0），选错就是 counter 当场对不上。
+// ⚠ 四者对 aiRng 的消耗完全不同（1 / 1 / 0 / 由效果自己负责），选错就是 counter 当场对不上。
 // ⚠ `no_op_roll` 与 `roll` 消耗相同但语义不同：前者不写 moveHistory，所以
 //   `lastMove` / `lastTwoMoves` 看到的历史也不同。
 //
@@ -899,7 +985,7 @@ const MOVE_RULES: Record<string, MoveForRoll> = {
 // 表里没有的招式一律按 `roll` 处理，这是参考的多数形态。
 // ============================================================================
 
-type MoveTurnEnd = "roll" | "no_op_roll" | { readonly setMove: string };
+type MoveTurnEnd = "roll" | "no_op_roll" | "none" | { readonly setMove: string };
 
 const MOVE_TURN_END: Record<string, MoveTurnEnd> = {
   // 酸液史莱姆（小）：舔舐 ↔ 冲撞严格交替，两条都是**同步** setMove、不消耗 aiRng。
@@ -909,6 +995,10 @@ const MOVE_TURN_END: Record<string, MoveTurnEnd> = {
   // 尖刺史莱姆（小）：只有一招，参考用 NoOpRollMove——**照样消耗一次** aiRng.random(99)，
   // 但意图不变、moveHistory 也不推进。对齐 MonsterSpecific.cpp:1204。
   "spike_slime_s/tackle_s": "no_op_roll",
+  // 大史莱姆分裂：参考的 case 只有一句 `largeSlimeSplit(...)` 然后 `break`，**没有任何收尾语句**
+  // （MonsterSpecific.cpp:364 / :1198）。收尾在 largeSlimeSplit 内部，见 `splitMonster`。
+  "acid_slime_l/split": "none",
+  "spike_slime_l/split": "none",
 };
 
 // ============================================================================
@@ -946,6 +1036,78 @@ function createMonster(bc: BattleContext, defId: string): CombatMonster {
   }
   bc.monsters.push(m);
   return m;
+}
+
+// ============================================================================
+// 分裂（对齐 `Monster::largeSlimeSplit`，MonsterSpecific.cpp:3342）
+//
+// 大史莱姆掉到半血时**不是加两只小弟**，而是被两只中史莱姆**顶替**：母体所在的下标
+// 直接被覆盖，第二只落在它右边一格。逐条照抄的点（每条都有可观测面）：
+//
+//  ① **不掷 monsterHpRng**。`initSpawnedMonster`（:3325）只有 `curHp = maxHp = hp`，
+//     没有 `initHp`。而且 `maxHp` 也被压成分裂瞬间的**当前**血量，不是母体的上限
+//     ——trace 里那两只中史莱姆是满血的 26/26，母体是 26/65。
+//  ② **不继承任何状态**：参考写的是 `arr[idx] = Monster()` 再 init，母体身上的易伤 /
+//     虚弱 / 格挡全部清零（trace 逐帧可见）。
+//  ③ 两只各自 `rollMove`（:3329），所以 aiRng 消耗是 2 次**起步**——中号酸液的
+//     `getMoveForRoll` 还可能追加一次 randomBoolean。
+//  ④ 之后还有**两次** `noOpRollMove`（各掷一次 `aiRng.random(99)` 丢掉）：
+//     一次在 largeSlimeSplit 尾部（:3364），另一次是它 `extraRollMoveOnTurn.set(idx2)`
+//     之后、回到 `MonsterGroup::doMonsterTurn`（MonsterGroup.cpp:583）立刻被读掉的那次。
+//     ⚠ 那个 bitset **只由本函数写、当场就被读掉**（中间没有任何入队动作），
+//     所以这里直接连着掷两次是等价的，不需要把它做成持久状态。
+//  ⑤ **游标推进两格**：largeSlimeSplit 自己 `++bc.monsterTurnIdx`（:3366），
+//     `doMonsterTurn` 末尾还会再 `++` 一次。于是新生的第二只**本回合不行动**。
+//     我们的主循环把第二次 `+= 1` 放在调用方（对齐参考把它放在 doMonsterTurn 末尾），
+//     所以这里只做第一次。
+// ============================================================================
+
+function splitMonster(bc: BattleContext, m: CombatMonster): void {
+  const idx1 = bc.monsters.indexOf(m);
+  const idx2 = idx1 + 1;
+  const into = getEnemyDef(m.defId).splitInto;
+  if (into === undefined || into.length !== 2) {
+    throw new Error(`sts-combat 暂未登记分裂去向: ${m.defId}`);
+  }
+  // 参考是往定长数组 `arr[idx2]` 里**写**，右边已经有怪时会把它顶掉，而 monsterCount
+  // 照样 `min(count+1, 4)`。那种形态只有史莱姆王那条链（第十九批）才可能出现，
+  // 当前唯一的用户 `large_slime` 恒是「场上只剩它自己」。与其猜，不如当场炸。
+  if (idx2 !== bc.monsters.length) {
+    throw new Error(
+      `sts-combat 暂未登记「分裂目标格已有怪」的分裂（idx2=${idx2}, 怪数=${bc.monsters.length}）`,
+    );
+  }
+  const hp = m.hp; // ★ 继承分裂瞬间的当前生命，同时成为新怪的生命上限
+  const spawn = (defId: string, at: number): void => {
+    const nm: CombatMonster = {
+      defId,
+      hp,
+      maxHp: hp,
+      block: 0,
+      currentMove: "",
+      moveHistory: [],
+      powers: [],
+      alive: true,
+      rolledDamage: 0,
+    };
+    // 先落位再 rollMove，对齐 `arr[idx] = Monster(); arr[idx].initSpawnedMonster(...)`。
+    bc.monsters[at] = nm;
+    rollMove(bc, nm); // ★ 消耗 aiRng（1 次；中号酸液的分支可能追加 1 次）
+  };
+  spawn(into[0], idx1);
+  spawn(into[1], idx2);
+
+  // TODO(后续PR): 贤者之石（PHILOSOPHERS_STONE）会给分裂出来的两只各 +1 力量
+  //   （MonsterSpecific.cpp:3356）。harness 的遗物轮换里没有它（trace_dump.cpp:218 那八个），
+  //   写了也没有预言机走到。
+
+  bc.monstersAlive += 1;
+  // `monsterCount = min(monsterCount+1, 4)` 由上面 idx2 落位时数组自然增长表达
+  //（我们用 `bc.monsters.length` 当 monsterCount）。
+
+  bc.rng.aiRng.random(99); // ★ largeSlimeSplit 尾部的 noOpRollMove（MonsterSpecific.cpp:3364）
+  bc.monsterTurnIdx += 1; // 对齐 :3366 的 ++bc.monsterTurnIdx
+  bc.rng.aiRng.random(99); // ★ doMonsterTurn 里 extraRollMoveOnTurn 命中的那次 noOpRollMove
 }
 
 // ============================================================================
@@ -1015,6 +1177,14 @@ const ENCOUNTER_BUILDERS: Record<string, EncounterBuilder> = {
       createMonster(bc, slime);
     }
   },
+
+  // 大史莱姆：一次 miscRng.randomBoolean 在酸液 / 尖刺之间二选一
+  // （对齐 MonsterGroup.cpp:157 LARGE_SLIME）。
+  // ⚠ true 那支是**酸液**（与小史莱姆组那条 true=尖刺 反过来），照抄不要凭印象写。
+  large_slime: (bc) => {
+    const id = bc.rng.miscRng.randomBoolean() ? "acid_slime_l" : "spike_slime_l"; // ★ 消耗一次 miscRng
+    createMonster(bc, id);
+  },
 };
 
 // ============================================================================
@@ -1077,6 +1247,22 @@ function setMove(m: CombatMonster, move: string): void {
 }
 
 /**
+ * **顶替**当前意图（对齐参考里裸写的 `moveHistory[0] = X`，Monster.cpp:502 / :510 / :516）。
+ *
+ * ⚠ 与 `setMove` 的差别是承重的：这里**不前移历史**，`moveHistory[1]` 原样留着，
+ * 被顶掉的那个意图直接消失。参考在 `onHpLost` 里用的就是这个形态（分裂 / 史莱姆王分裂），
+ * 而守卫者的模式切换在同一个 switch 里用的却是 `setMove`——两种写法并存，不能统一。
+ */
+function overwriteMove(m: CombatMonster, move: string): void {
+  if (m.moveHistory.length === 0) {
+    m.moveHistory.push(move);
+  } else {
+    m.moveHistory[0] = move;
+  }
+  m.currentMove = move;
+}
+
+/**
  * 目标当前意图是否为攻击（对齐 Monster::isAttacking → isMoveAttack(moveHistory[0])）。
  *
  * ⚠ 参考用的是**招式 id 白名单**（MonsterMoves.h:414 的大 switch），这里改读数据表的
@@ -1086,6 +1272,10 @@ function setMove(m: CombatMonster, move: string): void {
  *     / `ACID_SLIME_S_TACKLE`（`MonsterMoves.h:419-421`）与 `SPIKE_SLIME_M_FLAME_TACKLE` /
  *     `SPIKE_SLIME_S_TACKLE`（`:504-505`），三条舔舐（`ACID_SLIME_M_LICK` /
  *     `ACID_SLIME_S_LICK` / `SPIKE_SLIME_M_LICK`）**都不在**，与我们的 `intent: "debuff"` 一致。
+ *   * 大史莱姆两只（第十四批）：白名单里只有 `ACID_SLIME_L_CORROSIVE_SPIT` /
+ *     `ACID_SLIME_L_TACKLE`（`:417-418`）与 `SPIKE_SLIME_L_FLAME_TACKLE`（`:503`）。
+ *     两条舔舐与**两条分裂**（`ACID_SLIME_L_SPLIT` / `SPIKE_SLIME_L_SPLIT`）都不在，
+ *     与我们的 `intent: "debuff"` / `"unknown"` 一致。
  * 新登记怪种时**必须**回白名单复核，因为白名单里存在「带伤害却不算攻击」与反向的例外
  *（如球状守卫的 HARDEN 被算作攻击）。
  */
@@ -2519,6 +2709,10 @@ function monsterDamageUnblocked(bc: BattleContext, m: CombatMonster, damage: num
   if (m.hp <= 0) {
     m.hp = 0;
     monsterDie(bc, m);
+  } else {
+    // 掉血触发（对齐 `attackedUnblockedHelper` 末尾的 `onHpLost`，Monster.cpp:462）。
+    // ⚠ 只在**没被打死**时跑：被打死走 die，大史莱姆被一击秒到 0 血就不会分裂。
+    monsterOnHpLost(bc, m, damage);
   }
 }
 
@@ -5158,6 +5352,10 @@ function monsterDamage(bc: BattleContext, idx: number, rawDamage: number): void 
   if (m.hp <= 0) {
     m.hp = 0;
     monsterDie(bc, m);
+  } else {
+    // 同上，只是这条路是 `damageUnblockedHelper`（Monster.cpp:403）。两条路都有 onHpLost，
+    // 所以非攻击伤害（燃烧 / 主宰 / 剑刃回旋镖 / 火焰药水…）**照样能触发分裂**。
+    monsterOnHpLost(bc, m, damage);
   }
 }
 
@@ -5721,6 +5919,8 @@ function doMonsterTurn(bc: BattleContext, idx: number): void {
     addToBot(bc, (c) => {
       c.rng.aiRng.random(99); // ★ 消耗一次 aiRng
     });
+  } else if (turnEnd === "none") {
+    // case 尾部什么都没有（当前只有分裂）：收尾由效果自己负责，见 `splitMonster`。
   } else {
     // 同步 setMove：**不消耗任何 aiRng**。参考写在 takeTurn 的 case 尾部（那里是纯同步语句），
     // 所以它在本次出招排的那些动作**执行之前**就生效了——快照里的 move 当场就变。
@@ -5783,6 +5983,11 @@ function takeTurn(bc: BattleContext, m: CombatMonster): string | null {
       }
       const { cardId, count } = eff;
       addToBot(bc, (c) => makeTempCardInDiscard(c, cardId, count));
+    } else if (eff.kind === "split") {
+      // 分裂：**同步**执行，不入队——参考的那条 case 就是一句裸的
+      // `largeSlimeSplit(bc, ...)`（MonsterSpecific.cpp:364 / :1198），
+      // 不是 addToBot。差别可观察：分裂当场就完成，母体这一回合不会再排出任何动作。
+      splitMonster(bc, m);
     }
     // 其余效果留后续 PR。
   }
@@ -6336,6 +6541,8 @@ export const SUPPORTED_ENCOUNTERS: readonly string[] = [
   // —— 第十三批 ——
   "small_slimes",
   "lots_of_slimes",
+  // —— 第十四批 ——
+  "large_slime",
 ];
 
 export function isEncounterSupported(encounterId: string): boolean {
