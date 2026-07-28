@@ -127,13 +127,28 @@ const ENEMY_LIST: EnemyDef[] = [
       ],
     },
   },
+  // —— 史莱姆四只（第十三批校准）——
+  //
+  // 血量取自 `MonsterIds.h:150 monsterHpRange` 的**第一组**（`Monster::initHp` 对这四只都是
+  // `setRandomHp(hpRng, ascension >= 7)`，见 `MonsterSpecific.cpp:37/68`）；招式数值取自
+  // `MonsterSpecific.cpp` 的 `Monster::takeTurn`，行号逐条标在招式上。
+  // ⚠ 与参考逐字比对过，八条招式与四段血量区间**一条都没有出入**，本批未改任何数值。
+  // ⚠ 四只怪都**没有** `Monster::construct` 的怪种特例（`Monster.cpp:23` 的 switch 只有
+  //   虱子与暗黑爬虫），也**没有** `preBattleAction`（`MonsterSpecific.cpp:141` 的 switch
+  //   里没有它们），所以建怪只掷一次 monsterHpRng。
+  // ⚠ `intentRule` 是**旧近似战斗的遗留数据**，游戏级实现不读它（出招走 sts-combat.ts 的
+  //   `MOVE_RULES.getMoveForRoll`，那才是逐位对齐参考的那份）。留着只为 data-tables 的
+  //   自洽性用例，权重/连续限制仍是估算值，不要拿它当权威。
   {
     id: "acid_slime_m",
     name: "酸液史莱姆（中）",
+    // MonsterIds.h:153 `{{28,32},{29,34}}`（asc<7 取前者）。
     hpMin: 28,
     hpMax: 32,
     moves: [
       {
+        // MonsterSpecific.cpp:373 `attackPlayerHelper(asc2 ? 8 : 7)`
+        //   + `addToBot(MakeTempCardInDiscard(SLIMED))`。
         id: "corrosive_spit",
         name: "腐蚀喷吐",
         effects: [
@@ -143,12 +158,14 @@ const ENEMY_LIST: EnemyDef[] = [
         intent: "attack",
       },
       {
+        // MonsterSpecific.cpp:381 `addToBot(DebuffPlayer<WEAK>(1, true))`。
         id: "lick",
         name: "舔舐",
         effects: [{ kind: "apply_power", power: "weak", amount: 1, on: "target" }],
         intent: "debuff",
       },
       {
+        // MonsterSpecific.cpp:386 `attackPlayerHelper(asc2 ? 12 : 10)`。
         id: "tackle",
         name: "冲撞",
         effects: [{ kind: "deal_damage", amount: 10 }],
@@ -168,10 +185,13 @@ const ENEMY_LIST: EnemyDef[] = [
   {
     id: "spike_slime_m",
     name: "尖刺史莱姆（中）",
+    // MonsterIds.h:203 `{{28,32},{29,34}}`。
     hpMin: 28,
     hpMax: 32,
     moves: [
       {
+        // MonsterSpecific.cpp:1178 `attackPlayerHelper(asc2 ? 10 : 8)`
+        //   + `addToBot(MakeTempCardInDiscard(CardInstance(SLIMED)))`。
         id: "flame_tackle",
         name: "扑击",
         effects: [
@@ -181,13 +201,15 @@ const ENEMY_LIST: EnemyDef[] = [
         intent: "attack",
       },
       {
+        // MonsterSpecific.cpp:1172 `addToBot(DebuffPlayer<FRAIL>(1))`。
+        // ⚠ 这一条**没有显式传** isSourceMonster，但 `Actions.h:35` 的默认值就是 true，
+        //   与同族三条显式传 true 的舔舐行为一致（施加当回合不递减）。
         id: "lick_frail",
         name: "舔舐",
         effects: [{ kind: "apply_power", power: "frail", amount: 1, on: "target" }],
         intent: "debuff",
       },
     ],
-    // asc0（sts_lightspeed getMoveForRoll）：roll<30→扑击、否则舔舐；同招最多连两次。
     intentRule: {
       scripted: [],
       weighted: [
@@ -199,10 +221,12 @@ const ENEMY_LIST: EnemyDef[] = [
   {
     id: "spike_slime_s",
     name: "尖刺史莱姆（小）",
+    // MonsterIds.h:204 `{{10,14},{11,15}}`。
     hpMin: 10,
     hpMax: 14,
     moves: [
       {
+        // MonsterSpecific.cpp:1204 `attackPlayerHelper(asc2 ? 6 : 5)`。
         id: "tackle_s",
         name: "冲撞",
         effects: [{ kind: "deal_damage", amount: 5 }],
@@ -217,24 +241,25 @@ const ENEMY_LIST: EnemyDef[] = [
   {
     id: "acid_slime_s",
     name: "酸液史莱姆（小）",
+    // MonsterIds.h:154 `{{8,12},{9,13}}`。
     hpMin: 8,
     hpMax: 12,
     moves: [
       {
+        // MonsterSpecific.cpp:398 `attackPlayerHelper(asc2 ? 4 : 3)`。
         id: "tackle_acid_s",
         name: "冲撞",
         effects: [{ kind: "deal_damage", amount: 3 }],
         intent: "attack",
       },
       {
+        // MonsterSpecific.cpp:393 `addToBot(DebuffPlayer<WEAK>(1, true))`。
         id: "lick_weak",
         name: "舔舐",
         effects: [{ kind: "apply_power", power: "weak", amount: 1, on: "target" }],
         intent: "debuff",
       },
     ],
-    // asc0：首招 50/50，其后严格交替（sts_lightspeed 用 setMove 锁定）；
-    // 两招 + maxInARow 1 在本框架下等价复现该交替观感。
     intentRule: {
       scripted: [],
       weighted: [
@@ -1941,7 +1966,17 @@ const ENCOUNTERS: Record<string, EncounterDef> = {
   cultist: { id: "cultist", enemies: ["cultist"], isBoss: false },
   jaw_worm: { id: "jaw_worm", enemies: ["jaw_worm"], isBoss: false },
   two_louse: { id: "two_louse", enemies: ["louse", "louse"], isBoss: false },
-  // 小史莱姆组：50/50 两种组成（sts_lightspeed MonsterGroup）。
+  // 小史莱姆组（游戏级）：成员在**战斗开始时**由 miscRng 掷定，见 sts-combat.ts 的
+  // `ENCOUNTER_BUILDERS.small_slimes`（对齐 MonsterGroup.cpp:126）。
+  // 这里的 `enemies` 只是占位——有 builder 时 `initCombat` 根本不读它。
+  small_slimes: {
+    id: "small_slimes",
+    enemies: ["spike_slime_s", "acid_slime_m"],
+    isBoss: false,
+  },
+  // ⚠ 下面两个是**旧的近似实现**留下的静态展开（run 层 `pickEncounter` 用玩具 rng 50/50
+  // 选一个）。游戏级的编队 id 是上面的 `small_slimes`，接 `sts-encounters`（TODOS 一.4）
+  // 时这两个应当一并删掉。
   small_slimes_a: {
     id: "small_slimes_a",
     enemies: ["spike_slime_s", "acid_slime_m"],
@@ -1954,6 +1989,9 @@ const ENCOUNTERS: Record<string, EncounterDef> = {
   },
   three_louse: { id: "three_louse", enemies: ["louse", "louse", "louse"], isBoss: false },
   blue_slaver: { id: "blue_slaver", enemies: ["blue_slaver"], isBoss: false },
+  // 史莱姆群：成员集合固定（3 尖刺小 + 2 酸液小），但**出场顺序**由 miscRng 的 5 次抽样
+  // 掷定，见 sts-combat.ts 的 `ENCOUNTER_BUILDERS.lots_of_slimes`（对齐 MonsterGroup.cpp:137）。
+  // 这里的 `enemies` 只是占位——有 builder 时 `initCombat` 根本不读它。
   lots_of_slimes: {
     id: "lots_of_slimes",
     enemies: ["spike_slime_s", "spike_slime_s", "spike_slime_s", "acid_slime_s", "acid_slime_s"],

@@ -125,12 +125,24 @@ describe("卡表", () => {
 //   * 挡不住：**尚未登记的 275 张牌**的 `color` 全无背书；已登记的牌在 red ↔ colorless
 //     之间记错；common / uncommon / rare 三档之间记错。
 //   随铺量推进，登记表越长这条的射程越大——全部铺完时它就覆盖了铁甲 + 无色全部 115 张。
+//
+// ⚠ 第十三批起登记表里出现了**不属于任何角色**的牌：状态牌黏液（`color: "status"`）。
+//   状态/诅咒牌不进任何角色的奖励池，`color` 对它们不是「角色归属」而是分类标签，
+//   所以这条不变量按 `type` 把它们排除在外——把 `"status"` / `"curse"` 直接并进允许集合
+//   是不对的，那会让一张真的记错颜色的**角色牌**从此蒙混过关。
 // ============================================================================
 
 describe("卡表 · 颜色归属", () => {
-  it("已登记游戏级行为的牌只能是 red 或 colorless", () => {
+  it("已登记游戏级行为的角色牌只能是 red 或 colorless", () => {
     for (const id of REGISTERED_CARD_IDS) {
       const def = getCardDef(id);
+      // 状态牌 / 诅咒牌没有角色归属（黏液是唯一一张进了登记表的）。
+      if (def.type === "status" || def.type === "curse") {
+        expect(["status", "curse"], `${id} 是 ${def.type} 牌却记成 color=${def.color}`).toContain(
+          def.color,
+        );
+        continue;
+      }
       expect(
         ["red", "colorless"],
         `${id} 已在 sts-combat.ts 登记（迁移范围=铁甲+无色）却记成 color=${def.color}`,
