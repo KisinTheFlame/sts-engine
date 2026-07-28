@@ -109,13 +109,20 @@ describe("sts-combat 非法动作的拒绝路径", () => {
     expect(bc.drawPile).toHaveLength(2);
   });
 
+  // 样本编队选 `giant_head` 巨头（第三幕精英，单怪）。判据与「未迁移卡牌」那条的 `seek`
+  // 同源：**它不在 harness 的 20 个第一幕编队里**（trace_dump.cpp:438-457），而 WORKFLOW
+  // 明令不许增删那个列表（`traceIdx` 一移，遗物/药水轮换整体错位、已提交数据全线作废），
+  // 要覆盖第二/三幕得在现有双重循环**之后**再追加一遍循环。所以它在可预见的将来都不会有
+  // 预言机，也就不会被下一批铺量顶掉。
+  // ⚠ 原先用的是 `three_sentries`，第十八批把它登记了，故换掉。别换成 `the_guardian` /
+  //   `hexaghost` / `slime_boss` 那三个——它们就在 harness 的列表里，第十九/二十批就要登记。
   it("未登记的怪物会显式抛错，不会静默错配 RNG", () => {
     expect(() =>
       initCombat({
         seedLong: 1n,
         floorNum: 1,
         ascension: 0,
-        encounterId: "three_sentries",
+        encounterId: "giant_head",
         deck: IRONCLAD_STARTER_DECK.map((defId) => ({ defId, upgraded: false })),
         playerHp: 80,
         playerMaxHp: 80,

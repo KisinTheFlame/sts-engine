@@ -1484,26 +1484,36 @@ const ENEMY_LIST: EnemyDef[] = [
     },
   },
 
-  // —— 精英：地精头目（Enrage = 玩家出技能牌它加力量）——
+  // —— 精英：地精头目（第十八批）——
+  //
+  // ⚠ **激怒（ENRAGE）不写在这里以外的地方**：它由咆哮那一招施加（`buff<MS::ENRAGE>`，
+  // MonsterSpecific.cpp:757），不是 `preBattleAction`——与狂暴地精的狂怒（开局自带）不同。
+  // 触发点在**玩家打出技能牌**时（`BattleContext::onUseSkillCard` 末尾，:1847-1849），
+  // 见 sts-combat.ts 的 `onUseSkillCard`。
   {
     id: "gremlin_nob",
     name: "地精头目",
+    // MonsterIds.h:175 `{{82,86},{85,90}}`（asc<8 取前者）。
     hpMin: 82,
     hpMax: 86,
     moves: [
       {
+        // MonsterSpecific.cpp:756-758 `buff<MS::ENRAGE>(asc18 ? 3 : 2)`——**同步** buff。
         id: "bellow",
         name: "咆哮",
         effects: [{ kind: "apply_power", power: "enrage", amount: 2, on: "self" }],
         intent: "buff",
       },
       {
+        // MonsterSpecific.cpp:761-763 `attackPlayerHelper(bc, asc3 ? 16 : 14)`。
         id: "rush",
         name: "猛冲",
         effects: [{ kind: "deal_damage", amount: 14 }],
         intent: "attack",
       },
       {
+        // MonsterSpecific.cpp:766-769：伤害 `asc3 ? 8 : 6`，随后
+        // `addToBot(DebuffPlayer<VULNERABLE>(2, true))`——第二个参数是 isSourceMonster。
         id: "skull_bash",
         name: "碎颅击",
         effects: [
@@ -1513,70 +1523,97 @@ const ENEMY_LIST: EnemyDef[] = [
         intent: "attack",
       },
     ],
-    // asc0：首招必咆哮(上激怒2)；之后 roll<33 或连两次猛冲→碎颅击，否则猛冲（猛冲最多连2）。
-    intentRule: {
-      scripted: ["bellow"],
-      weighted: [
-        { move: "rush", weight: 67, maxInARow: 2 },
-        { move: "skull_bash", weight: 33, maxInARow: 99 },
-      ],
-    },
+    // 出招规则见 sts-combat.ts 的 MOVE_RULES（首招必咆哮，之后 roll<33 或连两次猛冲 → 碎颅击）。
+    // ⚠ `MonsterMoves.h` 的攻击白名单里有 `GREMLIN_NOB_RUSH`(:460) 与
+    //   `GREMLIN_NOB_SKULL_BASH`(:461)，`GREMLIN_NOB_BELLOW` **不在**——与上面的
+    //   attack / attack / buff 一致。
+    intentRule: { scripted: [], weighted: [] },
   },
 
-  // —— 精英：拉加维林（睡眠状态机 + 金属化 + 吸取灵魂减力量敏捷）——
+  // —— 精英：拉加维林（第十八批：沉睡 / 苏醒 + 金属化）——
+  //
+  // ⚠ 沉睡（ASLEEP）与金属化 8 层都**不写在这里**，理由与真菌兽的孢子云同族：
+  //   * `ASLEEP` 由**编队**给（`MonsterGroup.cpp:295` 的 `setHasStatus<MS::ASLEEP>(true)`，
+  //     只有 `LAGAVULIN` 这个编队有，事件版 `LAGAVULIN_EVENT` 没有），见 `ENCOUNTER_SETUP`；
+  //   * `METALLICIZE(8)` + `addBlock(8)` 由 `preBattleAction` 给，而且**以睡着为前提**
+  //     （MonsterSpecific.cpp:286-291），见 `PRE_BATTLE_ACTION`。
+  // 两者都会出现在 trace 的怪物快照里（`ASLEEP: 1` / `METALLICIZE: 8`）。
   {
     id: "lagavulin",
     name: "拉加维林",
+    // MonsterIds.h:179 `{{109,111},{112,115}}`（asc<8 取前者）。
     hpMin: 109,
     hpMax: 111,
     moves: [
       {
+        // MonsterSpecific.cpp:888-894：整条 case **没有任何效果**，只有收尾
+        //（判断醒没醒 / 是不是第 3 个回合）。见 MOVE_TURN_END["lagavulin/sleep"]。
         id: "sleep",
         name: "沉睡",
         effects: [],
         intent: "unknown",
       },
       {
+        // MonsterSpecific.cpp:871 `attackPlayerHelper(bc, asc3 ? 20 : 18)`。
         id: "lag_attack",
         name: "重击",
         effects: [{ kind: "deal_damage", amount: 18 }],
         intent: "attack",
       },
       {
+        // MonsterSpecific.cpp:882-883。⚠ 两处逐位对齐点：
+        //  ① **顺序是敏捷在前、力量在后**（照抄，别按「力量优先」的直觉写）；
+        //  ② 两条都是 `.actFunc(bc)` —— **同步**执行，不是 addToBot。这是全项目
+        //     唯一一处「怪物给玩家上减益却不入队」，故加 `sync: true`。
+        // 数值 `asc18 ? -2 : -1`，asc0 取 -1。
         id: "siphon_soul",
         name: "吸取灵魂",
         effects: [
-          { kind: "apply_power", power: "strength", amount: -1, on: "target" },
-          { kind: "apply_power", power: "dexterity", amount: -1, on: "target" },
+          { kind: "apply_power", power: "dexterity", amount: -1, on: "target", sync: true },
+          { kind: "apply_power", power: "strength", amount: -1, on: "target", sync: true },
         ],
         intent: "debuff",
       },
     ],
-    // 出招由 sts-combat.ts 的 MOVE_RULES 登记 lagavulin（待迁移）（睡眠/苏醒/攻击循环），intentRule 留空。
+    // 出招规则见 sts-combat.ts 的 MOVE_RULES（只在开局调一次：睡着出沉睡、否则出吸取灵魂）。
+    // ⚠ 攻击白名单里只有 `LAGAVULIN_ATTACK`(`MonsterMoves.h:469`)，`LAGAVULIN_SLEEP` 与
+    //   `LAGAVULIN_SIPHON_SOUL` **都不在**——与上面的 unknown / attack / debuff 一致。
     intentRule: { scripted: [], weighted: [] },
   },
 
-  // —— 精英：哨卫（3 个一组，神器 + 错位光束/射钉）——
+  // —— 精英：哨卫（第十八批：本项目第一只带**神器**的怪）——
+  //
+  // ⚠ 神器（ARTIFACT 1 层）由 `preBattleAction` 给（MonsterSpecific.cpp:311-313），
+  // 不写在这里；它会出现在快照里（`ARTIFACT: 1`），并且真的会吃掉玩家的第一个减益
+  //（`BattleContext::debuffEnemy` 的那道拦截，BattleContext.h:284-287）。
   {
     id: "sentry",
     name: "哨卫",
+    // MonsterIds.h:192 `{{38,42},{39,45}}`（asc<8 取前者）。
     hpMin: 38,
     hpMax: 42,
     moves: [
       {
+        // MonsterSpecific.cpp:1057-1061 `attackPlayerHelper(bc, asc3 ? 10 : 9)`。
         id: "beam",
         name: "光束",
         effects: [{ kind: "deal_damage", amount: 9 }],
         intent: "attack",
       },
       {
+        // MonsterSpecific.cpp:1063-1067
+        // `addToBot(MakeTempCardInDiscard({CardId::DAZED}, asc18 ? 3 : 2))`。
+        // ⚠ **是弃牌堆不是抽牌堆**（洗入抽牌堆那一路要掷 cardRandomRng，这里一次都不掷），
+        //   与史莱姆的黏液走的是同一条路。asc0 是 2 张。
         id: "bolt",
         name: "射钉",
         effects: [{ kind: "add_card", cardId: "dazed", pile: "discard", count: 2 }],
         intent: "debuff",
       },
     ],
-    // 出招由 sts-combat.ts 的 MOVE_RULES 登记 sentry（待迁移）（错位开局 + 严格交替），intentRule 留空。
+    // 出招规则见 sts-combat.ts 的 MOVE_RULES（**按下标奇偶**定首招，之后严格交替）。
+    // ⚠ 攻击白名单里只有 `SENTRY_BEAM`(`MonsterMoves.h:489`)，`SENTRY_BOLT` **不在**
+    //   ——与上面的 attack / debuff 一致。
     intentRule: { scripted: [], weighted: [] },
   },
 

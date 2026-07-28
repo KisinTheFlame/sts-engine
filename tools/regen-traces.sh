@@ -60,8 +60,9 @@ ENC_ALL="cultist jaw_worm jaw_worm_horde three_louse two_louse"
 # 每批新增的编队加到这里（用小写文件名）。第十三批：史莱姆两个编队；第十四批：大史莱姆；
 # 第十五批：奴隶主两个 + 抢劫者 + 恶棍二人组（后者是抢劫者逃跑唯一有背书的地方）；
 # 第十六批：荒野二人组（真菌兽在第一幕**只**出现在这里）；
-# 第十七批：地精帮（五只地精在第一幕**只**出现在这里，护盾地精与巫师在整个第一幕独此一家）。
-ENC_V0="small_slimes lots_of_slimes large_slime blue_slaver red_slaver looter exordium_thugs exordium_wildlife gremlin_gang"
+# 第十七批：地精帮（五只地精在第一幕**只**出现在这里，护盾地精与巫师在整个第一幕独此一家）；
+# 第十八批：第一幕三个精英（地精头目 / 拉加维林 / 三哨卫），三只怪各自只出现在自己的编队里。
+ENC_V0="small_slimes lots_of_slimes large_slime blue_slaver red_slaver looter exordium_thugs exordium_wildlife gremlin_gang gremlin_nob lagavulin three_sentries"
 
 policy_of() {
   case " $ENC_ALL " in *" $1 "*) echo all; return;; esac

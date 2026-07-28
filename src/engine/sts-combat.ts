@@ -1047,6 +1047,49 @@ const MOVE_RULES: Record<string, MoveForRoll> = {
     m.miscInfo = 1; // ★ 不消耗 RNG，但改变蓄力计数的起点
     return "charging";
   },
+
+  // —— 第一幕三个精英（第十八批）——
+
+  // 地精头目：对齐 MonsterSpecific.cpp:2424-2455 GREMLIN_NOB。纯 roll 分支，不追加 aiRng。
+  // ⚠ 三处照抄：
+  //  ① 首回合（`lastMove(MMID::INVALID)`）**必咆哮**，roll 照掷但结果被丢掉；
+  //  ② 第二段是 `roll < 33 || lastTwoMoves(RUSH)` —— **一个 `||`**，也就是「连两次猛冲
+  //     就必须碎颅」与「掷到低位就碎颅」是同一条分支，不是两层嵌套；
+  //  ③ 碎颅击**没有**连续限制（连着掷到 <33 就能连碎），与猛冲不对称。
+  // TODO(后续PR): asc>=18 是**另一整块**（完全不看 roll：只要不是连两次碎颅就猛冲，
+  //   否则按连两次猛冲与否二选一）。当前 trace 全是 asc0，写了也没有预言机。
+  gremlin_nob: (_bc, m, roll) => {
+    if (firstTurn(m)) {
+      return "bellow";
+    }
+    if (roll < 33 || lastTwoMoves(m, "rush")) {
+      return "skull_bash";
+    }
+    return "rush";
+  },
+
+  // 拉加维林：对齐 MonsterSpecific.cpp:2515-2521 LAGAVULIN。
+  // ⚠ 参考在这行注了 `// called first turn only`，而且是真的：三条 case 的收尾全是
+  //   **同步 setMove** + noOpRollMove，一次都不排真正的 RollMove，所以整场只调用它一次。
+  // ⚠ **完全不看 roll**（roll 照掷、结果丢弃），分支只看沉睡位——而沉睡位由**编队**给
+  //   （见 `ENCOUNTER_SETUP.lagavulin`）。所以「事件版拉加维林开局就吸魂」是同一段代码
+  //   的另一支，只是那个编队不在 harness 的 20 个里。
+  lagavulin: (_bc, m) => (getPower(m.powers, "asleep") > 0 ? "sleep" : "siphon_soul"),
+
+  // 哨卫：对齐 MonsterSpecific.cpp:2664-2673 SENTRY。
+  // ⚠ **首招不是掷出来的，是按自己在编队里的下标定的**：`idx % 2 == 0` 出射钉、否则出光束
+  //   （roll 照掷、结果丢弃）。于是三只哨卫开局固定是 射钉 / 光束 / 射钉——**不是各自独立
+  //   随机**，这是 `THREE_SENTRIES` 唯一的特别之处（`MonsterGroup.cpp:431` 那条 case 本身
+  //   只是三句 `createMonster`，没有任何特例）。
+  // ⚠ `firstTurn()` 之外**没有 else**：参考的 case 直接 `break` 掉出 switch。这不是漏写，
+  //   而是「它永远不会被第二次调用」——两条 case 的收尾都是同步 setMove。我们这边照抄成
+  //   「非首回合就抛错」，真被调用到要当场知道，而不是静默返回一个瞎猜的招式。
+  sentry: (bc, m) => {
+    if (!firstTurn(m)) {
+      throw new Error("sts-combat: sentry 的 getMoveForRoll 只应在开局被调用一次");
+    }
+    return bc.monsters.indexOf(m) % 2 === 0 ? "bolt" : "beam";
+  },
 };
 
 // ============================================================================
@@ -1209,6 +1252,74 @@ const MOVE_TURN_END: Record<string, MoveTurnEnd> = {
       m.miscInfo = 0; // 清零蓄力计数
       setMove(m, "charging");
     }
+  },
+
+  // —— 第一幕三个精英（第十八批）——
+  //
+  // 地精头目三条 case 的收尾都是**裸的 `addToBot(Actions::RollMove(idx))`**
+  //（MonsterSpecific.cpp:758 / :762 / :769），即默认的 `"roll"`，所以这里**一条都不写**。
+  // 它是本批唯一一只真的会反复 rollMove 的怪。
+  //
+  // ⚠ 拉加维林与哨卫的五条 case 全是「**同步 setMove** + 一次 noOpRollMove」的组合，
+  //   四个静态形态一个都表达不了（`{setMove}` 不掷 aiRng、`"no_op_roll"` 不改意图），
+  //   所以全部写成第五形态（任意函数）。
+  // ⚠ 而且 noOpRollMove 的写法在同一只怪里**两种并存**，照抄不要统一：
+  //     重击      `bc.addToBot(Actions::NoOpRollMove())`  —— **入队**（:878）
+  //     吸取灵魂  `bc.noOpRollMove()`                     —— **同步**（:885）
+  //     沉睡      `bc.noOpRollMove()`                     —— **同步**（:894）
+  //     光束/射钉 `bc.addToBot(Actions::NoOpRollMove())`  —— **入队**（:1060 / :1066）
+  //   两者消耗的 aiRng 次数相同，差别在「这一次掷发生在本回合排的动作之前还是之后」。
+
+  // 重击：`attackPlayerHelper` 之后先判连击、再入队 NoOpRollMove（MonsterSpecific.cpp:871-879）。
+  // ⚠ `lastTwoMoves(ATTACK)` 读的是**改写之前**的历史，而此刻 moveHistory[0] 正是本次执行的
+  //   重击本身——所以「连两次重击」意味着上一回合也是重击，节奏是 重击 → 重击 → 吸魂 → 重击…
+  //   而苏醒后的第一击因为 moveHistory[1] 还是沉睡，会多打一次重击。
+  "lagavulin/lag_attack": (bc, m) => {
+    if (lastTwoMoves(m, "lag_attack")) {
+      setMove(m, "siphon_soul");
+    } else {
+      setMove(m, "lag_attack");
+    }
+    addToBot(bc, (c) => {
+      c.rng.aiRng.random(99); // ★ 消耗一次 aiRng（NoOpRollMove，入队）
+    });
+  },
+  // 吸取灵魂：同步 setMove + **同步** noOpRollMove（MonsterSpecific.cpp:884-885）。
+  "lagavulin/siphon_soul": (bc, m) => {
+    setMove(m, "lag_attack");
+    bc.rng.aiRng.random(99); // ★ 消耗一次 aiRng（noOpRollMove，同步）
+  },
+  // 沉睡：`if (bc.turn == 2 || !hasStatus<ASLEEP>()) setMove(ATTACK) else setMove(SLEEP)`
+  //（MonsterSpecific.cpp:888-894），随后**同步** noOpRollMove。⚠ 三处照抄：
+  //  ① 判的是 **`bc.turn == 2`**（`==` 不是 `>=`）。`bc.turn` 从 0 起、在 `afterMonsterTurns`
+  //     里才自增，所以怪物阶段读到的是「上一个玩家回合的编号」：turn 0/1/2 三个怪物回合都
+  //     在睡，第三个（turn==2）那次把意图改成重击 → 第 4 个回合才动手。这就是「睡 3 回合」。
+  //  ② 第二个条件是**被打醒**：伤害路径把 ASLEEP 清掉之后，下一次沉睡收尾立刻改出重击。
+  //     ⚠ 但「打醒」本身不会让它当回合行动——它这一回合仍然执行沉睡（无效果）。
+  //  ③ `bc.turn == 2` 与醒没醒是 `||`，所以第 3 个回合无论醒没醒都会转重击。
+  "lagavulin/sleep": (bc, m) => {
+    if (bc.turn === 2 || getPower(m.powers, "asleep") === 0) {
+      setMove(m, "lag_attack");
+    } else {
+      setMove(m, "sleep");
+    }
+    bc.rng.aiRng.random(99); // ★ 消耗一次 aiRng（noOpRollMove，同步）
+  },
+
+  // 哨卫：光束 ↔ 射钉**严格交替**，同步 setMove + 入队 NoOpRollMove
+  //（MonsterSpecific.cpp:1057-1067）。所以三只哨卫从开局的 射钉/光束/射钉 起，
+  // 整场都保持错位——这正是它们成组出现时的压迫感来源。
+  "sentry/beam": (bc, m) => {
+    setMove(m, "bolt");
+    addToBot(bc, (c) => {
+      c.rng.aiRng.random(99); // ★ 消耗一次 aiRng（NoOpRollMove，入队）
+    });
+  },
+  "sentry/bolt": (bc, m) => {
+    setMove(m, "beam");
+    addToBot(bc, (c) => {
+      c.rng.aiRng.random(99); // ★ 消耗一次 aiRng（NoOpRollMove，入队）
+    });
   },
 };
 
@@ -1597,6 +1708,29 @@ const PRE_BATTLE_ACTION: Record<string, PreBattleAction> = {
   mad_gremlin: (bc, m) => {
     addPower(m.powers, "angry", bc.ascension >= 17 ? 2 : 1);
   },
+  // 拉加维林的金属化（对齐 MonsterSpecific.cpp:286-291）。**不消耗 RNG**。
+  // ⚠ 三处照抄：
+  //  ① **以睡着为前提**——`if (hasStatus<MS::ASLEEP>())`。事件版编队（LAGAVULIN_EVENT）
+  //     不上沉睡位，于是它开局既没有金属化也没有那 8 点格挡，直接吸魂。
+  //  ② 金属化与格挡是**两件事**：`buff<METALLICIZE>(8)` 只是「每个回合末加 8 格挡」的能力，
+  //     `addBlock(8)` 才是开局那层挡。少了后者，第一个玩家回合它是光着的。
+  //  ③ 苏醒时 `decrementStatus<METALLICIZE>(8)` 把能力整条减没（8-8=0 → hasStatus 清零），
+  //     但**已经加上去的格挡不退**——见 `wakeUpLagavulin`。
+  // 两条都进 trace 的怪物快照（`ASLEEP: 1` / `METALLICIZE: 8` / `block: 8`）。
+  lagavulin: (_bc, m) => {
+    if (getPower(m.powers, "asleep") > 0) {
+      addPower(m.powers, "metallicize", 8);
+      m.block += 8;
+    }
+  },
+  // 哨卫的神器（对齐 MonsterSpecific.cpp:311-313 `buff<MS::ARTIFACT>(1)`）。**不消耗 RNG，
+  // 也没有 asc 分档**。
+  // ⚠ 这是本项目**第一只带神器的怪**——在此之前「怪物身上的神器」那一族分支
+  //（`debuffEnemy` 的拦截、黑暗镣铐的 `!hasArtifact` 条件、束缚归还走 buff 而不是 addDebuff）
+  //  一条都没有预言机，见 TODOS 第十二批盲区。装完本批它们才第一次被数据看着。
+  sentry: (_bc, m) => {
+    addPower(m.powers, "artifact", 1);
+  },
 };
 
 type EncounterSetup = (bc: BattleContext) => void;
@@ -1611,6 +1745,22 @@ const ENCOUNTER_SETUP: Record<string, EncounterSetup> = {
       addPower(m.powers, "strength", strBuff);
       m.block += blockBuff;
       m.moveHistory = [MOVE_SENTINEL];
+    }
+  },
+
+  // 拉加维林：开局置**沉睡位**（对齐 MonsterGroup.cpp:293-296 的
+  // `createMonster(...); bc.monsters.arr[0].setHasStatus<MS::ASLEEP>(true);`）。
+  //
+  // ⚠ 它属于 **createMonsters 阶段**，所以排在 rollMove 与 preBattleAction **之前**——
+  //   而那两步都要读它（出招规则判首招、preBattleAction 判上不上金属化）。顺序错了
+  //   拉加维林开局就会站起来打人。
+  // ⚠ 它写在**编队**上而不是怪物上：同一只怪在 `LAGAVULIN_EVENT`（睡魔事件打断版）里
+  //   **不睡**（MonsterGroup.cpp:298-300 没有这一句）。那个编队不在 harness 的 20 个里，
+  //   但形状照抄，将来装它时不必再改。
+  lagavulin: (bc) => {
+    const m = bc.monsters[0];
+    if (m !== undefined) {
+      addPower(m.powers, "asleep", 1);
     }
   },
 };
@@ -1683,6 +1833,12 @@ function overwriteMove(m: CombatMonster, move: string): void {
  *     `defend` / `unknown` 一致。⚠ 这两条正是「不带伤害的招式」——白名单里存在
  *     `SPHERIC_GUARDIAN_HARDEN` 那种「带伤害却算攻击」的反例，所以方向只能从白名单读，
  *     不能从「带不带伤害」推。狂怒（ANGRY）不是招式，不参与这道判定。
+ *   * 第一幕三个精英（第十八批）：白名单里有 `GREMLIN_NOB_RUSH`(`:460`)、
+ *     `GREMLIN_NOB_SKULL_BASH`(`:461`)、`LAGAVULIN_ATTACK`(`:469`)、`SENTRY_BEAM`(`:489`)。
+ *     **不在**的四条是 `GREMLIN_NOB_BELLOW`、`LAGAVULIN_SLEEP`、`LAGAVULIN_SIPHON_SOUL`、
+ *     `SENTRY_BOLT`，与我们的 `buff` / `unknown` / `debuff` / `debuff` 一致。
+ *     ⚠ `SENTRY_BOLT` 值得单记：它**一点伤害都不带**（只塞两张恍惚），照样不在白名单里
+ *     ——与护盾地精的保护同族，再次说明「按带不带伤害推 intent」只是碰巧对。
  * 新登记怪种时**必须**回白名单复核，因为白名单里存在「带伤害却不算攻击」与反向的例外
  *（如球状守卫的 HARDEN 被算作攻击）。
  */
@@ -3115,8 +3271,11 @@ function monsterAttacked(bc: BattleContext, m: CombatMonster, rawDamage: number)
 }
 
 function monsterDamageUnblocked(bc: BattleContext, m: CombatMonster, damage: number): void {
-  // onAttacked 链（对齐 attackedUnblockedHelper 的 if/else-if 顺序）。蜷缩把加格挡
-  // addToBot 排在扣血之后，故这里先记下、扣完血再加。
+  // onAttacked 链（对齐 attackedUnblockedHelper 的 if/**else-if**顺序，Monster.cpp:348-396）。
+  // 参考的顺序是：无敌 → 镀甲 → 蜷缩 → 飞行 → 易塑/反应 → 荆棘 → **沉睡** → 变换。
+  // ⚠ 它是一条 **else-if 链**：同时带蜷缩与沉睡的怪只会触发排在前面的那一条。当前没有这种
+  //   怪（虱子只有蜷缩、拉加维林只有沉睡），但形状照抄——写成两个独立 if 会在将来静默出错。
+  // 蜷缩把加格挡 addToBot 排在扣血之后，故这里先记下、扣完血再加。
   const curl = m.powers.find((p) => p.id === "curl_up");
   if (curl !== undefined && curl.amount > 0) {
     const amount = curl.amount;
@@ -3128,6 +3287,9 @@ function monsterDamageUnblocked(bc: BattleContext, m: CombatMonster, damage: num
     addToBot(bc, () => {
       m.block += amount;
     });
+  } else {
+    // 沉睡被打断（Monster.cpp:388-391）。⚠ 它排在这条 else-if 链的**倒数第二**格。
+    wakeUpLagavulin(m);
   }
   // TODO(后续PR): 无敌/镀甲/飞行/易塑等其余 onAttacked 分支。
 
@@ -3139,6 +3301,38 @@ function monsterDamageUnblocked(bc: BattleContext, m: CombatMonster, damage: num
     // 掉血触发（对齐 `attackedUnblockedHelper` 末尾的 `onHpLost`，Monster.cpp:462）。
     // ⚠ 只在**没被打死**时跑：被打死走 die，大史莱姆被一击秒到 0 血就不会分裂。
     monsterOnHpLost(bc, m, damage);
+  }
+}
+
+/**
+ * 沉睡被伤害打断（对齐 Monster.cpp:388-391 与 :448-452 那两处**一模一样**的两行）。
+ *
+ * ⚠ 判定点是「**未被格挡**的伤害」，不是「被攻击」：两处都住在 `attackedUnblockedHelper` /
+ * `damageUnblockedHelper` 里，而调用方都有 `if (damage > 0)` 的门（damage 是**扣掉格挡之后**
+ * 的值）。所以：
+ *   * 打在开局那 8 点格挡上 **叫不醒它**（这是拉加维林开局那层挡真正的作用）；
+ *   * 攻击与非攻击伤害（燃烧 / 主宰 / 荆棘 / 火焰药水）**都能**叫醒它——与蜷缩只挂在
+ *     attacked 那条路上不同；
+ *   * 被**打死**那一击不会走到这里（die 分支在后面，但清位这两行排在扣血之前，
+ *     所以致命一击其实照样先清位、再死。照抄这个顺序）。
+ *
+ * ⚠ 两处的**形状不同**，照抄不要合并：`attackedUnblockedHelper` 里它是那条 else-if 链的
+ * 一格（前面还有无敌 / 镀甲 / 蜷缩 / 飞行 / 易塑 / 荆棘），`damageUnblockedHelper` 里它是
+ * 一个**独立的 if**（只有无敌那条在它前面，且不构成 else-if）。
+ *
+ * ⚠ 金属化是 `decrementStatus<MS::METALLICIZE>(8)`——**减 8 而不是清零**。层数恰好是 8，
+ * 减完 `setHasStatus(0)` 就整条没了；已经加在身上的格挡**不退**。
+ */
+function wakeUpLagavulin(m: CombatMonster): void {
+  if (getPower(m.powers, "asleep") > 0) {
+    removePower(m.powers, "asleep");
+    const metallicize = m.powers.find((p) => p.id === "metallicize");
+    if (metallicize !== undefined) {
+      metallicize.amount -= 8;
+      if (metallicize.amount === 0) {
+        m.powers.splice(m.powers.indexOf(metallicize), 1);
+      }
+    }
   }
 }
 
@@ -5471,10 +5665,13 @@ function useCard(bc: BattleContext, item: CardQueueItem): void {
   //   之后的 triggerOnOtherCardPlayed（千刃 / 剧痛）。都还没有对应内容登记。
   if (def.type === "attack") {
     onUseAttackCard(bc, item, card);
-  } else if (def.type === "skill" && getPower(bc.player.powers, "corruption") > 0) {
-    // 腐化：技能牌打出后被消耗。位置照抄——在 useSkillCard() / onUseSkillCard() **之后**，
-    // 所以卡效果自己读到的 exhaustOnUse 还是原值（当前没有卡效果读它，记着以防将来有）。
-    item.exhaustOnUse = true;
+  } else if (def.type === "skill") {
+    onUseSkillCard(bc);
+    if (getPower(bc.player.powers, "corruption") > 0) {
+      // 腐化：技能牌打出后被消耗。位置照抄——在 useSkillCard() / onUseSkillCard() **之后**，
+      // 所以卡效果自己读到的 exhaustOnUse 还是原值（当前没有卡效果读它，记着以防将来有）。
+      item.exhaustOnUse = true;
+    }
   }
 
   // clearOnCombatVictory=false（对齐 Actions::OnAfterCardUsed 的第二参数）：
@@ -5554,6 +5751,42 @@ function onUseAttackCard(bc: BattleContext, item: CardQueueItem, card: CombatCar
   const rage = getPower(bc.player.powers, "rage");
   if (rage > 0) {
     addToBot(bc, (c) => gainBlock(c, rage), false);
+  }
+}
+
+/**
+ * 打出一张**技能牌**之后的触发（对齐 `BattleContext::onUseSkillCard`，
+ * BattleContext.cpp:1764-1850）。本项目**第一个「玩家出牌 → 怪物获益」的钩子**。
+ *
+ * 已登记一条：**激怒（ENRAGE，地精头目）**——`m.buff<MS::STRENGTH>(m.getStatus<MS::ENRAGE>())`
+ *（:1847-1849）。四处逐位对齐点：
+ *
+ *  ① **位置在整个函数的最末**，排在残影 / 爆发 / 复制 / 回响形态 / 六芒星 / 华彩以及全部
+ *     遗物之后。这一族不是遍历 statusMap，先后完全取决于参考的书写顺序。
+ *  ② 它排在 `useSkillCard()`（卡效果**入队**）**之后**，但自己是**同步** buff——于是
+ *     「先加力量、后结算卡效果」。当前没有技能牌的排队效果读怪物力量，但顺序照抄。
+ *  ③ **不消耗层数**（与狂怒同族、与蜷缩相反）：每打一张技能牌就再涨一次。
+ *  ④ ⚠ **参考只看 `monsters.arr[0]`**，写死下标 0、也不判死活。地精头目是单怪编队，
+ *     所以当前与「遍历全体」等价；但这是参考的简化（真实游戏里激怒是挂在那只怪身上的
+ *     Power，谁有谁涨）。第一幕没有第二只带激怒的怪，**没有预言机能判它**，故照抄不改。
+ *
+ * ⚠ 只有**技能牌**触发：攻击牌走 onUseAttackCard、能力牌走 onUsePowerCard，两者里都没有
+ * 激怒。状态/诅咒牌走 onUseStatusOrCurseCard，同样没有。
+ *
+ * ⚠ 参考在这里还有 `++p.skillsPlayedThisTurn`。它唯一的读者是拆信刀（LETTER_OPENER，
+ * 每 3 张技能牌打 5 点全体伤害），遗物轮换里没有它——写了也没有预言机走到，留 TODO。
+ *
+ * TODO(后续PR): 爆发（`onUseSkillCard` 里的 queuePurgeCard）、复制药水、回响形态、残影、
+ *   六芒星的眩晕、华彩，以及墨水瓶 / 橙色药丸 / 拆信刀三个遗物。
+ */
+function onUseSkillCard(bc: BattleContext): void {
+  const m = bc.monsters[0];
+  if (m === undefined) {
+    return;
+  }
+  const enrage = getPower(m.powers, "enrage");
+  if (enrage > 0) {
+    addPower(m.powers, "strength", enrage);
   }
 }
 
@@ -5885,6 +6118,9 @@ function monsterDamage(bc: BattleContext, idx: number, rawDamage: number): void 
   if (damage <= 0) {
     return;
   }
+  // 沉睡被打断（Monster.cpp:448-452）。⚠ 这条路上它是**独立的 if**、不在任何 else-if 链里
+  //（那条链只在 attacked 那条路上），所以非攻击伤害叫醒它时不受蜷缩之类的遮挡。
+  wakeUpLagavulin(m);
   m.hp -= damage;
   if (m.hp <= 0) {
     m.hp = 0;
@@ -6518,7 +6754,17 @@ function takeTurn(bc: BattleContext, m: CombatMonster): string | null {
       addToBot(bc, (c) => dealDamageToPlayer(c, dmg, idx));
     } else if (eff.kind === "apply_power" && eff.on === "target") {
       // 怪物给玩家上减益：isSourceMonster=true，故虚弱/易伤**跳过**首次递减。
-      addToBot(bc, (c) => debuffPlayer(c, eff.power, eff.amount, true));
+      // ⚠ 与加格挡同族，参考里两种写法并存（见 Effect 的 sync 注释）：
+      //   省略      `addToBot(Actions::DebuffPlayer<...>(n, true))` —— 绝大多数怪
+      //   sync:true `Actions::DebuffPlayer<...>(n).actFunc(bc)`     —— 拉加维林的吸取灵魂
+      // ⚠ 注意 `.actFunc(bc)` 那两条**没有传第二个参数**，取的是默认值 `true`
+      //   （Actions.h:35 `bool isSourceMonster=true`），与入队那条一致。
+      const { power, amount } = eff;
+      if (eff.sync === true) {
+        debuffPlayer(bc, power, amount, true);
+      } else {
+        addToBot(bc, (c) => debuffPlayer(c, power, amount, true));
+      }
     } else if (eff.kind === "gain_block") {
       // 参考有两种写法并存，数据表用 `sync` 区分（见 Effect 的注释）：
       //   省略      `addToBot(Actions::MonsterGainBlock(idx, n))` —— 颚虫的猛击/咆哮
@@ -6676,12 +6922,21 @@ function decrementPlayerPower(bc: BattleContext, id: string): void {
  * ⚠ 清除走 `removeStatus<SHACKLED>()`（Monster.h:495）：先 `setStatus(0)` 再清 bit，
  * 与我们的「整条摘掉」等价（层数归零的条目在快照里两边都被丢弃）。
  *
- * TODO(后续PR): 金属化 / 镀甲（都要 `Monster::addBlock`）、易塑（`setStatus<MALLEABLE>(3)`，
+ * ⚠ **金属化排在这个函数的第一条**（Monster.cpp:43-45），在束缚归还之前。它是
+ * **同步** `addBlock`、不入队，所以这一层格挡在紧随其后的怪物回合开头就已经在了。
+ * 拉加维林睡着时每个回合末 +8——正因为它是「回合末」而不是「回合开始」，玩家在第一个
+ * 回合看到的 8 点格挡来自 `preBattleAction` 那句 `addBlock(8)`，不是这里。
+ * ⚠ 苏醒之后金属化被 `decrementStatus(8)` 减没（见 `wakeUpLagavulin`），这条自然不再触发。
+ *
+ * TODO(后续PR): 镀甲（同样是 `Monster::addBlock`）、易塑（`setStatus<MALLEABLE>(3)`，
  * 与它的 onAttacked 成长分支配套）、怪物侧虚无缥缈递减、再生（`Monster::heal`）。
- * 当前登记的四种怪（邪教徒 / 颚虫 / 红虱 / 绿虱）一个都没有这五种 Power，写了也没有
- * 预言机走到——等登记带它们的怪（如拉加维林的金属化、史莱姆王一族）时按上面的顺序补。
+ * 当前登记的怪一只都没有这四种 Power，写了也没有预言机走到。
  */
 function applyMonsterEndOfTurnTriggers(m: CombatMonster): void {
+  const metallicize = getPower(m.powers, "metallicize");
+  if (metallicize > 0) {
+    m.block += metallicize;
+  }
   const shackled = getPower(m.powers, "shackled");
   if (shackled > 0) {
     addPower(m.powers, "strength", shackled);
@@ -7125,6 +7380,10 @@ export const SUPPORTED_ENCOUNTERS: readonly string[] = [
   "exordium_wildlife",
   // —— 第十七批 ——
   "gremlin_gang",
+  // —— 第十八批：第一幕三个精英 ——
+  "gremlin_nob",
+  "lagavulin",
+  "three_sentries",
 ];
 
 export function isEncounterSupported(encounterId: string): boolean {

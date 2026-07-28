@@ -294,6 +294,10 @@ const ENCOUNTER: Record<string, string> = {
   EXORDIUM_WILDLIFE: "exordium_wildlife",
   // —— 第十七批 ——
   GREMLIN_GANG: "gremlin_gang",
+  // —— 第十八批：第一幕三个精英 ——
+  GREMLIN_NOB: "gremlin_nob",
+  LAGAVULIN: "lagavulin",
+  THREE_SENTRIES: "three_sentries",
 };
 const MONSTER: Record<string, string> = {
   CULTIST: "cultist",
@@ -324,6 +328,11 @@ const MONSTER: Record<string, string> = {
   FAT_GREMLIN: "fat_gremlin",
   SHIELD_GREMLIN: "shield_gremlin",
   GREMLIN_WIZARD: "gremlin_wizard",
+  // —— 第十八批。三个精英各自独占一个编队，`THREE_SENTRIES` 里同一种怪出现三次
+  // （下标 0/2 开局出射钉、下标 1 出光束）。
+  GREMLIN_NOB: "gremlin_nob",
+  LAGAVULIN: "lagavulin",
+  SENTRY: "sentry",
 };
 const MOVE: Record<string, string> = {
   CULTIST_INCANTATION: "incantation",
@@ -376,6 +385,16 @@ const MOVE: Record<string, string> = {
   SHIELD_GREMLIN_SHIELD_BASH: "shield_bash",
   GREMLIN_WIZARD_CHARGING: "charging",
   GREMLIN_WIZARD_ULTIMATE_BLAST: "ultimate_blast",
+  // —— 第十八批 ——
+  GREMLIN_NOB_BELLOW: "bellow",
+  GREMLIN_NOB_RUSH: "rush",
+  GREMLIN_NOB_SKULL_BASH: "skull_bash",
+  // 「重击」在数据表里叫 lag_attack：那是一张平表，招式 id 不能与别的怪重名。
+  LAGAVULIN_ATTACK: "lag_attack",
+  LAGAVULIN_SIPHON_SOUL: "siphon_soul",
+  LAGAVULIN_SLEEP: "sleep",
+  SENTRY_BEAM: "beam",
+  SENTRY_BOLT: "bolt",
 };
 // 药水在 trace 里是显示名。含熵酿填回来的未登记药水——它们只占槽位、不会被喝。
 const POTION: Record<string, string | null> = {
@@ -481,6 +500,17 @@ const POWER: Record<string, string> = {
   // 狂怒：**怪物身上**，狂暴地精开局自带的 1 层。与 SPORE_CLOUD / THIEVERY 不同的是
   // 它的层数**真的被读**——每次挨攻击就照这个层数涨力量（连打在格挡上也算）。
   ANGRY: "angry",
+  // —— 第十八批 ——
+  // 沉睡：**怪物身上**的纯 bool 标记（`isBooleanPower` 为真），harness 的
+  // `getStatusInternal` 对这一族 `return true`，所以快照里恒是 `ASLEEP: 1`。
+  // 被未被格挡的伤害打断时整条摘掉。
+  ASLEEP: "asleep",
+  // 激怒：**怪物身上**，地精头目咆哮之后才有（不是开局自带）。玩家每打出一张技能牌
+  // 就照层数涨力量，层数本身不消耗。
+  ENRAGE: "enrage",
+  // ⚠ ARTIFACT / METALLICIZE 早就在表里（玩家侧的古代药水 / 金属化能力牌），
+  // 本批是它们第一次出现在**怪物**身上：哨卫开局 `ARTIFACT: 1`、
+  // 睡着的拉加维林 `METALLICIZE: 8`。同一个映射直接复用。
 };
 
 const mapPotion = (p: string): string | null => (p in POTION ? POTION[p]! : p);

@@ -631,11 +631,16 @@ describe("接线：尚未迁移的内容显式抛错", () => {
     return coverage.supported ? "" : coverage.reason;
   };
 
+  // 样本编队选 `giant_head` 巨头（第三幕精英）。判据与下面那条「未迁移卡牌」的 `seek`
+  // 同源：**它不在 harness 的 20 个第一幕编队里**，而那个列表按 WORKFLOW 是不许增删的
+  //（`traceIdx` 一移，遗物/药水轮换整体错位），所以它在可预见的将来都不会有预言机。
+  // ⚠ 原先用的是 `gremlin_nob`，第十八批把它登记了，故换掉。别换成 `the_guardian` /
+  //   `hexaghost` / `slime_boss`——它们就在 harness 的列表里，第十九/二十批就要登记。
   it("未迁移的编队：startCombat 抛错，且不留半个战斗状态", () => {
     const state = runAtMap();
-    expect(() => startCombat(state, "gremlin_nob")).toThrow(/gremlin_nob/);
+    expect(() => startCombat(state, "giant_head")).toThrow(/giant_head/);
     expect(state.combat).toBeNull();
-    expect(reason(state, "gremlin_nob")).toContain("尚未迁移");
+    expect(reason(state, "giant_head")).toContain("尚未迁移");
   });
 
   // 样本牌选 `seek` 搜寻：参考项目三个 switch 里都**没有 case**，等于压根没实现，

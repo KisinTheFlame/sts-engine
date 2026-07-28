@@ -34,6 +34,13 @@ export type PowerId =
   | "poison" // 中毒：持有者回合开始受到 = 层数的伤害（无视格挡），然后层数 -1（静默主机制）
   | "focus" // 集中：机器人充能球的被动/唤醒数值 +N（被动修正器）
   | "metallicize" // 金属化：每当自己回合结束，获得 N 点格挡（拉加维林睡眠期）
+  // 沉睡：拉加维林开局自带的**纯 bool** 标记（`isBooleanPower(MS::ASLEEP)` 为真，
+  // MonsterStatusEffects.h:168），层数无意义、harness 按 1 输出（`getStatusInternal` 对
+  // bool 类 `return true`）。它有三个读者：`getMoveForRoll`（决定首个意图是睡还是吸魂）、
+  // `preBattleAction`（睡着才上金属化 8 + 格挡 8）、以及睡眠那条 case 的醒没醒判断。
+  // 清除点在**两条伤害路径**的「未被格挡」段里（Monster.cpp:388 / :448），并连带把
+  // 金属化 8 层一起递减掉。
+  | "asleep"
   | "ritual" // 仪式：回合开始 +N 力量（触发）
   | "curl_up" // 蜷缩：首次被攻击时获得格挡（触发，一次性）
   | "sharp_hide" // 反甲：被攻击时对攻击者（玩家）反弹 N 点无视格挡的伤害（守卫者防御姿态）
@@ -155,7 +162,18 @@ export type Effect =
   | { kind: "enter_stance"; stance: PlayerStance }
   // 敌人用：给一名随机存活友军加格挡（护盾地精保护）。
   | { kind: "gain_block_ally"; amount: number }
-  | { kind: "apply_power"; power: PowerId; amount: number; on: "self" | "target" | "all_enemies" }
+  // sync：敌人专用，且**只对 `on: "target"` 有意义**（`on: "self"` 在参考里一律是同步的
+  // `buff<MS::X>()`）。给玩家上减益同样有两种写法并存：绝大多数是
+  // `addToBot(Actions::DebuffPlayer<...>)`，而拉加维林的吸取灵魂写的是
+  // `Actions::DebuffPlayer<PS::DEXTERITY>(-1).actFunc(bc)`（MonsterSpecific.cpp:882-883）
+  // ——**当场执行**。省略 = 入队（既有怪都是这一种）。与 `gain_block` 的 sync 同族。
+  | {
+      kind: "apply_power";
+      power: PowerId;
+      amount: number;
+      on: "self" | "target" | "all_enemies";
+      sync?: boolean;
+    }
   | { kind: "draw"; amount: number }
   | { kind: "gain_energy"; amount: number }
   | { kind: "lose_hp"; amount: number }
