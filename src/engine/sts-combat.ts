@@ -823,6 +823,92 @@ const MOVE_RULES: Record<string, MoveForRoll> = {
     }
     return "bite";
   },
+
+  // —— 史莱姆四只（第十三批）——
+
+  // 酸液史莱姆（中）：对齐 MonsterSpecific.cpp:1903 ACID_SLIME_M。
+  // ⚠ 三条分支会**追加**一次 aiRng.randomBoolean，所以单次 rollMove 的 aiRng 消耗是 1 或 2。
+  // ⚠ 三处非直觉但照抄：
+  //  ① 第一段（roll<30）的连续限制是 `lastTwoMoves(腐蚀喷吐)`，第二段（roll<70）却是
+  //     `lastMove(冲撞)`——**一个看两回合、一个只看一回合**，不是笔误，asc17 那份才两段
+  //     都用 lastTwoMoves（见下）。
+  //  ② 第一段追加的 randomBoolean **不带概率参数**（即 0.5），另两段是 0.4f。
+  //  ③ 三条 randomBoolean 的 true 分支各自返回不同的招，别按「true=攻击」想当然。
+  // TODO(后续PR): asc>=17 是**另一整块**（阈值 40/80，且第二段改用 lastTwoMoves(冲撞)、
+  //   第三段改用 lastMove(舔舐)）。当前 trace 全是 asc0，写了也没有预言机，故不转写。
+  acid_slime_m: (bc, m, roll) => {
+    if (roll < 30) {
+      if (lastTwoMoves(m, "corrosive_spit")) {
+        return bc.rng.aiRng.randomBoolean() ? "tackle" : "lick"; // ★ 追加一次 aiRng
+      }
+      return "corrosive_spit";
+    }
+    if (roll < 70) {
+      if (lastMove(m, "tackle")) {
+        return bc.rng.aiRng.randomBoolean(Math.fround(0.4)) ? "corrosive_spit" : "lick"; // ★ 追加一次 aiRng
+      }
+      return "tackle";
+    }
+    if (lastTwoMoves(m, "lick")) {
+      return bc.rng.aiRng.randomBoolean(Math.fround(0.4)) ? "corrosive_spit" : "tackle"; // ★ 追加一次 aiRng
+    }
+    return "lick";
+  },
+
+  // 酸液史莱姆（小）：对齐 MonsterSpecific.cpp:1889 ACID_SLIME_S。
+  // ⚠ **完全不看 roll**，而是**再掷一次** aiRng.randomBoolean 决定首招——于是它的
+  // rollMove 恒消耗 **2** 次 aiRng（roll 那次照掷、只是结果被丢掉）。
+  // ⚠ 而且这个 rule 一场仗只会被调用一次：takeTurn 那两条用的是**同步 setMove** 严格交替，
+  // 压根不排 RollMove（见 MOVE_TURN_END）。
+  // TODO(后续PR): asc>=17 直接 `return ACID_SLIME_S_LICK`，**不掷** randomBoolean。
+  acid_slime_s: (bc) => (bc.rng.aiRng.randomBoolean() ? "tackle_acid_s" : "lick_weak"), // ★ 追加一次 aiRng
+
+  // 尖刺史莱姆（中）：对齐 MonsterSpecific.cpp:2820 SPIKE_SLIME_M。
+  // 纯 roll 分支，不追加 aiRng。asc17 那条判断是**内联**在同一表达式里的，故一并转写。
+  spike_slime_m: (bc, m, roll) => {
+    if (roll < 30) {
+      return lastTwoMoves(m, "flame_tackle") ? "lick_frail" : "flame_tackle";
+    }
+    if (lastTwoMoves(m, "lick_frail") || (bc.ascension >= 17 && lastMove(m, "lick_frail"))) {
+      return "flame_tackle";
+    }
+    return "lick_frail";
+  },
+
+  // 尖刺史莱姆（小）：对齐 MonsterSpecific.cpp:2769 SPIKE_SLIME_S——恒返回冲撞。
+  // roll 照掷（rollMove 顶部那次），但结果被丢掉，与邪教徒同形。
+  spike_slime_s: () => "tackle_s",
+};
+
+// ============================================================================
+// 招式收尾：下一个意图怎么定（对齐参考 `Monster::takeTurn` 各 case 的最后一句）
+//
+// 参考把「下回合出什么」写在每条招式的 case 尾部，而且**三种形态并存**，不能统一：
+//
+//   roll        `addToBot(Actions::RollMove(idx))`   —— 绝大多数怪：入队，执行时掷 aiRng
+//   no_op_roll  `addToBot(Actions::NoOpRollMove())`  —— 入队，执行时**照样掷一次**
+//                                                       `aiRng.random(99)`（BattleContext.cpp:2814）
+//                                                       但**不改意图**。只出招唯一的怪用它。
+//   { setMove } 同步 `setMove(下一招)`               —— **不掷任何 aiRng**，当场锁定。
+//
+// ⚠ 三者对 aiRng 的消耗完全不同（1 / 1 / 0），选错就是 counter 当场对不上。
+// ⚠ `no_op_roll` 与 `roll` 消耗相同但语义不同：前者不写 moveHistory，所以
+//   `lastMove` / `lastTwoMoves` 看到的历史也不同。
+//
+// 键是 `${怪 id}/${招式 id}`——招式 id 在不同怪之间会重名（多只史莱姆都有「舔舐」）。
+// 表里没有的招式一律按 `roll` 处理，这是参考的多数形态。
+// ============================================================================
+
+type MoveTurnEnd = "roll" | "no_op_roll" | { readonly setMove: string };
+
+const MOVE_TURN_END: Record<string, MoveTurnEnd> = {
+  // 酸液史莱姆（小）：舔舐 ↔ 冲撞严格交替，两条都是**同步** setMove、不消耗 aiRng。
+  // 对齐 MonsterSpecific.cpp:393 / :398。
+  "acid_slime_s/lick_weak": { setMove: "tackle_acid_s" },
+  "acid_slime_s/tackle_acid_s": { setMove: "lick_weak" },
+  // 尖刺史莱姆（小）：只有一招，参考用 NoOpRollMove——**照样消耗一次** aiRng.random(99)，
+  // 但意图不变、moveHistory 也不推进。对齐 MonsterSpecific.cpp:1204。
+  "spike_slime_s/tackle_s": "no_op_roll",
 };
 
 // ============================================================================
@@ -885,6 +971,49 @@ const ENCOUNTER_BUILDERS: Record<string, EncounterBuilder> = {
     createMonster(bc, getLouse(bc));
     createMonster(bc, getLouse(bc));
     createMonster(bc, getLouse(bc));
+  },
+
+  // 小史莱姆组：一次 miscRng.randomBoolean 在两种**固定组合**之间二选一
+  // （对齐 MonsterGroup.cpp:126 SMALL_SLIMES）。
+  // ⚠ 不是「逐只随机」——两只的种类是绑定的，而且**顺序也绑定**（true 那支尖刺小在前）。
+  small_slimes: (bc) => {
+    if (bc.rng.miscRng.randomBoolean()) {
+      // ★ 消耗一次 miscRng
+      createMonster(bc, "spike_slime_s");
+      createMonster(bc, "acid_slime_m");
+    } else {
+      createMonster(bc, "acid_slime_s");
+      createMonster(bc, "spike_slime_m");
+    }
+  },
+
+  // 史莱姆群：成员集合是固定的 5 只（3 尖刺小 + 2 酸液小），随机的只有**出场顺序**
+  // （对齐 MonsterGroup.cpp:137 LOTS_OF_SLIMES）。
+  //
+  // ⚠ 这不是普通的洗牌，**照抄不要等价改写**：
+  //  ① 循环是 `for (i = 4; i >= 0; --i)`，每轮 `miscRng.random(i)` 的**上界逐轮缩小**
+  //     （5 次消耗，bound 依次 4/3/2/1/0，最后一次 `random(0)` 照样掷）；
+  //  ② 取走 `pool[idx]` 之后把它**右边的元素整体左移一格**（`while (idx < i)`），
+  //     而不是常见的「与末位交换」。两种写法产生的排列分布相同，但**同种子下的排列不同**；
+  //  ③ 参考不缩短数组，只靠 i 递减来收缩有效区间——左移之后 `pool[i]` 是一份残留副本，
+  //     下一轮取不到它，因为 bound 已经变成 i-1。
+  lots_of_slimes: (bc) => {
+    const pool = [
+      "spike_slime_s",
+      "spike_slime_s",
+      "spike_slime_s",
+      "acid_slime_s",
+      "acid_slime_s",
+    ];
+    for (let i = 4; i >= 0; i -= 1) {
+      let idx = bc.rng.miscRng.random(i); // ★ 消耗一次 miscRng
+      const slime = pool[idx];
+      while (idx < i) {
+        pool[idx] = pool[idx + 1]!;
+        idx += 1;
+      }
+      createMonster(bc, slime);
+    }
   },
 };
 
@@ -951,9 +1080,14 @@ function setMove(m: CombatMonster, move: string): void {
  * 目标当前意图是否为攻击（对齐 Monster::isAttacking → isMoveAttack(moveHistory[0])）。
  *
  * ⚠ 参考用的是**招式 id 白名单**（MonsterMoves.h:414 的大 switch），这里改读数据表的
- * intent 字段。已逐项核对：当前登记的四种怪（邪教徒 / 颚虫 / 红虱 / 绿虱）两边判定完全
- * 一致——颚虫的乱抓虽然同时加格挡，白名单里也算攻击。新登记怪种时**必须**回白名单复核，
- * 因为白名单里存在「带伤害却不算攻击」与反向的例外（如球状守卫的 HARDEN 被算作攻击）。
+ * intent 字段。已逐项核对：当前登记的八种怪两边判定完全一致——
+ *   * 邪教徒 / 颚虫 / 红虱 / 绿虱（前十二批）：颚虫的乱抓虽然同时加格挡，白名单里也算攻击；
+ *   * 史莱姆四只（第十三批）：白名单里只有 `ACID_SLIME_M_CORROSIVE_SPIT` / `ACID_SLIME_M_TACKLE`
+ *     / `ACID_SLIME_S_TACKLE`（`MonsterMoves.h:419-421`）与 `SPIKE_SLIME_M_FLAME_TACKLE` /
+ *     `SPIKE_SLIME_S_TACKLE`（`:504-505`），三条舔舐（`ACID_SLIME_M_LICK` /
+ *     `ACID_SLIME_S_LICK` / `SPIKE_SLIME_M_LICK`）**都不在**，与我们的 `intent: "debuff"` 一致。
+ * 新登记怪种时**必须**回白名单复核，因为白名单里存在「带伤害却不算攻击」与反向的例外
+ *（如球状守卫的 HARDEN 被算作攻击）。
  */
 function isMonsterAttacking(bc: BattleContext, idx: number): boolean {
   const m = bc.monsters[idx];
@@ -4472,6 +4606,20 @@ const CARD_RULES: Record<string, CardRule> = {
   violence: (bc, _item, up) => {
     addToBot(bc, (c) => violenceAction(c, up ? 4 : 3));
   },
+
+  // 黏液（第十三批）：**打出后什么都不做**，只是消耗掉并花掉 1 点能量。
+  //
+  // 参考侧它走的是 `useCard` 的 STATUS 分支 → `onUseStatusOrCurseCard()`
+  //（BattleContext.cpp:915/1915），那个函数里**没有任何按牌 id 分派的 switch**，
+  // 全是残影 / 复制 / 回响成型 / 诅咒之咒 / 风采这些玩家 Power 的钩子（一条都还没登记）。
+  // 所以这条规则是空的，不是「漏写了」。
+  //
+  // ⚠ 它是唯一一张**能打出**的状态牌（见 `cardCanUse` 与 cards.ts 里 `slimed` 的注释），
+  // 也是第一张进 `CARD_RULES` 的非「铁甲+无色」牌：harness 的 `isReplayableCard` 默认放行它，
+  // 不登记的话史莱姆一族的 trace 会在策略打出黏液的那一步抛「暂未登记卡牌行为」、整条不可重放。
+  slimed: () => {
+    // 无效果。
+  },
 };
 
 /**
@@ -5553,29 +5701,49 @@ function doMonsterTurn(bc: BattleContext, idx: number): void {
   if (m === undefined || !m.alive) {
     return;
   }
-  takeTurn(bc, m);
+  const move = takeTurn(bc, m);
   // 玩家阵亡后参考会在处理后续排队动作前跳出主循环，故这一步的 RollMove 不会执行——
   // 不短路的话 aiRng 会多消耗一次，counter 就对不上了。
   if (bc.outcome !== "undecided") {
     return;
   }
+  // 收尾三形态见 MOVE_TURN_END。默认（也是绝大多数怪）是：
   // ★ 滚下一意图必须**入队**（对齐 takeTurn 末尾的 addToBot(Actions::RollMove)）。
   // 同步调用会抢在荆棘之前：荆棘伤害走 addToTop 会插到 RollMove 前面，若它打死了
   // 最后一只怪，这次 RollMove 就该被 clearPostCombatActions 清掉、不消耗 aiRng。
-  addToBot(bc, (c) => rollMove(c, m));
+  const turnEnd: MoveTurnEnd =
+    (move === null ? undefined : MOVE_TURN_END[`${m.defId}/${move}`]) ?? "roll";
+  if (turnEnd === "roll") {
+    addToBot(bc, (c) => rollMove(c, m));
+  } else if (turnEnd === "no_op_roll") {
+    // 对齐 `Actions::NoOpRollMove` → `BattleContext::noOpRollMove`（BattleContext.cpp:2814）：
+    // 同样是**入队**，执行时掷一次 aiRng.random(99) 就丢掉，意图与 moveHistory 都不动。
+    addToBot(bc, (c) => {
+      c.rng.aiRng.random(99); // ★ 消耗一次 aiRng
+    });
+  } else {
+    // 同步 setMove：**不消耗任何 aiRng**。参考写在 takeTurn 的 case 尾部（那里是纯同步语句），
+    // 所以它在本次出招排的那些动作**执行之前**就生效了——快照里的 move 当场就变。
+    setMove(m, turnEnd.setMove);
+  }
 }
 
-/** 执行怪物当前意图效果（骨架层：Cultist 咏唱=自身 ritual；attack=对玩家造成伤害）。 */
-function takeTurn(bc: BattleContext, m: CombatMonster): void {
+/**
+ * 执行怪物当前意图效果（对齐 `Monster::takeTurn` 各 case 的**效果部分**）。
+ *
+ * 返回实际执行的招式 id（找不到招式返回 null），调用方据此查 `MOVE_TURN_END` 决定收尾——
+ * 收尾必须用**执行的那一招**而不是 `m.currentMove`，因为同步 setMove 会当场改掉后者。
+ */
+function takeTurn(bc: BattleContext, m: CombatMonster): string | null {
   const def = getEnemyDef(m.defId);
   const move = def.moves.find((mv) => mv.id === m.currentMove);
   if (move === undefined) {
-    return;
+    return null;
   }
   for (const eff of move.effects) {
     // 同理：一旦分出胜负，后续排队效果在参考里也不会再执行。
     if (bc.outcome !== "undecided") {
-      return;
+      return move.id;
     }
     // ⚠ 入队与否要逐项对齐参考的 takeTurn：力量类 buff 是**立即**执行
     //（`buff<MS::STRENGTH>(...)`），而加格挡、造成伤害、给玩家上减益都是
@@ -5605,9 +5773,20 @@ function takeTurn(bc: BattleContext, m: CombatMonster): void {
       addToBot(bc, () => {
         m.block += eff.amount;
       });
+    } else if (eff.kind === "add_card") {
+      // 塞状态牌（史莱姆的黏液）。参考是 `addToBot(Actions::MakeTempCardInDiscard(SLIMED))`
+      //（MonsterSpecific.cpp:375 / :1180），**排在攻击那条 addToBot 之后**，故顺序就是
+      // effects 的书写顺序——数据表里黏液跟在 deal_damage 后面，与参考一致。
+      // ⚠ 只有弃牌堆这一路不消耗 RNG；洗入抽牌堆那一路要掷 cardRandomRng，当前没有怪用到。
+      if (eff.pile !== "discard") {
+        throw new Error(`sts-combat 暂未登记怪物塞牌去向: ${eff.pile}`);
+      }
+      const { cardId, count } = eff;
+      addToBot(bc, (c) => makeTempCardInDiscard(c, cardId, count));
     }
     // 其余效果留后续 PR。
   }
+  return move.id;
 }
 
 /**
@@ -6154,6 +6333,9 @@ export const SUPPORTED_ENCOUNTERS: readonly string[] = [
   "jaw_worm_horde",
   "two_louse",
   "three_louse",
+  // —— 第十三批 ——
+  "small_slimes",
+  "lots_of_slimes",
 ];
 
 export function isEncounterSupported(encounterId: string): boolean {

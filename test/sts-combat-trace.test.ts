@@ -248,6 +248,10 @@ const CARD: Record<string, string> = {
   // —— 第十二批 2 张（怪物回合末触发 / 从抽牌堆随机检索）——
   DARK_SHACKLES: "dark_shackles",
   VIOLENCE: "violence",
+  // —— 第十三批：史莱姆塞进弃牌堆的黏液 ——
+  // 与 BURN / WOUND / DAZED 不同，它**真的会被打出**（唯一不需要医疗包的状态牌），
+  // 所以它进了 CARD_RULES；这里的映射既覆盖牌堆快照、也覆盖打出它的那一步。
+  SLIMED: "slimed",
 };
 const ENCOUNTER: Record<string, string> = {
   CULTIST: "cultist",
@@ -255,12 +259,20 @@ const ENCOUNTER: Record<string, string> = {
   JAW_WORM_HORDE: "jaw_worm_horde",
   TWO_LOUSE: "two_louse",
   THREE_LOUSE: "three_louse",
+  // —— 第十三批 ——
+  SMALL_SLIMES: "small_slimes",
+  LOTS_OF_SLIMES: "lots_of_slimes",
 };
 const MONSTER: Record<string, string> = {
   CULTIST: "cultist",
   JAW_WORM: "jaw_worm",
   RED_LOUSE: "louse",
   GREEN_LOUSE: "green_louse",
+  // —— 第十三批 ——
+  ACID_SLIME_M: "acid_slime_m",
+  ACID_SLIME_S: "acid_slime_s",
+  SPIKE_SLIME_M: "spike_slime_m",
+  SPIKE_SLIME_S: "spike_slime_s",
 };
 const MOVE: Record<string, string> = {
   CULTIST_INCANTATION: "incantation",
@@ -272,6 +284,16 @@ const MOVE: Record<string, string> = {
   RED_LOUSE_GROW: "grow",
   GREEN_LOUSE_BITE: "bite",
   GREEN_LOUSE_SPIT_WEB: "spit_web",
+  // —— 第十三批。招式 id 在我们这边是**每只怪自己的**，重名不要紧（比对逐怪进行），
+  // 所以三条「舔舐」在数据表里各叫各的名字。
+  ACID_SLIME_M_CORROSIVE_SPIT: "corrosive_spit",
+  ACID_SLIME_M_LICK: "lick",
+  ACID_SLIME_M_TACKLE: "tackle",
+  ACID_SLIME_S_LICK: "lick_weak",
+  ACID_SLIME_S_TACKLE: "tackle_acid_s",
+  SPIKE_SLIME_M_FLAME_TACKLE: "flame_tackle",
+  SPIKE_SLIME_M_LICK: "lick_frail",
+  SPIKE_SLIME_S_TACKLE: "tackle_s",
 };
 // 药水在 trace 里是显示名。含熵酿填回来的未登记药水——它们只占槽位、不会被喝。
 const POTION: Record<string, string | null> = {
@@ -359,6 +381,10 @@ const POWER: Record<string, string> = {
   // —— 第十二批：怪物回合末触发 ——
   // 束缚：黑暗镣铐临时拿走的力量记在这里，怪物回合末（applyEndOfTurnTriggers）归还并清除。
   SHACKLED: "shackled",
+  // —— 第十三批：尖刺史莱姆的舔舐 ——
+  // 脆弱：获得的格挡 ×0.75。计算侧（calculateCardBlock）与回合末递减早就实现了，
+  // 缺的只是这条映射——在此之前没有任何已登记的怪会施加它。
+  FRAIL: "frail",
 };
 
 const mapPotion = (p: string): string | null => (p in POTION ? POTION[p]! : p);
