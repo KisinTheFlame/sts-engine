@@ -27,7 +27,10 @@ export type PowerId =
   | "vulnerable" // 易伤：受到攻击伤害 ×1.5（回合末 -1）
   | "weak" // 虚弱：造成攻击伤害 ×0.75（回合末 -1）
   | "frail" // 脆弱：获得的格挡 ×0.75（回合末 -1）
-  | "entangled" // 缠绕：本回合无法打出攻击牌（回合末 -1，红色奴隶主专属）
+  // 缠绕：无法打出攻击牌（红色奴隶主专属）。⚠ 不是「回合末 -1」而是**整条清除**：
+  // 参考在 `Player::applyEndOfTurnPowers` 里对它写的是 `RemoveStatus<ENTANGLED>`
+  // 而不是 `decrementStatus`（Player.cpp:382），所以层数多少都只封住一个玩家回合。
+  | "entangled"
   | "poison" // 中毒：持有者回合开始受到 = 层数的伤害（无视格挡），然后层数 -1（静默主机制）
   | "focus" // 集中：机器人充能球的被动/唤醒数值 +N（被动修正器）
   | "metallicize" // 金属化：每当自己回合结束，获得 N 点格挡（拉加维林睡眠期）
@@ -89,6 +92,10 @@ export type PowerId =
   | "choked" // 扼喉：本回合玩家每打出一张牌，此敌人损失 = 层数的生命（玩家回合末清除，静默）
   | "well_laid_plans" // 深谋远虑：回合结束可额外保留至多 = 层数张牌（静默）
   | "mark" // 标记：玩家每次攻击此敌人，获得 = 层数的格挡（观者·以手言心，敌人身上）
+  // 偷窃：此敌人每次「抢劫」类招式偷走的金币上限（拾荒者 / 盗贼，开局 preBattleAction 掷定）。
+  // ⚠ 它是**数值来源**而不是显示标记：参考的 `stealGoldFromPlayer(bc, getStatus<MS::THIEVERY>())`
+  // 直接读它（MonsterSpecific.cpp:920/912），所以数值写在 `PRE_BATTLE_ACTION` 而非招式里。
+  | "thievery"
   | "envenom" // 淬毒：玩家攻击造成穿透格挡的伤害时，给该敌人施加 = 层数的中毒（静默）
   | "shackled" // 枷锁：此敌人被临时削弱的力量，将在其行动过后归还（内部记账，黑暗枷锁）
   | "sadistic_nature" // 虐念：玩家每给敌人施加一个减益，对其造成 = 层数的伤害（静默）
@@ -129,7 +136,10 @@ export type Effect =
   | { kind: "deal_damage_rolled"; times?: number }
   // 敌人用：按玩家当前生命锁定一个每击伤害存入 rolledDamage（六火之灵激活：floor(hp/divisor)+add）。
   | { kind: "store_hp_scaled_damage"; divisor: number; add: number }
-  | { kind: "gain_block"; amount: number }
+  // sync：敌人专用。参考的怪物加格挡有**两种写法并存**——绝大多数是**同步** `addBlock(n)`
+  // （拾荒者烟雾弹 MonsterSpecific.cpp:937 等 20 余处），少数是 `addToBot(MonsterGainBlock)`
+  // （颚虫的猛击/咆哮 :858/:865 等 6 处）。省略 = 入队（既有怪都是这一种）。
+  | { kind: "gain_block"; amount: number; sync?: boolean }
   // 玩家用：当前格挡翻倍（坚守）。
   | { kind: "double_block" }
   // 玩家用：充能一颗指定类型的球（机器人；球槽满则先唤醒最左侧的球）。
@@ -152,9 +162,13 @@ export type Effect =
   | { kind: "double_strength" }
   // 玩家永久提升最大生命并回复等量（果汁药水）。
   | { kind: "gain_max_hp"; amount: number }
-  // 敌人用：偷取玩家金币（拾荒者，最多偷 amount，玩家金币不足则偷光）。
-  | { kind: "steal_gold"; amount: number }
+  // 敌人用：偷取玩家金币（拾荒者 / 盗贼）。
+  // ⚠ **不带数值**：偷多少由本敌人的 `thievery` Power 决定（开局 preBattleAction 掷定），
+  // 对齐 `stealGoldFromPlayer(bc, getStatus<MS::THIEVERY>())`。玩家金币不足则按余额钳制。
+  | { kind: "steal_gold" }
   // 敌人用：本敌人逃离战斗（拾荒者烟雾弹后逃跑）。
+  // ⚠ 逃跑**不是死亡**：生命保持 >0、不触发任何亡语，但 `isDeadOrEscaped` 为真，
+  // 于是它不再行动、不能被指向、不参与随机选敌，并且 `monstersAlive` 会减一。
   | { kind: "escape" }
   // 敌人用：本敌人回复自身生命（带壳寄生虫吸取）。
   | { kind: "heal_self"; amount: number }

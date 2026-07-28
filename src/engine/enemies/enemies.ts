@@ -271,16 +271,20 @@ const ENEMY_LIST: EnemyDef[] = [
   {
     id: "blue_slaver",
     name: "蓝色奴隶主",
+    // MonsterIds.h:157 `{{46,50},{48,52}}`（asc<7 取前者）。
     hpMin: 46,
     hpMax: 50,
     moves: [
       {
+        // MonsterSpecific.cpp:450 `attackPlayerHelper(asc2 ? 13 : 12)`。
         id: "stab",
         name: "刺击",
         effects: [{ kind: "deal_damage", amount: 12 }],
         intent: "attack",
       },
       {
+        // MonsterSpecific.cpp:443 `attackPlayerHelper(asc2 ? 8 : 7)`
+        //   + `addToBot(DebuffPlayer<WEAK>(asc17 ? 2 : 1, true))`。
         id: "rake",
         name: "耙击",
         effects: [
@@ -422,56 +426,71 @@ const ENEMY_LIST: EnemyDef[] = [
   {
     id: "looter",
     name: "拾荒者",
+    // MonsterIds.h:181 `{{44,48},{46,50}}`（asc<7 取前者）。
     hpMin: 44,
     hpMax: 48,
     moves: [
       {
+        // MonsterSpecific.cpp:918 `stealGoldFromPlayer(bc, getStatus<MS::THIEVERY>())`
+        //   + `attackPlayerHelper(asc2 ? 11 : 10)`。
+        // ⚠ **偷金在攻击之前**（偷是同步、攻击是入队），照抄书写顺序。
+        // ⚠ 这条 case 的首尾还有两处只能写进代码的东西，见 sts-combat.ts 的
+        //   `MOVE_TURN_BEGIN` / `MOVE_TURN_END`（首回合白掷一次 aiRng 的对白、
+        //   以及「下一招是什么」那个带 aiRng 的分支）。
         id: "mug",
         name: "抢劫",
-        effects: [
-          { kind: "deal_damage", amount: 10 },
-          { kind: "steal_gold", amount: 15 },
-        ],
+        effects: [{ kind: "steal_gold" }, { kind: "deal_damage", amount: 10 }],
         intent: "attack",
       },
       {
+        // MonsterSpecific.cpp:911 `stealGoldFromPlayer(...)` + `attackPlayerHelper(asc2 ? 14 : 12)`。
+        // ⚠ asc0 是 **12**，不是与 MUG 同族的 11——参考这两行的 asc2 差值不同（+2 / +1）。
         id: "lunge",
         name: "猛扑",
-        effects: [
-          { kind: "deal_damage", amount: 12 },
-          { kind: "steal_gold", amount: 15 },
-        ],
+        effects: [{ kind: "steal_gold" }, { kind: "deal_damage", amount: 12 }],
         intent: "attack",
       },
       {
+        // MonsterSpecific.cpp:937 `addBlock(6)`——**同步**加格挡，不是
+        // `addToBot(MonsterGainBlock)`（颚虫才是入队的那种），故 `sync: true`。
         id: "smoke_bomb",
         name: "烟雾弹",
-        effects: [{ kind: "gain_block", amount: 6 }],
+        effects: [{ kind: "gain_block", amount: 6, sync: true }],
         intent: "defend",
       },
       {
+        // MonsterSpecific.cpp:899 `isEscapingB = true; --monstersAlive;`（并在归零时判胜）。
+        // ⚠ `MonsterMoves.h` 的攻击白名单里**没有** LOOTER_ESCAPE / LOOTER_SMOKE_BOMB，
+        //   与这里的 unknown / defend 一致。
         id: "flee",
         name: "逃跑",
         effects: [{ kind: "escape" }],
         intent: "unknown",
       },
     ],
-    // 出招规则待登记进 sts-combat.ts 的 MOVE_RULES（抢劫×2 → 猛扑/烟雾弹 → 逃跑）。
+    // 出招全部由 takeTurn 的同步 setMove 锁定（抢劫 → 抢劫 → 猛扑/烟雾弹 → … → 逃跑），
+    // `getMoveForRoll` 只在开局被调用一次且恒返回抢劫，见 sts-combat.ts 的 MOVE_RULES。
     intentRule: { scripted: [], weighted: [] },
   },
   {
     id: "red_slaver",
     name: "红色奴隶主",
+    // MonsterIds.h:189 `{{46,50},{48,52}}`（asc<7 取前者）。
     hpMin: 46,
     hpMax: 50,
     moves: [
       {
+        // MonsterSpecific.cpp:1029 `attackPlayerHelper(asc2 ? 14 : 13)`。
         id: "rs_stab",
         name: "刺击",
         effects: [{ kind: "deal_damage", amount: 13 }],
         intent: "attack",
       },
       {
+        // MonsterSpecific.cpp:1023 `attackPlayerHelper(asc2 ? 9 : 8)`
+        //   + `addToBot(DebuffPlayer<VULNERABLE>(asc17 ? 2 : 1))`。
+        // ⚠ 这一条**没有显式传** isSourceMonster，但 `Actions.h:35` 的默认值就是 true
+        //   （与蓝奴隶主耙击显式传 true 一致），故施加当回合不递减。
         id: "scrape",
         name: "刮擦",
         effects: [
@@ -481,13 +500,15 @@ const ENEMY_LIST: EnemyDef[] = [
         intent: "attack",
       },
       {
+        // MonsterSpecific.cpp:1018 `addToBot(DebuffPlayer<PS::ENTANGLED>(1))`。
         id: "entangle",
         name: "缠绕",
         effects: [{ kind: "apply_power", power: "entangled", amount: 1, on: "target" }],
         intent: "debuff",
       },
     ],
-    // 出招规则待登记进 sts-combat.ts 的 MOVE_RULES（首招刺击、缠绕一次性、刮擦/刺击）。
+    // 出招规则见 sts-combat.ts 的 MOVE_RULES（首招刺击；⚠ 参考的「缠绕一场只能用一次」
+    // 因为 miscInfo 从没被写过而**不成立**，照抄，理由写在那里）。
     intentRule: { scripted: [], weighted: [] },
   },
 
@@ -1817,21 +1838,20 @@ const ENEMY_LIST: EnemyDef[] = [
     hpMin: 48,
     hpMax: 52,
     moves: [
+      // ⚠ 劫匪尚未登记进 sts-combat.ts（第二幕的怪）。偷金额度同样来自 `thievery`
+      // Power（`preBattleAction` 与拾荒者共用同一条 case，MonsterSpecific.cpp:233）。
       {
         id: "mugger_mug",
         name: "抢劫",
-        effects: [
-          { kind: "deal_damage", amount: 10 },
-          { kind: "steal_gold", amount: 15 },
-        ],
+        effects: [{ kind: "steal_gold" }, { kind: "deal_damage", amount: 10 }],
         intent: "attack",
       },
       {
         id: "mugger_lunge",
         name: "扑击逃窜",
         effects: [
+          { kind: "steal_gold" },
           { kind: "deal_damage", amount: 16 },
-          { kind: "steal_gold", amount: 15 },
           { kind: "escape" },
         ],
         intent: "attack",
@@ -2066,6 +2086,15 @@ const ENCOUNTERS: Record<string, EncounterDef> = {
   },
   looter: { id: "looter", enemies: ["looter"], isBoss: false },
   red_slaver: { id: "red_slaver", enemies: ["red_slaver"], isBoss: false },
+  // 恶棍二人组：一只「弱野生动物」+ 一只「强人形」，两只都是**先把候选全部造出来再挑一个**
+  // （`createWeakWildlife` / `createStrongHumanoid`，MonsterGroup.cpp:477/:497），
+  // 见 sts-combat.ts 的 `ENCOUNTER_BUILDERS.exordium_thugs`。
+  // 这里的 `enemies` 只是占位——有 builder 时 `initCombat` 根本不读它。
+  exordium_thugs: {
+    id: "exordium_thugs",
+    enemies: ["acid_slime_m", "looter"],
+    isBoss: false,
+  },
   // 第二幕
   snake_plant: { id: "snake_plant", enemies: ["snake_plant"], isBoss: false },
   spheric_guardian: { id: "spheric_guardian", enemies: ["spheric_guardian"], isBoss: false },
