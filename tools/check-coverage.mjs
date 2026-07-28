@@ -21,19 +21,41 @@ import path from "node:path";
 //
 // 用法:
 //   node tools/check-coverage.mjs <trace目录>
-//   node tools/check-coverage.mjs <trace目录> CARD1 CARD2 ... [--moves MOVE1 MOVE2 ...]
+//   node tools/check-coverage.mjs <trace目录> CARD... [--no-upgrade CARD...] [--moves MOVE...]
+//
+// 三段参数：
+//   （无前缀）    普通卡，要求**未升级 / 已升级两栏都非 0**。
+//   --no-upgrade  只要求未升级那栏非 0。**仅限根本没有升级形态的卡**——状态牌与诅咒牌
+//                 （黏液 / 灼伤 / 恍惚 / 伤口…）的 `canUpgrade()` 恒假，harness 的
+//                 全升级 variant 也不会升它们，放进普通那段就是必然失败、整批装不上。
+//                 ⚠ 别拿它给「这批懒得覆盖升级分支」的普通卡开后门：那是真的少了一半背书。
+//   --moves       怪物招式，要求**出现 / 执行两栏都非 0**。
 //
 // 名字一律用**参考项目的枚举名**（trace 里就是这个）：卡是 UPPERCUT / DEMON_FORM，
 // 招式是 CULTIST_INCANTATION / RED_LOUSE_BITE（招式名自带怪物前缀，全局唯一）。
 // 有任一为 0 时以退出码 1 结束。
 const argv = process.argv.slice(2);
 const dir = argv[0];
-const sep = argv.indexOf("--moves");
-const required = argv.slice(1, sep === -1 ? undefined : sep);
-const requiredMoves = sep === -1 ? [] : argv.slice(sep + 1);
+/** 按 `--xxx` 把参数切成若干段，段名 → 名字数组。无前缀的那段归到 "cards"。 */
+const groups = { cards: [], "no-upgrade": [], moves: [] };
+let cur = "cards";
+for (const a of argv.slice(1)) {
+  if (a.startsWith("--")) {
+    cur = a.slice(2);
+    if (!(cur in groups)) {
+      console.error(`✗ 未知参数段: ${a}（只支持 --no-upgrade / --moves）`);
+      process.exit(2);
+    }
+    continue;
+  }
+  groups[cur].push(a);
+}
+const required = groups.cards;
+const requiredPlainOnly = groups["no-upgrade"];
+const requiredMoves = groups.moves;
 if (dir === undefined) {
   console.error(
-    "用法: node tools/check-coverage.mjs <trace目录> [卡枚举名...] [--moves 招式枚举名...]",
+    "用法: node tools/check-coverage.mjs <trace目录> [卡枚举名...] [--no-upgrade 卡枚举名...] [--moves 招式枚举名...]",
   );
   process.exit(2);
 }
@@ -123,6 +145,18 @@ if (required.length > 0) {
     bad = true;
   } else {
     console.log("✓ 全部要求的卡牌两个分支都被打出过");
+  }
+}
+
+if (requiredPlainOnly.length > 0) {
+  const missing = requiredPlainOnly.filter((w) => (plain.get(w) ?? 0) === 0);
+  console.log("");
+  console.log(`零覆盖（无升级形态的卡）: ${missing.length === 0 ? "无" : missing.join(" ")}`);
+  if (missing.length > 0) {
+    console.error("\n✗ 有卡已登记却没有被打出过——等于没有预言机背书，不接受。");
+    bad = true;
+  } else {
+    console.log("✓ 全部要求的无升级形态卡都被打出过");
   }
 }
 

@@ -1017,8 +1017,16 @@ variants 0-6 逐字节未变。所以 ★ / ‡ / † / § 仍成立，**¶ 那�
       **那两批必须重量这三个数字**；在此之前，黏液的三条属性只有参考源码的直读依据：
       费用 `getEnergyCost` 的 `default: return 1`、消耗 `Cards.h:613`、
       可打出 `CardInstance.cpp:329` 的 `id != SLIMED`。
-    - ⚠ 它也进不了 `check-coverage.mjs` 的必需卡列表：那个检查同时要求「未升级」与
-      「已升级」两栏非 0，而状态牌 `canUpgrade` 恒假。工具缺口已记在 WORKFLOW。
+    - **「以后会有背书」不是推测，已经量过了。** 在全部 20 个编队的 variant 0 数据上数
+      黏液**被打出**的次数：`slime_boss` **1456** 次、`large_slime` **46** 次、
+      `exordium_wildlife` 6 次、`exordium_thugs` 3 次，而 `small_slimes` / `lots_of_slimes`
+      是 **0**。所以留着这条登记是对的——第十四批装 `large_slime` 时它就有背书了，
+      不必先删再加。**第十四批的验收项里必须有「黏液那三个变异重量一遍」。**
+    - ⚠ 它一度进不了 `check-coverage.mjs` 的必需卡列表：那个检查同时要求「未升级」与
+      「已升级」两栏非 0，而状态牌 `canUpgrade` 恒假。**工具缺口已补**：新增
+      `--no-upgrade` 参数段，只要求未升级那栏。现在
+      `check-coverage.mjs <dir> --no-upgrade SLIMED` 会如实以退出码 1 报「零覆盖」，
+      第十四批装完 `large_slime` 之后它应该转绿——**这就是这条盲区的关门条件**。
   - **尖刺史莱姆小的 `no_op_roll` 与 `roll` 分不出来（0 例）。** 把 `NoOpRollMove` 换成
     普通 `RollMove` 对拍**全绿**——两者都掷一次 `aiRng.random(99)`，而这只怪的
     `getMoveForRoll` 恒返回同一招，唯一的差别是 `moveHistory` 会不会推进，而
@@ -1621,6 +1629,16 @@ BuffEnemy<SHACKLED>(t, up?15:9)`。两处各有 552 例背书（见上方 ⁂ �
   不自行拍板。同源的还有：`getMoveForRoll` 的 asc17 分支、`takeTurn` 的 asc2/3/4 伤害档、
   `preBattleAction` 的 asc 分档——它们在 `sts-combat.ts` 里都能写（有 `bc.ascension`），
   但一律没有预言机（harness 固定 asc0）。
+- **要不要给 harness 开「爬升度」这条轴。** 上一条不是一只怪的问题，是**一整条轴**：
+  每只怪都有 asc2 伤害档、asc7 血量档、asc17 出招档，全部是死代码。怪物铺完之后
+  这会是项目里最大的单块盲区——**它随每批线性增长**，越晚做重量的成本越高。
+  做法上不难：`GameContext gc(IRONCLAD, seed, 0)` 的第三个参数就是爬升度，给
+  `DeckVariant` 加一个默认 0 的 `ascension` 字段、新 variant **追加在列表末尾**，
+  老 `traceIdx` 就原样保留（与每批加聚焦 variant 同一个道理，零扰动）。
+  代价：想覆盖 asc17 全部第一幕编队，按 variant 0 的密度约再 **+100MB**；
+  只覆盖有 asc 分支的那几个编队会便宜得多。
+  ⚠ 爬升度还会改玩家侧（起始血量、asc10 起多一张 `ascenders_bane` 诅咒），
+  所以这不只是「怪物变强」，要连玩家侧一起对拍。**这是方向决策，等裁定。**
 - **`forethought` 深谋远虑要不要在参考侧补升级分支。** 参考的 `Actions::ForethoughtAction`
   把升级那一支整段注释掉了（`Actions.cpp:784-806`），于是升级态退化成未升级行为，
   全升级 variant 会照错的跑。补它**不是转写而是发明**：参考侧只有单选的

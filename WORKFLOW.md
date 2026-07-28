@@ -223,6 +223,11 @@ variant 只会产出 variant 0 之后的行，那些行按定义会被 `head -n`
 tools/regen-traces.sh --install UPPERCUT DEMON_FORM --moves SENTRY_BOLT SENTRY_BEAM ...
 ```
 
+参数分三段：**（无前缀）普通卡**要求未升级/已升级两栏都非 0；**`--no-upgrade`** 只要求
+未升级那栏，**仅限根本没有升级形态的卡**（状态牌与诅咒牌的 `canUpgrade()` 恒假，
+放进普通那段就是必然失败、整批装不上）；**`--moves`** 是怪物招式。
+⚠ 别拿 `--no-upgrade` 给「这批懒得覆盖升级分支」的普通卡开后门，那是真的少了一半背书。
+
 `--moves` 之前是本批新卡的参考枚举名，之后是本批新怪物招式的参考枚举名
 （`monsterMoveStrings` 里那个，自带怪物前缀）。脚本会：生成 → 校验冻结数据未被扰动 →
 校验每张新卡两个分支都被打出过、每个新招式都**出现且执行**过 → 才安装。
