@@ -343,44 +343,62 @@ const ENEMY_LIST: EnemyDef[] = [
     intentRule: { scripted: [], weighted: [] },
   },
 
-  // —— 地精帮（狂暴/鬼祟/肥胖/护盾/巫师）——
+  // —— 地精帮（狂暴/鬼祟/肥胖/护盾/巫师，第十七批）——
+  //
+  // 五只怪的 `getMoveForRoll` 全部**不看 roll**、恒返回同一招（MonsterSpecific.cpp:2311 /
+  // :2458 / :2527 / :2719 / :2767），真正决定「下回合出什么」的都在 takeTurn 的 case 尾部
+  // ——见 sts-combat.ts 的 `MOVE_TURN_END`。所以这里的 intentRule 一律留空。
   {
     id: "mad_gremlin",
     name: "狂暴地精",
+    // MonsterIds.h:182 `{{20,24},{21,25}}`（asc<7 取前者）。
     hpMin: 20,
     hpMax: 24,
+    // ⚠ **狂怒（ANGRY）不写在这里**：参考在 `preBattleAction` 里 `buff<MS::ANGRY>(asc17 ? 2 : 1)`
+    // （MonsterSpecific.cpp:156-158），受击时由 `Monster::attacked` 读它加力量
+    // （Monster.cpp:424-426）。理由与真菌兽的孢子云同：它会出现在 trace 的怪物快照里
+    // （`ANGRY: 1`），且触发时点（**格挡吸收之前**、连打空的攻击也算）是引擎侧的事，
+    // 数据表表达不了。见 sts-combat.ts 的 `PRE_BATTLE_ACTION.mad_gremlin` 与 `monsterAttacked`。
     moves: [
       {
+        // MonsterSpecific.cpp:659 `attackPlayerHelper(bc, asc2 ? 5 : 4)`。
         id: "scratch",
         name: "抓挠",
         effects: [{ kind: "deal_damage", amount: 4 }],
         intent: "attack",
       },
     ],
-    intentRule: { scripted: [], weighted: [{ move: "scratch", weight: 1, maxInARow: 99 }] },
+    intentRule: { scripted: [], weighted: [] },
   },
   {
     id: "sneaky_gremlin",
     name: "鬼祟地精",
+    // MonsterIds.h:198 `{{10,14},{11,15}}`（asc<7 取前者）。
     hpMin: 10,
     hpMax: 14,
     moves: [
       {
+        // MonsterSpecific.cpp:669 `attackPlayerHelper(bc, asc2 ? 10 : 9)`。
         id: "puncture",
         name: "穿刺",
         effects: [{ kind: "deal_damage", amount: 9 }],
         intent: "attack",
       },
     ],
-    intentRule: { scripted: [], weighted: [{ move: "puncture", weight: 1, maxInARow: 99 }] },
+    intentRule: { scripted: [], weighted: [] },
   },
   {
     id: "fat_gremlin",
     name: "肥胖地精",
+    // MonsterIds.h:171 `{{13,17},{14,18}}`（asc<7 取前者）。
     hpMin: 13,
     hpMax: 17,
     moves: [
       {
+        // MonsterSpecific.cpp:643-647 `attackPlayerHelper(bc, asc2 ? 5 : 4)`
+        //   + `addToBot(DebuffPlayer<WEAK>(1, true))`。
+        // ⚠ 虚弱层数**没有 asc 分档**（恒 1）；asc17 会再追加一条脆弱，当前 trace 全是 asc0，
+        //   没有预言机，故不写（写了也走不到）。
         id: "smash",
         name: "猛击",
         effects: [
@@ -390,45 +408,64 @@ const ENEMY_LIST: EnemyDef[] = [
         intent: "attack",
       },
     ],
-    intentRule: { scripted: [], weighted: [{ move: "smash", weight: 1, maxInARow: 99 }] },
+    intentRule: { scripted: [], weighted: [] },
   },
   {
     id: "shield_gremlin",
     name: "护盾地精",
+    // MonsterIds.h:195 `{{12,15},{13,17}}`（asc<7 取前者）。
     hpMin: 12,
     hpMax: 15,
     moves: [
       {
+        // MonsterSpecific.cpp:1095-1099 `blockAmounts[] = {7,8,11}`、
+        // `getTriIdx(asc, 7, 17)` → asc0 取 7，然后 `addToBot(GainBlockRandomEnemy(idx, 7))`。
+        // ⚠ 目标是**随机一名友军**（排除自己、排除已死的），只剩自己时才给自己
+        // ——那一支**不掷 aiRng**。见 sts-combat.ts 的 `gainBlockRandomEnemy`。
         id: "protect",
         name: "保护",
         effects: [{ kind: "gain_block_ally", amount: 7 }],
         intent: "defend",
       },
       {
+        // MonsterSpecific.cpp:1105-1107 `attackPlayerHelper(bc, asc2 ? 8 : 6)`。
+        // ⚠ 这一招只在**场上只剩它自己**时才会被选中（保护那条 case 的尾部判定），
+        //   所以它是本批覆盖最薄的一条。
         id: "shield_bash",
         name: "盾击",
         effects: [{ kind: "deal_damage", amount: 6 }],
         intent: "attack",
       },
     ],
-    // 出招规则待登记进 sts-combat.ts 的 MOVE_RULES（有友军则保护、否则攻击）。
+    // 出招规则见 sts-combat.ts：`MOVE_RULES.shield_gremlin` 恒返回保护，
+    // 「只剩自己就改成盾击」在 `MOVE_TURN_END["shield_gremlin/protect"]`。
+    // ⚠ `MonsterMoves.h:493` 的攻击白名单里只有 SHIELD_GREMLIN_SHIELD_BASH，
+    // SHIELD_GREMLIN_PROTECT **不在**，与上面的 attack / defend 一致。
     intentRule: { scripted: [], weighted: [] },
   },
   {
     id: "gremlin_wizard",
     name: "地精巫师",
+    // MonsterIds.h:177 `{{21,25},{22,26}}`（asc<7 取前者）。
     hpMin: 21,
     hpMax: 25,
     moves: [
+      // MonsterSpecific.cpp:774-780：整条 case **没有任何效果**，只有 `++miscInfo`
+      // 与「攒够 3 次就改出大招」。两句都是引擎侧记账，分别落在 sts-combat.ts 的
+      // `MOVE_TURN_BEGIN` / `MOVE_TURN_END`。
       { id: "charging", name: "蓄力", effects: [], intent: "unknown" },
       {
+        // MonsterSpecific.cpp:782-789 `attackPlayerHelper(bc, asc2 ? 30 : 25)`。
         id: "ultimate_blast",
         name: "终极爆发",
         effects: [{ kind: "deal_damage", amount: 25 }],
         intent: "attack",
       },
     ],
-    // 出招规则待登记进 sts-combat.ts 的 MOVE_RULES（蓄力3回合→大招→循环）。
+    // 出招规则见 sts-combat.ts：`MOVE_RULES.gremlin_wizard` 恒返回蓄力**并把 miscInfo 置 1**，
+    // 蓄力计数与循环在 `MOVE_TURN_BEGIN` / `MOVE_TURN_END`。
+    // ⚠ `MonsterMoves.h:462` 的攻击白名单里只有 GREMLIN_WIZARD_ULTIMATE_BLAST，
+    // GREMLIN_WIZARD_CHARGING **不在**，与上面的 attack / unknown 一致。
     intentRule: { scripted: [], weighted: [] },
   },
 
