@@ -712,69 +712,110 @@ const ENEMY_LIST: EnemyDef[] = [
   },
 
   // —— 第二幕（城市）普通敌人 ——
+  //
+  // ⚠ 第二十三批开了第二幕，但**只有本批这三只**（食蛇草 / 球状守卫者 / 选民）经过
+  //   trace 校准。同文件里其余的第二 / 三幕怪仍是旧近似数据，未登记、开战即抛错。
   {
+    // —— 第二十三批：食蛇草（第二幕，`SNAKE_PLANT` 单怪编队）——
+    //
+    // ⚠ 全项目只有它与蠕动血块带**易塑**（MALLEABLE）。开局 3 层写在 `PRE_BATTLE_ACTION`，
+    //   受击成长与回合末复位写在 sts-combat.ts，不在这张表里（同真菌兽的孢子云）。
     id: "snake_plant",
     name: "食蛇草",
+    // MonsterIds.h:197 `{{75,79},{78,82}}`（普通怪阈值 asc>=7，MonsterSpecific.cpp:64）。
+    // ⚠ 高档那一组**本批不写**：`ascCalibrated` 没置，asc>0 时 `constructMonster` 直接抛错，
+    //   写了也没有预言机看着（同第十八批对地精头目 asc18 出招块的处理）。
     hpMin: 75,
     hpMax: 79,
     moves: [
       {
+        // MonsterSpecific.cpp:1131-1134 `attackPlayerHelper(bc, asc2 ? 8 : 7, 3)`。
+        // ⚠ **三段**，不是一下 7 点——旧近似表把它写成单段 7，数值与段数都错。
         id: "sp_chomp",
         name: "撕咬",
-        effects: [{ kind: "deal_damage", amount: 7 }],
+        effects: [{ kind: "deal_damage_multi", amount: 7, times: 3 }],
         intent: "attack",
       },
       {
+        // MonsterSpecific.cpp:1136-1140：**先脆弱后虚弱**，两条都是 `addToBot(DebuffPlayer)`。
+        // ⚠ 顺序照抄（旧表写反了）。两条各 2 层、都带 `isSourceMonster = true`。
         id: "sp_spores",
         name: "散播孢子",
         effects: [
-          { kind: "apply_power", power: "weak", amount: 2, on: "target" },
           { kind: "apply_power", power: "frail", amount: 2, on: "target" },
+          { kind: "apply_power", power: "weak", amount: 2, on: "target" },
         ],
         intent: "debuff",
       },
     ],
-    intentRule: {
-      scripted: [],
-      weighted: [
-        { move: "sp_chomp", weight: 65, maxInARow: 2 },
-        { move: "sp_spores", weight: 35, maxInARow: 1 },
-      ],
-    },
+    // 出招规则见 sts-combat.ts 的 MOVE_RULES。
+    // ⚠ 攻击白名单里只有 `SNAKE_PLANT_CHOMP`（`MonsterMoves.h:495`），
+    //   `SNAKE_PLANT_ENFEEBLING_SPORES` **不在**——与这里的 attack / debuff 一致。
+    intentRule: { scripted: [], weighted: [] },
   },
   {
+    // —— 第二十三批：球状守卫者（第二幕，`SPHERIC_GUARDIAN` 单怪编队）——
+    //
+    // ⚠ 三样东西都不写在这张表里（写在这里就是第二份真相）：
+    //   * 神器 3 层 / **壁垒** / 开局 40 点格挡 → `PRE_BATTLE_ACTION.spheric_guardian`；
+    //   * 四条招式的「下一招是谁」全是 case 尾部的**同步 setMove + 同步 noOpRollMove**
+    //     → `MOVE_TURN_END`（于是它的 `getMoveForRoll` 整场只被调用一次）。
+    // ⚠ 它是**怪物侧第一次出现壁垒**：格挡从此不在怪物回合开始清空，见 `applyPreTurnLogic`。
     id: "spheric_guardian",
-    name: "球形守卫",
+    name: "球状守卫者",
+    // MonsterIds.h:200 `{{20,20},{20,20}}`。
+    // ⚠⚠ `hpNoRoll`：这只怪走的是 `Monster::initHp` 里**不掷 RNG** 的那条 case
+    //   （MonsterSpecific.cpp:119-124，直接 `curHp = monsterHpRange[id][0][0]`）。
+    //   与守卫者的 `{240,240}`「上下界相同但照掷一次」完全不同——写错会让此后每一次
+    //   monsterHpRng 取值整体错位。详见 `EnemyDef.hpNoRoll` 的注释。
     hpMin: 20,
     hpMax: 20,
+    hpNoRoll: true,
     moves: [
       {
+        // MonsterSpecific.cpp:1166-1170 `addBlock(asc17 ? 35 : 25)`。
+        // ⚠ 是**同步**的裸 `addBlock`（同守卫者的蓄能），不是 `addToBot(MonsterGainBlock)`。
         id: "sg_activate",
         name: "激活",
-        effects: [{ kind: "gain_block", amount: 25 }],
+        effects: [{ kind: "gain_block", amount: 25, sync: true }],
         intent: "defend",
       },
       {
+        // MonsterSpecific.cpp:1186-1190 `attackPlayerHelper(bc, asc2 ? 11 : 10, 2)`（**两段**）。
         id: "sg_slam",
         name: "猛击",
-        effects: [{ kind: "deal_damage", amount: 10 }],
+        effects: [{ kind: "deal_damage_multi", amount: 10, times: 2 }],
         intent: "attack",
       },
       {
+        // MonsterSpecific.cpp:1179-1184。⚠ **加格挡排在攻击之前**，而且是
+        //   `addToBot(MonsterGainBlock(idx, 15))` ——**入队**（与激活那条的同步 addBlock
+        //   不同，同一只怪身上两种写法并存，照抄不要统一）。所以这 15 点格挡在队列里
+        //   排在自己这一击之前，玩家看到的是「先鼓起来再打」。
+        // ⚠⚠ **它就是 `isMoveAttack` 白名单里那个「带伤害却也加格挡」的反例**
+        //   （`MonsterMoves.h:500`）：招式名与效果都像防御，白名单却把它算作攻击。
+        //   见 sts-combat.ts 的 `MONSTER_ATTACK_MOVES`。
         id: "sg_harden",
         name: "硬化",
-        effects: [{ kind: "gain_block", amount: 15 }],
-        intent: "defend",
+        effects: [
+          { kind: "gain_block", amount: 15 },
+          { kind: "deal_damage", amount: 10 },
+        ],
+        intent: "attack",
+      },
+      {
+        // MonsterSpecific.cpp:1172-1177：攻击 + `addToBot(DebuffPlayer<FRAIL>(5, true))`。
+        id: "sg_attack_debuff",
+        name: "攻击削弱",
+        effects: [
+          { kind: "deal_damage", amount: 10 },
+          { kind: "apply_power", power: "frail", amount: 5, on: "target" },
+        ],
+        intent: "attack",
       },
     ],
-    // 首招激活(大格挡)，之后 猛击/硬化 交替；开局自带 3 层神器（见 createEnemyState）。
-    intentRule: {
-      scripted: ["sg_activate"],
-      weighted: [
-        { move: "sg_slam", weight: 50, maxInARow: 1 },
-        { move: "sg_harden", weight: 50, maxInARow: 1 },
-      ],
-    },
+    // 出招规则见 sts-combat.ts 的 MOVE_RULES（恒返回激活，且只被调用一次）。
+    intentRule: { scripted: [], weighted: [] },
   },
   {
     id: "centurion",
@@ -852,24 +893,46 @@ const ENEMY_LIST: EnemyDef[] = [
     },
   },
   {
+    // —— 第二十三批：选民（第二幕，`CHOSEN` 单怪编队）——
+    //
+    // ⚠ 它是全项目**唯一**的诅咒（HEX）来源。诅咒本身的效果（玩家每打出一张非攻击牌就洗
+    //   一张恍惚进抽牌堆）写在 sts-combat.ts 的三个 `onUseXxxCard` 里，不在这张表。
     id: "chosen",
     name: "选民",
+    // MonsterIds.h:163 `{{95,99},{98,103}}`（普通怪阈值 asc>=7，MonsterSpecific.cpp:44）。
+    // 高档那一组本批不写，理由同食蛇草。
     hpMin: 95,
     hpMax: 99,
     moves: [
       {
+        // MonsterSpecific.cpp:631-634 `attackPlayerHelper(bc, asc2 ? 6 : 5, 2)`（**两段 5**）。
+        // ⚠ 旧近似表写的是单段 6，段数与数值都错。
         id: "poke",
         name: "戳刺",
-        effects: [{ kind: "deal_damage", amount: 6 }],
+        effects: [{ kind: "deal_damage_multi", amount: 5, times: 2 }],
         intent: "attack",
       },
       {
+        // MonsterSpecific.cpp:636-639 `attackPlayerHelper(bc, asc2 ? 21 : 18)`。
         id: "zap",
         name: "电击",
         effects: [{ kind: "deal_damage", amount: 18 }],
         intent: "attack",
       },
       {
+        // MonsterSpecific.cpp:614-618：攻击 10 + `addToBot(DebuffPlayer<VULNERABLE>(2, true))`。
+        id: "debilitate",
+        name: "削弱",
+        effects: [
+          { kind: "deal_damage", amount: 10 },
+          { kind: "apply_power", power: "vulnerable", amount: 2, on: "target" },
+        ],
+        intent: "attack",
+      },
+      {
+        // MonsterSpecific.cpp:620-624。⚠ 两句的**写法不同**，照抄不要统一：
+        //   虚弱 3 是 `addToBot(DebuffPlayer<WEAK>(3, true))` —— 入队；
+        //   力量 3 是同步的 `buff<MS::STRENGTH>(3)`         —— `on: "self"` 恒同步。
         id: "drain",
         name: "汲取",
         effects: [
@@ -878,15 +941,21 @@ const ENEMY_LIST: EnemyDef[] = [
         ],
         intent: "buff",
       },
+      {
+        // MonsterSpecific.cpp:626-629 `addToBot(DebuffPlayer<PS::HEX>(1))`。
+        // ⚠ **没有第二个实参**，取默认的 `isSourceMonster = true`（Actions.h:35）；
+        //   诅咒是纯 bool 状态，所以那个 1 只是形式上的层数，再上一次也还是 1。
+        id: "hex",
+        name: "诅咒",
+        effects: [{ kind: "apply_power", power: "hex", amount: 1, on: "target" }],
+        intent: "debuff",
+      },
     ],
-    // 首招汲取(削弱玩家+自强)，之后 戳刺/电击。
-    intentRule: {
-      scripted: ["drain"],
-      weighted: [
-        { move: "poke", weight: 55, maxInARow: 2 },
-        { move: "zap", weight: 45, maxInARow: 1 },
-      ],
-    },
+    // 出招规则见 sts-combat.ts 的 MOVE_RULES（首招戳刺、第二招诅咒，之后 roll）。
+    // ⚠ 攻击白名单里有 `CHOSEN_POKE` / `CHOSEN_ZAP` / `CHOSEN_DEBILITATE`
+    //   （`MonsterMoves.h:441-443`），**不在**的是 `CHOSEN_DRAIN` 与 `CHOSEN_HEX`
+    //   ——与这里的 attack / attack / attack / buff / debuff 一致。
+    intentRule: { scripted: [], weighted: [] },
   },
   {
     id: "snecko",
@@ -2449,6 +2518,14 @@ const ENEMY_LIST: EnemyDef[] = [
     },
   },
 ];
+
+/**
+ * 全部敌人定义（与 `ALL_EVENTS` 同族的只读视图）。
+ *
+ * 用途是让数据表测试能做**全表**断言而不是抽查——例如「只有 `initHp` 里那条不掷 RNG 的怪
+ * 才带 `hpNoRoll`」：抽查放过一个写错的条目就会让 monsterHpRng 整体错位。
+ */
+export const ALL_ENEMIES: readonly EnemyDef[] = ENEMY_LIST;
 
 const ENEMY_MAP: ReadonlyMap<string, EnemyDef> = new Map(
   ENEMY_LIST.map((enemy) => [enemy.id, enemy]),

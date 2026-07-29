@@ -31,6 +31,16 @@ export type PowerId =
   // 参考在 `Player::applyEndOfTurnPowers` 里对它写的是 `RemoveStatus<ENTANGLED>`
   // 而不是 `decrementStatus`（Player.cpp:382），所以层数多少都只封住一个玩家回合。
   | "entangled"
+  // 诅咒（选民）：玩家每打出一张**非攻击牌**（技能 / 能力 / 状态 / 诅咒），
+  // 就把一张「恍惚」**洗入抽牌堆**（`MakeTempCardInDrawPile(DAZED, 1, true)`，
+  // 因此每次消耗一次 cardRandomRng）。触发点在 `BattleContext::onUseSkillCard` /
+  // `onUsePowerCard` / `onUseStatusOrCurseCard` 三处（BattleContext.cpp:1796/1875/1938），
+  // **`onUseAttackCard` 里没有**。
+  // ⚠ 它是**纯 bool**：`Player::debuff` 对 `CONFUSED` / `HEX` 走
+  // `setHasStatus(true); return;`（Player.h:406-409），所以再上一次也还是 1 层、层数不叠。
+  // ⚠ 整场战斗不递减、不过期（`removeStatus<HEX>` 只在 `Player::removeDebuffs` 里，
+  // 那是橙色药丸 / 神性那一路，与回合末无关）。
+  | "hex"
   | "poison" // 中毒：持有者回合开始受到 = 层数的伤害（无视格挡），然后层数 -1（静默主机制）
   | "focus" // 集中：机器人充能球的被动/唤醒数值 +N（被动修正器）
   | "metallicize" // 金属化：每当自己回合结束，获得 N 点格挡（拉加维林睡眠期）
@@ -57,6 +67,13 @@ export type PowerId =
   // 孢子云：真菌兽开局自带（preBattleAction 里 buff 2 层），死亡时给玩家 2 层易伤。
   // ⚠ 层数只是标记：参考的 `Monster::die` 硬写 `DebuffPlayer<VULNERABLE>(2, …)`，不读层数。
   | "spore_cloud"
+  // 易塑：每受到一次**未被格挡**的攻击伤害就获得 = 层数的格挡，然后层数 +1；
+  // 回合末复位回 3。开局由 preBattleAction 给 3 层（食蛇草 / 蠕动血块，全项目只有这两只）。
+  // ⚠ 三处协同（漏一处就静默错）：`Monster::preBattleAction` 置 3
+  // （MonsterSpecific.cpp:248-250）、`attackedUnblockedHelper` 的 else-if 链里加格挡并 +1
+  // （Monster.cpp:369-374）、`applyEndOfTurnTriggers` 复位成 3（Monster.cpp:47-49）。
+  // ⚠ 加的那层格挡是 `addToBot(MonsterGainBlock)`——**入队**，所以触发它的那一击不被减免。
+  | "malleable"
   | "mode_shift" // 模式切换累计（守卫者，内部计数用）
   // —— 玩家能力牌触发型 power（在对应触发点由 combat 结算，玩家专属）——
   | "combust" // 燃烧：每个玩家回合结束，失 1 生命并对所有敌人造成 = 层数的伤害
@@ -523,6 +540,24 @@ export type EnemyDef = {
    * 省略 = 这只怪的爬升度分档**还没校准**（见 `ascCalibrated`），不是「没有第二组」。
    */
   hpHigh?: { atLeast: number; hpMin: number; hpMax: number };
+  /**
+   * 血量**不掷 RNG**：直接取 `hpMin`，一次 `monsterHpRng` 都不消耗（第二十三批）。
+   *
+   * 对齐 `Monster::initHp` 里那条与众不同的 case（`MonsterSpecific.cpp:119-124`）：
+   * ```cpp
+   * case MonsterId::SPHERIC_GUARDIAN:
+   * case MonsterId::THE_MAW:
+   * case MonsterId::TRANSIENT:
+   *     curHp = monsterHpRange[id][0][0];   // 低档区间的**下界**，没有 setRandomHp
+   *     maxHp = curHp;
+   * ```
+   * ⚠ **与「上下界相同」不是一回事。** 守卫者是 `{240,240}` 却照样走 `setRandomHp` →
+   * `Random::random(240,240)` **无条件 `++counter`**（Random.h:159），掷了一次。
+   * 球状守卫者这条连 `setRandomHp` 都不调，`rng.hp` 计数器一动不动——把它写成
+   * 「hpMin == hpMax 的普通怪」会让此后每一次 monsterHpRng 取值整体错位。
+   * ⚠ 它也让 `hpHigh` 失去意义（参考那条 case 压根不看 ascension，两组区间都是 `{20,20}`）。
+   */
+  hpNoRoll?: boolean;
   /**
    * 本条目的爬升度分档（血量第二组 + 招式数值的 asc 档）是否已按 trace 预言机校准。
    *

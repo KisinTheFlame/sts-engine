@@ -23,7 +23,7 @@ import {
 } from "../src/engine/potions/potions.js";
 import { REGISTERED_CARD_IDS } from "../src/engine/sts-combat.js";
 import { ALL_EVENTS, getEventDef } from "../src/engine/events/events.js";
-import { getEnemyDef, getEncounterDef } from "../src/engine/enemies/enemies.js";
+import { ALL_ENEMIES, getEnemyDef, getEncounterDef } from "../src/engine/enemies/enemies.js";
 import type { CardDef, CharacterId } from "../src/engine/types.js";
 
 // ============================================================================
@@ -584,6 +584,29 @@ describe("敌人与编队表", () => {
       expect(def.ascCalibrated ?? false, `${id} 不该标 ascCalibrated`).toBe(false);
       expect(def.hpHigh, `${id} 没标 ascCalibrated 却带了 hpHigh`).toBeUndefined();
     }
+  });
+
+  // 第二十三批：`hpNoRoll`。它是**不掷 monsterHpRng** 的开关，写错的代价是此后每一次
+  // monsterHpRng 取值整体错位（不是「血量差一点」）。参考里只有三只怪走那条 case
+  //（`Monster::initHp`，MonsterSpecific.cpp:119-124）：球状守卫者 / 大嘴 / 复形怪。
+  // ⚠ 反方向同样要守：`{240,240}` 的守卫者**照样掷一次**，所以「上下界相同」不是判据。
+  const HP_NO_ROLL = new Set(["spheric_guardian"]);
+
+  it("只有 initHp 里那条不掷 RNG 的怪才带 hpNoRoll", () => {
+    for (const def of ALL_ENEMIES) {
+      const expected = HP_NO_ROLL.has(def.id);
+      expect(def.hpNoRoll ?? false, `${def.id} 的 hpNoRoll 与名单不符`).toBe(expected);
+      if (expected) {
+        // 那条 case 取的是 `monsterHpRange[id][0][0]`，即区间下界；上下界相同才说明
+        // 数据表里那个「区间」其实只是一个定值。
+        expect(def.hpMax, `${def.id} 不掷 RNG 却有一个真区间`).toBe(def.hpMin);
+        // 它也不看爬升度，所以第二组区间没有意义。
+        expect(def.hpHigh, `${def.id} 不掷 RNG，hpHigh 没有意义`).toBeUndefined();
+      }
+    }
+    // 守卫者是那条「上下界相同但照样掷一次」的反例，必须**不**在名单里。
+    expect(HP_NO_ROLL.has("the_guardian")).toBe(false);
+    expect(getEnemyDef("the_guardian").hpMin).toBe(getEnemyDef("the_guardian").hpMax);
   });
 
   it("意图规则只引用本敌人有的招式", () => {

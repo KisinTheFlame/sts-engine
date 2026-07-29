@@ -1233,6 +1233,69 @@ const MOVE_RULES: Record<string, MoveForRoll> = {
     }
     return "activate";
   },
+
+  // —— 第二幕开张：三只单怪（第二十三批）——
+  //
+  // ⚠ 三条都**只写 asc<17 那一支**。参考里选民与食蛇草各有一整块 `if (asc17) { … }`
+  //   （MonsterSpecific.cpp:2253-2272 / :2757-2769），但本批 `ascCalibrated` 没置，
+  //   `constructMonster` 在 `ascension > 0` 时直接抛错，所以那两块**走不到、也没有预言机**。
+  //   照第十八批对地精头目 asc18 出招块的先例：**留到给它们铺爬升度的那一批再转写**，
+  //   不提前写没人验证的代码。
+
+  // 球状守卫者：对齐 MonsterSpecific.cpp:2806-2808 SPHERIC_GUARDIAN——**无条件**返回激活，
+  // 参考自己在那行注了 `// called first turn only`（roll 照掷、结果丢弃）。
+  // ⚠ 与守卫者 / 六火幽魂同形：四条 case 的收尾全是「同步 setMove + 同步 noOpRollMove」，
+  //   一次真正的 RollMove 都不排，所以整场只调用它一次。照抄成「第二次被调用就抛错」。
+  spheric_guardian: (_bc, m) => {
+    if (!firstTurn(m)) {
+      throw new Error("sts-combat: spheric_guardian 的 getMoveForRoll 只应在开局被调用一次");
+    }
+    return "sg_activate";
+  },
+
+  // 选民：对齐 MonsterSpecific.cpp:2274-2291 CHOSEN（asc<17 那一段）。
+  // ⚠ 四处照抄：
+  //  ① 首回合（`firstTurn()`）必**戳刺**，roll 照掷但结果被丢掉；
+  //  ② 第二段判的是 `lastMoveBefore(INVALID)`，也就是 `moveHistory[1] == INVALID`
+  //     ——「上上步还不存在」＝**这是第二回合**，于是第二招恒为诅咒。⚠ 这是全项目
+  //     **第一次**用到 `moveHistory[1] == INVALID` 这个谓词（此前只有 `lastMove` /
+  //     `lastTwoMoves`），不能拿 `firstTurn` 或 `lastMove` 顶替；
+  //  ③ 「削弱 / 汲取」那一段的门是 `!lastMove(DEBILITATE) && !lastMove(DRAIN)`
+  //     ——两条各自的连续限制是 1，而且**互相**也算（上一招是其中任一条就跳过整段）；
+  //  ④ 电击的门是 `roll < 40`，戳刺是兜底。两者**都没有**连续限制。
+  chosen: (_bc, m, roll) => {
+    if (firstTurn(m)) {
+      return "poke";
+    }
+    if (m.moveHistory[1] === undefined) {
+      // 对齐 `lastMoveBefore(MMID::INVALID)`：我们的 moveHistory 是「有几步存几步」，
+      // 长度 < 2 就等价于上上步是 INVALID。
+      return "hex";
+    }
+    if (!lastMove(m, "debilitate") && !lastMove(m, "drain")) {
+      return roll < 50 ? "debilitate" : "drain";
+    }
+    if (roll < 40) {
+      return "zap";
+    }
+    return "poke";
+  },
+
+  // 食蛇草：对齐 MonsterSpecific.cpp:2771-2782 SNAKE_PLANT（asc<17 那一段）。
+  // ⚠ 三处照抄：
+  //  ① **没有 `firstTurn()` 特例**——开局那次 rollMove 就走 roll 分支（历史全空，
+  //     `lastTwoMoves` 恒假，于是 `roll < 65` 必出撕咬、否则必出孢子）；
+  //  ② 高位那一支（`roll >= 65`）判的是 **`lastMove`**（连续 1 次），而低位那一支
+  //     （`roll < 65`）判的是 **`lastTwoMoves`**（连续 2 次）——两个谓词不一样，
+  //     照抄不要统一。⚠ asc17 那一块把高位那支也换成了 `lastTwoMoves`，正是这一点
+  //     构成两块的唯一差别（本批不转写，见上）；
+  //  ③ 两支的兜底方向相反：低位兜底撕咬、高位兜底孢子。
+  snake_plant: (_bc, m, roll) => {
+    if (roll < 65) {
+      return lastTwoMoves(m, "sp_chomp") ? "sp_spores" : "sp_chomp";
+    }
+    return lastMove(m, "sp_spores") ? "sp_chomp" : "sp_spores";
+  },
 };
 
 // ============================================================================
@@ -1633,6 +1696,40 @@ const MOVE_TURN_END: Record<string, MoveTurnEnd> = {
       c.rng.aiRng.random(99); // ★ 消耗一次 aiRng（NoOpRollMove，入队）
     });
   },
+
+  // —— 球状守卫者（第二十三批）：四条 case 的收尾**逐字同形** ——
+  //
+  //     setMove(下一招);        // 同步，快照里意图当场就变
+  //     bc.noOpRollMove();      // **同步**（不是 addToBot(NoOpRollMove())），照掷一次 aiRng
+  //
+  // （MonsterSpecific.cpp:1166-1191，四条 case 各两句。）所以它是第五形态（任意函数）：
+  // 三个静态形态里 `{setMove}` 不掷 aiRng、`no_op_roll` 不改意图，都表达不了「两件事都做」。
+  //
+  // ⚠ 于是这只怪的意图序列是**完全钉死**的、一次 roll 都不看：
+  //     激活 → 攻击削弱 → 猛击 → 硬化 → 猛击 → 硬化 → …（猛击/硬化无限交替）
+  //   而 `rng.ai` 每个怪物回合恰好 +1（开局 rollMove 那次 +1）。次数抄错当场落在计数器上。
+  // ⚠ **硬化与攻击削弱都转到猛击**，不是互相转——照抄，别按「交替」的直觉写。
+  "spheric_guardian/sg_activate": (bc, m) => {
+    setMove(m, "sg_attack_debuff");
+    bc.rng.aiRng.random(99); // ★ 消耗一次 aiRng（noOpRollMove，同步）
+  },
+  "spheric_guardian/sg_attack_debuff": (bc, m) => {
+    setMove(m, "sg_slam");
+    bc.rng.aiRng.random(99); // ★ 消耗一次 aiRng（noOpRollMove，同步）
+  },
+  "spheric_guardian/sg_harden": (bc, m) => {
+    setMove(m, "sg_slam");
+    bc.rng.aiRng.random(99); // ★ 消耗一次 aiRng（noOpRollMove，同步）
+  },
+  "spheric_guardian/sg_slam": (bc, m) => {
+    setMove(m, "sg_harden");
+    bc.rng.aiRng.random(99); // ★ 消耗一次 aiRng（noOpRollMove，同步）
+  },
+
+  // —— 选民与食蛇草（第二十三批）：**没有条目** ——
+  // 选民五条 case、食蛇草两条 case 的收尾全是 `addToBot(Actions::RollMove(idx))`
+  //（MonsterSpecific.cpp:614-639 / :1131-1140），也就是这张表的默认值 `"roll"`。
+  // 写进来反而多一份可以抄错的真相，所以留空。
 };
 
 /**
@@ -1720,7 +1817,13 @@ function constructMonster(bc: BattleContext, defId: string): CombatMonster {
     def.hpHigh !== undefined && bc.ascension >= def.hpHigh.atLeast
       ? { min: def.hpHigh.hpMin, max: def.hpHigh.hpMax }
       : { min: def.hpMin, max: def.hpMax };
-  const hp = bc.rng.monsterHpRng.random(range.min, range.max); // ★ 消耗一次 monsterHpRng
+  // ⚠⚠ 少数怪**一次 monsterHpRng 都不掷**（第二十三批的球状守卫者，以及尚未登记的
+  //   THE_MAW / TRANSIENT）：`Monster::initHp` 给它们的是
+  //   `curHp = monsterHpRange[id][0][0]`，连 `setRandomHp` 都不调（MonsterSpecific.cpp:119-124）。
+  //   这与「上下界相同」**不是一回事**——守卫者的 `{240,240}` 照样掷一次
+  //   （`Random::random(int,int)` 无条件 `++counter`）。把这一条写成普通掷法会让此后
+  //   每一次 monsterHpRng 取值整体错位，`rng.hp` 计数器当场对不上。
+  const hp = def.hpNoRoll === true ? range.min : bc.rng.monsterHpRng.random(range.min, range.max); // ★ 掷法二选一：hpNoRoll 时**不**消耗 monsterHpRng
   const m: CombatMonster = {
     defId,
     hp,
@@ -2173,6 +2276,35 @@ const PRE_BATTLE_ACTION: Record<string, PreBattleAction> = {
     m.miscInfo = d;
     addPower(m.powers, "mode_shift", d);
   },
+
+  // —— 第二幕开张（第二十三批）——
+
+  // 食蛇草的易塑（对齐 MonsterSpecific.cpp:248-250 `buff<MS::MALLEABLE>(3)`）。
+  // **不消耗 RNG、没有 asc 分档**。
+  // ⚠ 它是本项目**第一只带易塑的怪**（全项目只有它与蠕动血块）。三处协同，缺一处就静默错：
+  //   ① 这里的初值 3；
+  //   ② `monsterDamageUnblocked` 的 else-if 链里「入队加 = 层数的格挡，然后层数 +1」；
+  //   ③ `applyMonsterEndOfTurnTriggers` 每个回合末**复位回 3**（不是清零、不是保留）。
+  // ⚠ MALLEABLE 会进 trace 的怪物 powers 快照（`MALLEABLE: 3`），漏了当场抛「未映射的 power」。
+  snake_plant: (_bc, m) => {
+    addPower(m.powers, "malleable", 3);
+  },
+
+  // 球状守卫者（对齐 MonsterSpecific.cpp:253-259）。**不消耗 RNG、没有 asc 分档**，三句都要：
+  //   `buff<MS::ARTIFACT>(3)` / `buff<MS::BARRICADE>()` / `addBlock(40)`
+  // ⚠ **壁垒是怪物侧第一次出现**：它让 `applyPreTurnLogic` 那句「逐怪清空格挡」跳过这只怪
+  //   （`Monster::applyStartOfTurnPowers` 的 `if (!hasStatus<MS::BARRICADE>()) block = 0;`，
+  //   Monster.cpp:19-22）。于是那 40 点开局格挡与后来攒的每一层都**永久累积**——这只怪
+  //   只有 20 血，格挡才是它真正的血条，漏掉壁垒会让它几回合就被打死。
+  // ⚠ 壁垒是**纯 bool**（`isBooleanPower` 为真），harness 按 1 输出（`BARRICADE: 1`），
+  //   与玩家侧壁垒能力牌共用同一个 PowerId 映射。
+  // ⚠ 神器 3 层是本项目**第二只**带神器的怪（第一只是哨卫，1 层）。它拦的是
+  //   `debuffEnemy` 那条路（黑暗镣铐 / 缴械 / 易伤…），每拦一次减一层。
+  spheric_guardian: (_bc, m) => {
+    addPower(m.powers, "artifact", 3);
+    addPower(m.powers, "barricade", 1);
+    m.block += 40;
+  },
 };
 
 type EncounterSetup = (bc: BattleContext) => void;
@@ -2247,60 +2379,135 @@ function overwriteMove(m: CombatMonster, move: string): void {
 }
 
 /**
- * 目标当前意图是否为攻击（对齐 Monster::isAttacking → isMoveAttack(moveHistory[0])）。
+ * 「这个意图算不算攻击」的**招式白名单**（逐条转写 `MonsterMoves.h:414-535` 的
+ * `isMoveAttack` 大 switch）。键是 `${怪 id}/${招式 id}`，与 `MOVE_TURN_END` 同构。
  *
- * ⚠ 参考用的是**招式 id 白名单**（MonsterMoves.h:414 的大 switch），这里改读数据表的
- * intent 字段。已逐项核对：当前登记的八种怪两边判定完全一致——
+ * ⚠⚠ **第二十三批把实现从「读数据表的 `intent`」换成了这张表**，兑现了 WORKFLOW 从第十三批
+ * 起挂着的那条警告。触发它的正是本批的 `SPHERIC_GUARDIAN_HARDEN`（`MonsterMoves.h:500`）：
+ * 那一招**加 15 点格挡再打 10 点**，名字叫「硬化」、真实游戏里显示的是「攻击 + 防御」双意图
+ * ——而我们的 `EnemyIntentKind` 只有五个互斥的值，无论选 `attack` 还是 `defend` 都在表达
+ * 一件与「参考怎么判」无关的事。前 25 只怪两边碰巧一致，到这一只为止，
+ * **「渲染用的意图分类」与「isAttacking 谓词」必须拆开**：前者留在数据表给 UI 用，
+ * 后者以参考的白名单为唯一真相。
+ *
+ * 逐条核对的结果（本批之前的 25 只怪原样保留，作为「两种实现同解」的记录）：
  *   * 邪教徒 / 颚虫 / 红虱 / 绿虱（前十二批）：颚虫的乱抓虽然同时加格挡，白名单里也算攻击；
+ *     `CULTIST_INCANTATION` / `RED_LOUSE_GROW` / `GREEN_LOUSE_SPIT_WEB` 不在。
  *   * 史莱姆四只（第十三批）：白名单里只有 `ACID_SLIME_M_CORROSIVE_SPIT` / `ACID_SLIME_M_TACKLE`
- *     / `ACID_SLIME_S_TACKLE`（`MonsterMoves.h:419-421`）与 `SPIKE_SLIME_M_FLAME_TACKLE` /
- *     `SPIKE_SLIME_S_TACKLE`（`:504-505`），三条舔舐（`ACID_SLIME_M_LICK` /
- *     `ACID_SLIME_S_LICK` / `SPIKE_SLIME_M_LICK`）**都不在**，与我们的 `intent: "debuff"` 一致。
- *   * 大史莱姆两只（第十四批）：白名单里只有 `ACID_SLIME_L_CORROSIVE_SPIT` /
- *     `ACID_SLIME_L_TACKLE`（`:417-418`）与 `SPIKE_SLIME_L_FLAME_TACKLE`（`:503`）。
- *     两条舔舐与**两条分裂**（`ACID_SLIME_L_SPLIT` / `SPIKE_SLIME_L_SPLIT`）都不在，
- *     与我们的 `intent: "debuff"` / `"unknown"` 一致。
- *   * 奴隶主两只 + 抢劫者（第十五批）：白名单里有 `BLUE_SLAVER_STAB` / `BLUE_SLAVER_RAKE`
- *     （`:428-429`）、`RED_SLAVER_STAB` / `RED_SLAVER_SCRAPE`（`:484-485`）、
- *     `LOOTER_MUG` / `LOOTER_LUNGE`（`:470-471`）。**不在**的三条是 `RED_SLAVER_ENTANGLE`、
- *     `LOOTER_SMOKE_BOMB`、`LOOTER_ESCAPE`，与我们的 `debuff` / `defend` / `unknown` 一致。
- *     ⚠ 耙击与刮擦「攻击 + 减益」两栏都算攻击，烟雾弹「只加格挡」不算——两条都与
- *     数据表的 intent 对得上，但方向是从白名单读出来的，不是从「带不带伤害」推的。
- *   * 真菌兽（第十六批）：白名单里只有 `FUNGI_BEAST_BITE`（`:455`），`FUNGI_BEAST_GROW`
- *     **不在**，与我们的 `attack` / `buff` 一致。孢子云不是招式，不参与这道判定。
- *   * 地精帮五只（第十七批）：白名单里有 `FAT_GREMLIN_SMASH`（`:454`）、
- *     `GREMLIN_WIZARD_ULTIMATE_BLAST`（`:462`）、`MAD_GREMLIN_SCRATCH`（`:472`）、
- *     `SHIELD_GREMLIN_SHIELD_BASH`（`:493`）、`SNEAKY_GREMLIN_PUNCTURE`（`:496`）。
- *     **不在**的两条是 `SHIELD_GREMLIN_PROTECT` 与 `GREMLIN_WIZARD_CHARGING`，与我们的
- *     `defend` / `unknown` 一致。⚠ 这两条正是「不带伤害的招式」——白名单里存在
- *     `SPHERIC_GUARDIAN_HARDEN` 那种「带伤害却算攻击」的反例，所以方向只能从白名单读，
- *     不能从「带不带伤害」推。狂怒（ANGRY）不是招式，不参与这道判定。
- *   * 第一幕三个精英（第十八批）：白名单里有 `GREMLIN_NOB_RUSH`(`:460`)、
- *     `GREMLIN_NOB_SKULL_BASH`(`:461`)、`LAGAVULIN_ATTACK`(`:469`)、`SENTRY_BEAM`(`:489`)。
- *     **不在**的四条是 `GREMLIN_NOB_BELLOW`、`LAGAVULIN_SLEEP`、`LAGAVULIN_SIPHON_SOUL`、
- *     `SENTRY_BOLT`，与我们的 `buff` / `unknown` / `debuff` / `debuff` 一致。
- *     ⚠ `SENTRY_BOLT` 值得单记：它**一点伤害都不带**（只塞两张恍惚），照样不在白名单里
- *     ——与护盾地精的保护同族，再次说明「按带不带伤害推 intent」只是碰巧对。
- *   * 第一幕两个 Boss（第十九批）：白名单里有 `SLIME_BOSS_SLAM`(`:494`)、
- *     `THE_GUARDIAN_FIERCE_BASH` / `_WHIRLWIND` / `_ROLL_ATTACK` / `_TWIN_SLAM`(`:518-521`)。
- *     **不在**的六条是 `SLIME_BOSS_GOOP_SPRAY` / `_PREPARING` / `_SPLIT`、
- *     `THE_GUARDIAN_CHARGING_UP` / `_DEFENSIVE_MODE` / `_VENT_STEAM`，
- *     与我们的 `debuff` / `unknown` / `unknown` / `defend` / `buff` / `debuff` 一致。
- *     ⚠ 守卫者这三条正是 WORKFLOW 点名要盯的地方：`_VENT_STEAM` 一点伤害都不带却是
- *     整只怪最危险的一招，`_CHARGING_UP` 只加格挡，`_DEFENSIVE_MODE` 只上 Power——
- *     三条都不在白名单，与直觉一致；而**真正的反例就在紧邻的几行**
- *     （`SPHERIC_GUARDIAN_HARDEN`，`:500`：加格挡 + 打人，被算作攻击。球状守卫是第二幕的怪，
- *     等它那一批时数据表的 intent 会与白名单**真的分岔**，那时就得改成读白名单）。
- *   * 六火幽魂（第二十批）：白名单里有 `HEXAGHOST_DIVIDER` / `_INFERNO` / `_SEAR` /
- *     `_TACKLE`（`MonsterMoves.h:463-466`，四条连着）。**不在**的两条是
- *     `HEXAGHOST_ACTIVATE` 与 `HEXAGHOST_INFLAME`，与我们的 `unknown` / `buff` 一致。
- *     ⚠ 这两条是 WORKFLOW 点名要盯的：`_ACTIVATE` 一点效果都没有（只把六重打击的伤害
- *     算定存进 `miscInfo`），`_INFLAME` 是「加格挡 + 加力量」——后者正是**最像**
- *     `SPHERIC_GUARDIAN_HARDEN` 那个反例的形状（都是「加防御 + 变强」），但它**不在**
- *     白名单里。所以这一条再次证实：方向只能逐条回白名单读，不能按效果形状类推。
- *     ⚠ `_SEAR` 反过来也值得记：它「打 6 点 + 塞一张灼伤」，两栏都有，白名单算攻击。
- * 新登记怪种时**必须**回白名单复核，因为白名单里存在「带伤害却不算攻击」与反向的例外
- *（如球状守卫的 HARDEN 被算作攻击）。
+ *     / `ACID_SLIME_S_TACKLE`（`:419-421`）与 `SPIKE_SLIME_M_FLAME_TACKLE` /
+ *     `SPIKE_SLIME_S_TACKLE`（`:504-505`），三条舔舐**都不在**。
+ *   * 大史莱姆两只（第十四批）：`ACID_SLIME_L_CORROSIVE_SPIT` / `_TACKLE`（`:417-418`）与
+ *     `SPIKE_SLIME_L_FLAME_TACKLE`（`:503`）在，两条舔舐与**两条分裂**不在。
+ *   * 奴隶主两只 + 抢劫者（第十五批）：`BLUE_SLAVER_STAB` / `_RAKE`（`:428-429`）、
+ *     `RED_SLAVER_STAB` / `_SCRAPE`（`:484-485`）、`LOOTER_MUG` / `_LUNGE`（`:470-471`）在；
+ *     `RED_SLAVER_ENTANGLE` / `LOOTER_SMOKE_BOMB` / `LOOTER_ESCAPE` 不在。
+ *   * 真菌兽（第十六批）：只有 `FUNGI_BEAST_BITE`（`:455`），`_GROW` 不在。
+ *   * 地精帮五只（第十七批）：`FAT_GREMLIN_SMASH`（`:454`）、`GREMLIN_WIZARD_ULTIMATE_BLAST`
+ *     （`:462`）、`MAD_GREMLIN_SCRATCH`（`:472`）、`SHIELD_GREMLIN_SHIELD_BASH`（`:493`）、
+ *     `SNEAKY_GREMLIN_PUNCTURE`（`:496`）在；`SHIELD_GREMLIN_PROTECT` / `GREMLIN_WIZARD_CHARGING`
+ *     不在。
+ *   * 第一幕三个精英（第十八批）：`GREMLIN_NOB_RUSH`(`:460`) / `_SKULL_BASH`(`:461`)、
+ *     `LAGAVULIN_ATTACK`(`:469`)、`SENTRY_BEAM`(`:489`) 在；`GREMLIN_NOB_BELLOW`、
+ *     `LAGAVULIN_SLEEP` / `_SIPHON_SOUL`、`SENTRY_BOLT` 不在。
+ *     ⚠ `SENTRY_BOLT` 一点伤害都不带（只塞两张恍惚），照样不在白名单里。
+ *   * 第一幕两个 Boss（第十九批）：`SLIME_BOSS_SLAM`(`:494`)、`THE_GUARDIAN_FIERCE_BASH` /
+ *     `_WHIRLWIND` / `_ROLL_ATTACK` / `_TWIN_SLAM`(`:518-521`) 在；`SLIME_BOSS_GOOP_SPRAY` /
+ *     `_PREPARING` / `_SPLIT`、`THE_GUARDIAN_CHARGING_UP` / `_DEFENSIVE_MODE` / `_VENT_STEAM`
+ *     不在（`_VENT_STEAM` 不带伤害却是整只怪最危险的一招）。
+ *   * 六火幽魂（第二十批）：`HEXAGHOST_DIVIDER` / `_INFERNO` / `_SEAR` / `_TACKLE`
+ *     （`:463-466`）在；`_ACTIVATE` 与 `_INFLAME` 不在——`_INFLAME` 是「加格挡 + 加力量」，
+ *     形状最像 `SPHERIC_GUARDIAN_HARDEN`，方向却相反。
+ *   * **第二十三批的三只**（逐条核对，这就是报告里那张表）：
+ *     | 参考招式                          | 在白名单？ | 我们的键                            | 数据表 intent |
+ *     | --------------------------------- | ---------- | ----------------------------------- | ------------- |
+ *     | `SPHERIC_GUARDIAN_SLAM` (`:499`)   | **是**     | `spheric_guardian/sg_slam`          | attack        |
+ *     | `SPHERIC_GUARDIAN_HARDEN` (`:500`) | **是**     | `spheric_guardian/sg_harden`        | attack ⚠ 反例 |
+ *     | `SPHERIC_GUARDIAN_ATTACK_DEBUFF`   | **是**     | `spheric_guardian/sg_attack_debuff` | attack        |
+ *     | `SPHERIC_GUARDIAN_ACTIVATE`        | 否         | —                                   | defend        |
+ *     | `CHOSEN_POKE` (`:441`)             | **是**     | `chosen/poke`                       | attack        |
+ *     | `CHOSEN_ZAP` (`:442`)              | **是**     | `chosen/zap`                        | attack        |
+ *     | `CHOSEN_DEBILITATE` (`:443`)       | **是**     | `chosen/debilitate`                 | attack        |
+ *     | `CHOSEN_DRAIN`                     | 否         | —                                   | buff          |
+ *     | `CHOSEN_HEX`                       | 否         | —                                   | debuff        |
+ *     | `SNAKE_PLANT_CHOMP` (`:495`)       | **是**     | `snake_plant/sp_chomp`              | attack        |
+ *     | `SNAKE_PLANT_ENFEEBLING_SPORES`    | 否         | —                                   | debuff        |
+ *
+ * ⚠ **登记新怪时必须回 `MonsterMoves.h` 逐条抄这张表**，不要从「带不带伤害」或数据表的
+ * intent 推——硬化就是反例的存在证明。漏一条不会静默：这只怪的那个意图会被判成「不是攻击」。
+ *
+ * ⚠ 表里只列**已登记**的怪。未登记的怪根本进不了战斗（`constructMonster` / 编队闸门先抛错），
+ * 所以不必预先抄第二 / 三幕那 40 只——抄了也没有预言机看着。
+ */
+const MONSTER_ATTACK_MOVES: ReadonlySet<string> = new Set([
+  // 酸液史莱姆 L / M / S（`:417-421`）
+  "acid_slime_l/corrosive_spit_l",
+  "acid_slime_l/tackle_l",
+  "acid_slime_m/corrosive_spit",
+  "acid_slime_m/tackle",
+  "acid_slime_s/tackle_acid_s",
+  // 尖刺史莱姆 L / M / S（`:503-505`）
+  "spike_slime_l/flame_tackle_l",
+  "spike_slime_m/flame_tackle",
+  "spike_slime_s/tackle_s",
+  // 蓝 / 红奴隶主（`:428-429` / `:484-485`）
+  "blue_slaver/stab",
+  "blue_slaver/rake",
+  "red_slaver/rs_stab",
+  "red_slaver/scrape",
+  // 选民（`:441-443`，第二十三批）
+  "chosen/poke",
+  "chosen/zap",
+  "chosen/debilitate",
+  // 邪教徒（`:446`）
+  "cultist/dark_strike",
+  // 地精五只（`:454` / `:462` / `:472` / `:493` / `:496`）
+  "fat_gremlin/smash",
+  "gremlin_wizard/ultimate_blast",
+  "mad_gremlin/scratch",
+  "shield_gremlin/shield_bash",
+  "sneaky_gremlin/puncture",
+  // 真菌兽（`:455`）
+  "fungi_beast/fungi_bite",
+  // 红 / 绿虱（`:458` / `:481`）
+  "green_louse/bite",
+  "louse/bite",
+  // 地精头目（`:460-461`）
+  "gremlin_nob/rush",
+  "gremlin_nob/skull_bash",
+  // 六火幽魂（`:463-466`）
+  "hexaghost/divider",
+  "hexaghost/inferno",
+  "hexaghost/sear",
+  "hexaghost/tackle",
+  // 颚虫（`:467-468`）
+  "jaw_worm/chomp",
+  "jaw_worm/thrash",
+  // 拉加维林（`:469`）
+  "lagavulin/lag_attack",
+  // 抢劫者（`:470-471`）
+  "looter/mug",
+  "looter/lunge",
+  // 哨卫（`:489`）
+  "sentry/beam",
+  // 史莱姆王（`:494`）
+  "slime_boss/slam",
+  // 食蛇草（`:495`，第二十三批）
+  "snake_plant/sp_chomp",
+  // 球状守卫者（`:499-501`，第二十三批）。⚠ 硬化在列——它同时加格挡，这就是那个反例。
+  "spheric_guardian/sg_slam",
+  "spheric_guardian/sg_harden",
+  "spheric_guardian/sg_attack_debuff",
+  // 守卫者（`:518-521`）
+  "the_guardian/fierce_bash",
+  "the_guardian/whirlwind",
+  "the_guardian/roll_attack",
+  "the_guardian/twin_slam",
+]);
+
+/**
+ * 目标当前意图是否为攻击（对齐 `Monster::isAttacking` → `isMoveAttack(moveHistory[0])`）。
+ *
+ * 白名单与逐条核对见 `MONSTER_ATTACK_MOVES`。
  */
 function isMonsterAttacking(bc: BattleContext, idx: number): boolean {
   const m = bc.monsters[idx];
@@ -2309,11 +2516,11 @@ function isMonsterAttacking(bc: BattleContext, idx: number): boolean {
   }
   // 分裂留下的空格（见 `EMPTY_MONSTER_SLOT`）：参考那一格是默认构造的 `Monster`，
   // `moveHistory[0] == INVALID` → `isMoveAttack(INVALID)` 走 `default: return false`。
+  // 走白名单之后这一条其实是冗余的（`__empty/` 不可能命中），但留着让意图显式。
   if (m.defId === EMPTY_MONSTER_SLOT) {
     return false;
   }
-  const move = getEnemyDef(m.defId).moves.find((mv) => mv.id === m.currentMove);
-  return move?.intent === "attack";
+  return MONSTER_ATTACK_MOVES.has(`${m.defId}/${m.currentMove}`);
 }
 
 // ============================================================================
@@ -3752,6 +3959,7 @@ function monsterDamageUnblocked(bc: BattleContext, m: CombatMonster, damage: num
   //   怪（虱子只有蜷缩、拉加维林只有沉睡），但形状照抄——写成两个独立 if 会在将来静默出错。
   // 蜷缩把加格挡 addToBot 排在扣血之后，故这里先记下、扣完血再加。
   const curl = m.powers.find((p) => p.id === "curl_up");
+  const malleable = m.powers.find((p) => p.id === "malleable");
   if (curl !== undefined && curl.amount > 0) {
     const amount = curl.amount;
     m.powers.splice(m.powers.indexOf(curl), 1); // 触发一次即清除
@@ -3762,11 +3970,27 @@ function monsterDamageUnblocked(bc: BattleContext, m: CombatMonster, damage: num
     addToBot(bc, () => {
       m.block += amount;
     });
+  } else if (malleable !== undefined && malleable.amount > 0) {
+    // 易塑（MALLEABLE，食蛇草）：对齐 Monster.cpp:369-374 那一格。
+    // ⚠ 参考写的是 `else if (hasStatus<MALLEABLE>() || hasStatus<REACTIVE>())`，进去之后
+    //   **两个 if 各判各的**（蠕动血块两者都有）。当前只有食蛇草带易塑、没有怪带反应，
+    //   所以这里只写易塑那一半；补反应时要注意它俩共用这一格（不是两格）。
+    // ⚠ 三处照抄：
+    //  ① 加的格挡是 `addToBot(MonsterGainBlock(idx, malleable))` ——**入队**，所以
+    //     触发它的那一击不被减免（与蜷缩同族）；
+    //  ② 层数 **+1**（`setStatus<MALLEABLE>(malleable+1)`），不是消耗掉——挨得越多、
+    //     下一次挡得越多；
+    //  ③ 复位**不在这里**，在 `applyMonsterEndOfTurnTriggers`（每回合末拉回 3）。
+    const amount = malleable.amount;
+    addToBot(bc, () => {
+      m.block += amount;
+    });
+    malleable.amount = amount + 1;
   } else {
     // 沉睡被打断（Monster.cpp:388-391）。⚠ 它排在这条 else-if 链的**倒数第二**格。
     wakeUpLagavulin(m);
   }
-  // TODO(后续PR): 无敌/镀甲/飞行/易塑等其余 onAttacked 分支。
+  // TODO(后续PR): 无敌 / 镀甲 / 飞行 / 反应 / 荆棘 / 变换等其余 onAttacked 分支。
 
   m.hp -= damage;
   if (m.hp <= 0) {
@@ -6140,6 +6364,12 @@ function useCard(bc: BattleContext, item: CardQueueItem): void {
   //   之后的 triggerOnOtherCardPlayed（千刃 / 剧痛）。都还没有对应内容登记。
   if (def.type === "attack") {
     onUseAttackCard(bc, item, card);
+  } else if (def.type === "power") {
+    // 第二十三批新增（此前能力牌这条 case 是空的）：诅咒挂在这三个函数上，
+    // **攻击牌那个里没有**——分派本身就是「非攻击牌才触发」的实现。
+    onUsePowerCard(bc);
+  } else if (def.type === "status" || def.type === "curse") {
+    onUseStatusOrCurseCard(bc);
   } else if (def.type === "skill") {
     onUseSkillCard(bc);
     if (getPower(bc.player.powers, "corruption") > 0) {
@@ -6284,6 +6514,9 @@ function onUseAttackCard(bc: BattleContext, item: CardQueueItem, card: CombatCar
  *   六芒星的眩晕、华彩，以及墨水瓶 / 橙色药丸 / 拆信刀三个遗物。
  */
 function onUseSkillCard(bc: BattleContext): void {
+  // 诅咒（HEX，选民）：位置照抄——排在残影 / 爆发 / 复制 / 回响形态**之后**、华彩与全部遗物
+  // **之前**，因此也在最末那条激怒之前（BattleContext.cpp:1796-1798）。见 `hexShuffleDazed`。
+  hexShuffleDazed(bc);
   const m = bc.monsters[0];
   if (m === undefined) {
     return;
@@ -6292,6 +6525,52 @@ function onUseSkillCard(bc: BattleContext): void {
   if (enrage > 0) {
     addPower(m.powers, "strength", enrage);
   }
+}
+
+/**
+ * 诅咒（HEX）的触发：把**一张恍惚洗进抽牌堆**（对齐
+ * `addToBot(Actions::MakeTempCardInDrawPile(CardInstance(CardId::DAZED), 1, true))`）。
+ *
+ * ⚠ 参考把**同一句**写在三个函数里：`onUseSkillCard`（BattleContext.cpp:1796）、
+ * `onUsePowerCard`（`:1875`）、`onUseStatusOrCurseCard`（`:1938`）。
+ * **`onUseAttackCard` 里没有**——这就是「非攻击牌才触发」的全部实现，没有别的判定。
+ *
+ * ⚠ 三处逐位对齐点：
+ *  ① **入队**（`addToBot`），不是同步——所以它排在这张牌自己的效果**之后**；
+ *  ② `shuffleInto = true` 那一路要掷 **cardRandomRng**（抽牌堆非空时
+ *     `cardRandomRng.random(size-1)` 选插入位），与哨卫射钉那种「塞弃牌堆」不同；
+ *  ③ 张数恒 1、恍惚恒不升级。
+ */
+function hexShuffleDazed(bc: BattleContext): void {
+  if (getPower(bc.player.powers, "hex") > 0) {
+    addToBot(bc, (c) => {
+      makeTempCardInDrawPile(c, "dazed", 1); // ★ 抽牌堆非空时消耗一次 cardRandomRng
+    });
+  }
+}
+
+/**
+ * 打出一张**能力牌**之后的触发（对齐 `BattleContext::onUsePowerCard`，
+ * BattleContext.cpp:1852-1914）。第二十三批新增，目前只有诅咒一条。
+ *
+ * TODO(后续PR): 残影 / 复制 / 回响形态 / 华彩，以及鸟面坛 / 墨水瓶 / 橙色药丸 / 木乃伊手
+ * 四个遗物（都还没有对应内容登记）。
+ */
+function onUsePowerCard(bc: BattleContext): void {
+  hexShuffleDazed(bc);
+}
+
+/**
+ * 打出一张**状态牌 / 诅咒牌**之后的触发（对齐 `BattleContext::onUseStatusOrCurseCard`，
+ * BattleContext.cpp:1915-1960）。第二十三批新增，目前只有诅咒一条。
+ *
+ * ⚠ 能走到这里的只有**打得出去**的状态/诅咒牌。当前唯一登记的是黏液
+ *（`CardInstance.cpp:329` 那个 `id != SLIMED` 的例外），恍惚 / 伤口 / 灼伤都打不出。
+ *
+ * TODO(后续PR): 残影 / 复制 / 回响形态 / 华彩，以及蓝色蜡烛（诅咒牌失 1 血并消耗）。
+ */
+function onUseStatusOrCurseCard(bc: BattleContext): void {
+  hexShuffleDazed(bc);
 }
 
 /**
@@ -7165,18 +7444,28 @@ function onTurnEnding(bc: BattleContext): void {
 }
 
 /**
- * 怪物阶段开始（对齐 Actions::MonsterStartTurnAction → MonsterGroup::applyPreTurnLogic）：
- * 逐怪清空格挡（壁垒除外）。注意时点——玩家回合内怪物格挡仍在，故开局自带格挡的
- * 编队（如颚虫军团）第一回合会挡下玩家攻击。
+ * 怪物阶段开始（对齐 Actions::MonsterStartTurnAction → MonsterGroup::applyPreTurnLogic
+ * → `Monster::applyStartOfTurnPowers`，Monster.cpp:18-38）：逐怪清空格挡，**壁垒除外**。
+ *
+ * 注意时点——玩家回合内怪物格挡仍在，故开局自带格挡的编队（如颚虫军团）第一回合会挡下
+ * 玩家攻击。
+ *
+ * ⚠ **壁垒（第二十三批）**：参考写的是
+ * `if (!hasStatus<MS::BARRICADE>()) { block = 0; }`——不是「先清再补」，而是整句跳过。
+ * 球状守卫者只有 20 血、开局 40 点格挡，格挡才是它真正的血条：这一位漏了它几回合就死。
+ * ⚠ 它是**纯 bool**（`isBooleanPower` 为真），所以只判有无、不看层数。
  */
 function applyPreTurnLogic(bc: BattleContext): void {
   for (const m of bc.monsters) {
     if (!m.alive) {
       continue;
     }
+    if (getPower(m.powers, "barricade") > 0) {
+      continue;
+    }
     m.block = 0;
   }
-  // TODO(后续PR): 壁垒、窒息等开局状态。
+  // TODO(后续PR): 窒息、飞行复位、无敌复位、中毒扣血等其余 applyStartOfTurnPowers 分支。
 }
 
 function doMonsterTurn(bc: BattleContext, idx: number): void {
@@ -7443,6 +7732,21 @@ function debuffPlayer(
     }
     return;
   }
+  // 纯 bool 减益（对齐 Player.h:406-409 `if (s == PS::CONFUSED || s == PS::HEX) {
+  // setHasStatus<s>(true); return; }`）：**只置位、不写 statusMap**，所以再上一次也还是 1 层。
+  // ⚠ 位置就在神器那道门**之后**——诅咒照样会被神器吃掉。
+  // ⚠ harness 的 `playerStatusValue` 对这一族按 1 输出（statusMap 里查不到），所以我们也存 1；
+  //   写成累加会在选民第二次诅咒时红成 `HEX: 2`。
+  // ⚠ 困惑（CONFUSED）走同一支，但它还没有产出者（史尼克未登记），所以这里只列诅咒。
+  if (power === "hex") {
+    const existing = bc.player.powers.find((x) => x.id === power);
+    if (existing === undefined) {
+      bc.player.powers.push({ id: power, amount: 1 });
+    } else {
+      existing.amount = 1;
+    }
+    return;
+  }
   // ⚠ 与怪物侧不对称：玩家这边只在**原本没有该状态**时才设 justApplied
   //（对齐 Player::debuff 的 `isSourceMonster && !hasStatus<s>()`）。叠加到已有减益上
   // 不重置标志，因此当回合末照常递减。Monster::addDebuff 则没有这道 !hasStatus 判断。
@@ -7522,6 +7826,16 @@ function applyMonsterEndOfTurnTriggers(m: CombatMonster): void {
   const metallicize = getPower(m.powers, "metallicize");
   if (metallicize > 0) {
     m.block += metallicize;
+  }
+  // 易塑复位（对齐 Monster.cpp:47-49 `setStatus<MS::MALLEABLE>(3)`）——第二条，排在金属化
+  // 之后、镀甲之前。
+  // ⚠ 是**复位成 3**，不是清零、不是递减：受击时涨上去的层数每个回合末都被拉回起点。
+  //   写成「减 1」或「不动」都会让食蛇草越往后挡得越多（或越少），差异逐回合累积。
+  // ⚠ 常数 3 是**写死在参考里**的，与 `preBattleAction` 那个 `buff<MALLEABLE>(3)` 的 3
+  //   是两处独立的字面量（改数据表的初值不会让这里跟着变）。
+  const malleable = m.powers.find((p) => p.id === "malleable");
+  if (malleable !== undefined && malleable.amount > 0) {
+    malleable.amount = 3;
   }
   const shackled = getPower(m.powers, "shackled");
   if (shackled > 0) {
@@ -7992,6 +8306,13 @@ export const SUPPORTED_ENCOUNTERS: readonly string[] = [
   "slime_boss",
   // —— 第二十批：第一幕最后一个 Boss（装完这一个，第一幕 20 个编队全部有背书）——
   "hexaghost",
+  // —— 第二十三批：**第二幕开张**。harness 的编队循环从此有两个（第一幕那个一个字没动，
+  //   traceIdx 接着往下走），本批先装三个单怪、无召唤、无塞牌的编队。
+  //   ⚠ 它们**只有 asc0 的背书**：三只怪的 `ascCalibrated` 都没置，
+  //   所以不在 `ASC_SUPPORTED_ENCOUNTERS` 里，`ascension > 0` 时显式抛错。
+  "spheric_guardian",
+  "chosen",
+  "snake_plant",
 ];
 
 export function isEncounterSupported(encounterId: string): boolean {

@@ -339,6 +339,11 @@ const ENCOUNTER: Record<string, string> = {
   SLIME_BOSS: "slime_boss",
   // —— 第二十批：第一幕最后一个 Boss。装完这一个，harness 的 20 个编队全部有背书。
   HEXAGHOST: "hexaghost",
+  // —— 第二十三批：**第二幕开张**。harness 追加了第二遍编队循环（第一幕那个一个字没动），
+  // 本批装三个单怪、无召唤、无塞牌的编队。三个都只有 asc0 的背书。
+  SPHERIC_GUARDIAN: "spheric_guardian",
+  CHOSEN: "chosen",
+  SNAKE_PLANT: "snake_plant",
 };
 const MONSTER: Record<string, string> = {
   CULTIST: "cultist",
@@ -380,6 +385,10 @@ const MONSTER: Record<string, string> = {
   SLIME_BOSS: "slime_boss",
   // —— 第二十批：六火幽魂。单怪编队，全场只有它一只（不分裂、不召唤）。
   HEXAGHOST: "hexaghost",
+  // —— 第二十三批：第二幕三只单怪，各自独占一个编队（都不分裂、不召唤）。
+  SPHERIC_GUARDIAN: "spheric_guardian",
+  CHOSEN: "chosen",
+  SNAKE_PLANT: "snake_plant",
   // ⚠ **分裂留下的空格**。参考的 `MonsterGroup::arr` 是定长 5 的数组，`monsterCount` 只是
   // 「dump 到第几格」；史莱姆王分裂时 `arr[0]` 与 `arr[2]` 被写、`monsterCount = 3`，
   // 于是 1 号格那只**从没被构造过**的默认 `Monster` 也被 dump 出来
@@ -470,6 +479,20 @@ const MOVE: Record<string, string> = {
   HEXAGHOST_INFLAME: "inflame",
   HEXAGHOST_SEAR: "sear",
   HEXAGHOST_TACKLE: "tackle",
+  // —— 第二十三批：第二幕三只单怪 ——
+  // ⚠ 球状守卫者的四条招式在我们这边全带 `sg_` 前缀（裸名 `activate` 已经被六火幽魂占了；
+  //   比对虽是逐怪进行、重名不要紧，但前缀让 `MOVE_TURN_END` 的键更好读）。
+  SPHERIC_GUARDIAN_ACTIVATE: "sg_activate",
+  SPHERIC_GUARDIAN_SLAM: "sg_slam",
+  SPHERIC_GUARDIAN_HARDEN: "sg_harden",
+  SPHERIC_GUARDIAN_ATTACK_DEBUFF: "sg_attack_debuff",
+  CHOSEN_POKE: "poke",
+  CHOSEN_ZAP: "zap",
+  CHOSEN_DEBILITATE: "debilitate",
+  CHOSEN_DRAIN: "drain",
+  CHOSEN_HEX: "hex",
+  SNAKE_PLANT_CHOMP: "sp_chomp",
+  SNAKE_PLANT_ENFEEBLING_SPORES: "sp_spores",
   // 分裂留下的空格：那只默认 `Monster` 的 `moveHistory[0]` 是 `MMID::INVALID`
   // （`monsterMoveStrings[0] == "INVALID"`，MonsterMoves.h:215）。我们的空占位
   // `currentMove` 是空串。⚠ 这一条只有那个空格用得到——所有真怪在 `MonsterGroup::init`
@@ -599,6 +622,17 @@ const POWER: Record<string, string> = {
   // 尖锐外壳：**怪物身上**，守卫者进防御形态时上 3 层、双重猛击打完摘掉。
   // 玩家每打出一张**攻击牌**就吃 3 点过格挡的伤害。
   SHARP_HIDE: "sharp_hide",
+  // —— 第二十三批：第二幕开张 ——
+  // 易塑：**怪物身上**，食蛇草开局自带 3 层。层数真的被读——每挨一次未被格挡的攻击就
+  // 入队加 = 层数的格挡并 +1，回合末复位回 3。所以它在快照里会 3 → 4 → 5 → …回到 3。
+  MALLEABLE: "malleable",
+  // 诅咒：**玩家身上**，选民的诅咒上的纯 bool 状态（`Player::debuff` 对它走
+  // `setHasStatus(true)` 而不写 statusMap，harness 因此按 1 输出，恒是 `HEX: 1`）。
+  // 与壁垒 / 腐化同族。整场不递减。
+  HEX: "hex",
+  // ⚠ BARRICADE 早就在表里（玩家侧的壁垒能力牌），本批是它第一次出现在**怪物**身上：
+  //   球状守卫者开局 `BARRICADE: 1`（格挡从此不在怪物回合开始清空）。
+  //   ARTIFACT 同理，第十八批哨卫是 1 层，本批球状守卫者是 3 层。两个映射直接复用。
 };
 
 const mapPotion = (p: string): string | null => (p in POTION ? POTION[p]! : p);
