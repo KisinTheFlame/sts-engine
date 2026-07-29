@@ -75,14 +75,26 @@ const head = (i) => {
 // 同一个 variant 内部各行的牌组是逐字节相同的（harness 按固定顺序 obtain，与种子无关），
 // 所以换成内容指纹不会把一个 variant 拆开——换之前在已提交数据上验证过分组完全不变。
 const signature = (t) =>
-  `${t.deck.join(",")}|${t.deckUpgraded === undefined ? "" : t.deckUpgraded.join("")}`;
+  `${t.deck.join(",")}|${t.deckUpgraded === undefined ? "" : t.deckUpgraded.join("")}` +
+  `|${t.ascension === undefined ? "" : String(t.ascension)}`;
+
+// 分组键 = 编队 × 爬升度。爬升度 trace **单独成文件**（`cultist@asc19.jsonl`），不与 asc0 混在一起：
+//  * asc0 的分组键不变（harness 只在非 0 时输出 `ascension`），所以既有 20 个文件名一个字不改，
+//    `regen-traces.sh --check` 仍然逐字节比得上——这是「新轴对旧数据是空操作」的凭证。
+//  * 一份文件里只有一个爬升度，于是 `variant0-rows.mjs` 会返回整份长度，
+//    `ENC_V0` 策略下整份冻结，正是我们要的。
+const groupKey = (t) =>
+  t.ascension === undefined || t.ascension === 0
+    ? t.encounter
+    : `${t.encounter}@asc${String(t.ascension)}`;
+
 const variantRank = new Map();
 const by = {};
 for (let i = 0; i < spans.length; i += 1) {
   const t = head(i);
   const s = signature(t);
   if (!variantRank.has(s)) variantRank.set(s, variantRank.size);
-  (by[t.encounter] ||= []).push({ i, rank: variantRank.get(s), seed: t.seed, floor: t.floor });
+  (by[groupKey(t)] ||= []).push({ i, rank: variantRank.get(s), seed: t.seed, floor: t.floor });
 }
 
 const key = ({ rank, seed, floor, i }) => [rank, seed, floor, i];

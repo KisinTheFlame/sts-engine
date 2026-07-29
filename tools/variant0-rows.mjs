@@ -19,7 +19,12 @@ if (src === undefined) {
 
 const signature = (line) => {
   const t = JSON.parse(line);
-  return `${t.deck.join(",")}|${t.deckUpgraded === undefined ? "" : t.deckUpgraded.join("")}`;
+  return (
+    `${t.deck.join(",")}|${t.deckUpgraded === undefined ? "" : t.deckUpgraded.join("")}` +
+    // 爬升度也进指纹（与 split-traces.mjs 保持同一个）。当前每个文件里只有一个爬升度，
+    // 所以它不会把任何一段拆开；写上是为了「两处指纹必须一致」这条不变量不留缺口。
+    `|${t.ascension === undefined ? "" : String(t.ascension)}`
+  );
 };
 
 const lines = fs.readFileSync(src, "utf8").split("\n");

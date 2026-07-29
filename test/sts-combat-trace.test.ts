@@ -87,6 +87,16 @@ type Trace = {
    * 数据逐字节一致——冻结的 variant 0 因此不必随这个字段的引入重生成。
    */
   deckUpgraded?: number[];
+  /**
+   * 生成这条 trace 的爬升度（第二十一批新增）。
+   *
+   * 与 `deckUpgraded` / `goldGained` 同一招：harness **只在非 0 时输出**，所以 asc0 的行
+   * 与这个字段存在之前提交的数据逐字节一致——20 个既有编队文件因此不必随这条轴重生成
+   * （管线改造那一步单独跑过一次 `--check` 证明了这一点）。
+   *
+   * ⚠ 缺省即 0，不要写成必填：绝大多数行没有这个字段。
+   */
+  ascension?: number;
   initial: Snapshot;
   steps: Step[];
 };
@@ -669,7 +679,8 @@ const start = (t: Trace): BattleContext =>
   initCombat({
     seedLong: BigInt(t.seedLong),
     floorNum: t.floor,
-    ascension: 0,
+    // 从 trace 读，不再写死 0：爬升度那条轴（第二十一批）就是靠这里点亮的。
+    ascension: t.ascension ?? 0,
     encounterId: ENCOUNTER[t.encounter]!,
     deck: t.deck.map((c, i) => ({
       defId: CARD[c] ?? c,
@@ -686,11 +697,14 @@ const start = (t: Trace): BattleContext =>
     potionRng: new StsRandom(BigInt(t.potionRngSeed)),
   });
 
+// 分组 = 编队 × 爬升度，与 `tools/split-traces.mjs` 的分文件键同形。
+// 混在一个 describe 里的话，失败时看不出翻的是 asc0 还是 asc19 那一侧。
 const byEncounter = new Map<string, Trace[]>();
 for (const t of traces) {
-  const list = byEncounter.get(t.encounter) ?? [];
+  const key = t.ascension ? `${t.encounter}@asc${String(t.ascension)}` : t.encounter;
+  const list = byEncounter.get(key) ?? [];
   list.push(t);
-  byEncounter.set(t.encounter, list);
+  byEncounter.set(key, list);
 }
 
 describe("trace 数据自身的不变量", () => {

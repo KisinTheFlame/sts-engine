@@ -689,10 +689,16 @@ describe("接线：尚未迁移的内容显式抛错", () => {
 describe("接线：覆盖面登记与 trace 数据双向对齐", () => {
   it("SUPPORTED_ENCOUNTERS 与 test/golden/traces 一一对应", () => {
     const traceDir = fileURLToPath(new URL("./golden/traces", import.meta.url));
-    const withTrace = readdirSync(traceDir)
-      .filter((f) => f.endsWith(".jsonl"))
-      .map((f) => f.replace(/\.jsonl$/, ""))
-      .sort();
+    const withTrace = [
+      ...new Set(
+        readdirSync(traceDir)
+          .filter((f) => f.endsWith(".jsonl"))
+          // `<编队>@ascN.jsonl` 是同一个编队在另一个爬升度上的数据（第二十一批），
+          // 不是新编队——去掉后缀再去重，否则这条对齐会把 `cultist@asc19` 当成
+          // 一个没登记的编队。
+          .map((f) => f.replace(/\.jsonl$/, "").replace(/@asc\d+$/, "")),
+      ),
+    ].sort();
     // 多列（登记了却没 trace 背书）与漏列（有 trace 却不启用）都会在这里失败。
     expect([...SUPPORTED_ENCOUNTERS].sort()).toEqual(withTrace);
   });
