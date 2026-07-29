@@ -961,21 +961,22 @@ const MOVE_RULES: Record<string, MoveForRoll> = {
   // ⚠ 同样是「第一段看两回合、第二段只看一回合」那个非直觉但照抄的形状。
   // ⚠ asc>=17 是另一整块（第二十一批转写）：阈值 **40/70**（M 号是 40/80）、
   //   前两段的追加概率是 **0.6f**（M 号是 0.5f/0.4f）、第三段才是 0.4f。
-  // ⚠⚠ **参考那一块的第一段写的是 `lastTwoMoves(ACID_SLIME_M_CORROSIVE_SPIT)`
+  // ⚠⚠ **参考那一块的第一段原先写的是 `lastTwoMoves(ACID_SLIME_M_CORROSIVE_SPIT)`
   //   ——M 号的枚举，出现在 L 号的 case 里**（MonsterSpecific.cpp:2006）。L 号的
-  //   moveHistory 里永远不会有 M 号的招式，所以那个条件**恒假**，追加的
+  //   moveHistory 里永远不会有 M 号的招式，于是那个条件**恒假**，追加的
   //   `randomBoolean(0.6F)` 与它后面的两个返回值全是死代码：roll<40 时恒出腐蚀喷吐。
-  //   真实游戏那里读的是它自己的腐蚀喷吐，所以这**看着是参考的复制粘贴笔误**。
-  //   **本批照抄、不打补丁**，按 WORKFLOW 第 5 步「参考项目看着像 bug → 不要自己拍板」
-  //   写进报告与 TODOS「已确认但尚未打补丁」。
-  //   我们这边照抄的形状就是「拿 M 号的招式 id 去查 L 号的历史」——同样恒假，
-  //   将来要打补丁也只需把 `"corrosive_spit"` 改成 `"corrosive_spit_l"` 一个词。
+  //   **第二十二批给参考打了补丁**（改成 L 号自己的枚举），这边同步改成 `corrosive_spit_l`。
+  //   证据链：同一块 asc17 的第二段读 `L_TACKLE`、第三段读 `L_LICK`，**只有第一段是 M**。
+  //   ⚠ 补丁把 `randomBoolean(0.6F)` 从死代码变成活代码，而那个 0.6 **未经验证**
+  //   （本项目自己就是预言机，判不了它）——与缠绕补丁复活的阈值 50 同一档，记在 TODOS。
+  //   ⚠ 背书只有 **1 例**（第二十一批实测：把笔误「修好」后对拍红 1 例），因为要求
+  //   「连着两回合腐蚀喷吐 + 这一次 roll<40」，120 条 `large_slime@asc19` 里只有一条走到。
   acid_slime_l: (bc, m, roll) => {
     if (bc.ascension >= 17) {
       // —— START ASCENSION 17（MonsterSpecific.cpp:2002-2033）——
       if (roll < 40) {
-        // ⚠ 见上：参考写的是 **M 号**的腐蚀喷吐，恒假。照抄。
-        if (lastTwoMoves(m, "corrosive_spit")) {
+        // ⚠ 见上：这里读的是 L 号自己的腐蚀喷吐（补丁后）。
+        if (lastTwoMoves(m, "corrosive_spit_l")) {
           return bc.rng.aiRng.randomBoolean(Math.fround(0.6)) ? "tackle_l" : "lick_l"; // ★ 追加一次 aiRng
         }
         return "corrosive_spit_l";
@@ -1137,11 +1138,33 @@ const MOVE_RULES: Record<string, MoveForRoll> = {
   //  ② 第二段是 `roll < 33 || lastTwoMoves(RUSH)` —— **一个 `||`**，也就是「连两次猛冲
   //     就必须碎颅」与「掷到低位就碎颅」是同一条分支，不是两层嵌套；
   //  ③ 碎颅击**没有**连续限制（连着掷到 <33 就能连碎），与猛冲不对称。
-  // TODO(后续PR): asc>=18 是**另一整块**（完全不看 roll：只要不是连两次碎颅就猛冲，
-  //   否则按连两次猛冲与否二选一）。当前 trace 全是 asc0，写了也没有预言机。
-  gremlin_nob: (_bc, m, roll) => {
+  // ⚠⚠ asc>=18 是**另一整块**（MonsterSpecific.cpp:2434-2447），第二十二批转写。
+  //   参考写的是：
+  //       if (!lastTwoMoves(SKULL_BASH))  return RUSH;
+  //       if (lastTwoMoves(RUSH))         return SKULL_BASH; else return RUSH;
+  //   照这个形状读下来，**碎颅击在 asc>=18 时结构性不可达**：它只在第二段被返回，
+  //   而第二段要求 `lastTwoMoves(SKULL_BASH)` 为真，也就是要求它此前已经连出过两次。
+  //   于是首招咆哮之后**永远是猛冲**，第二段两个返回值整支是死代码。
+  //   ⚠ 这**看着是参考的笔误**（真实游戏的 A18 地精头目会更频繁地碎颅），但与酸液 L 那条
+  //   「一个词」不同：要修得先知道正确形状是「第一段返回碎颅」还是别的写法，参考侧没有
+  //   任何东西可抄。按 WORKFLOW 第 5 步「参考项目看着像 bug → 不要自己拍板」，
+  //   **本批照抄参考、不打补丁**，写进报告与 TODOS「已确认但尚未打补丁」。
+  //   关门条件：拿到真实游戏 `GremlinNob.java` 的 ground truth。
+  gremlin_nob: (bc, m, roll) => {
     if (firstTurn(m)) {
       return "bellow";
+    }
+    if (bc.ascension >= 18) {
+      // —— START ASCENSION 18（MonsterSpecific.cpp:2434-2447）——
+      if (!lastTwoMoves(m, "skull_bash")) {
+        return "rush";
+      }
+      // ⚠ 以下两支恒不可达（见上）。照抄，不要「化简」掉。
+      if (lastTwoMoves(m, "rush")) {
+        return "skull_bash";
+      }
+      return "rush";
+      // —— END ASCENSION 18 ——
     }
     if (roll < 33 || lastTwoMoves(m, "rush")) {
       return "skull_bash";
@@ -1681,7 +1704,8 @@ function constructMonster(bc: BattleContext, defId: string): CombatMonster {
   // 爬升度未校准就**直接抛错**（对齐「未登记的内容显式抛错」那条总纲）。
   // 静默拿 asc0 的血量区间与招式数值去打 asc19 的仗，比开不了战危险得多——
   // 它会产出看着合理、其实与原版不符的数值，而「同种子复现原版」正是这个项目的全部价值。
-  // 第二十一批只校准了 14 个普通编队涉及的 19 只怪，精英与 Boss 等第二十二批。
+  // 第二十一批校准了 14 个普通编队涉及的 19 只怪，第二十二批补上三精英与三 Boss
+  // 的 6 只（阈值 8 / 9），于是第一幕 25 只怪全部校准；剩下的 40 只全在第二 / 三幕。
   if (bc.ascension > 0 && def.ascCalibrated !== true) {
     throw new Error(
       `sts-combat: 敌人「${defId}」的爬升度分档尚未按预言机校准，无法在 ascension=${String(bc.ascension)} 下开战`,
@@ -7272,14 +7296,12 @@ function takeTurn(bc: BattleContext, m: CombatMonster): string | null {
       //   deal_damage_multi 才多段」。第二十批修：漏掉它时六重打击只打一段。
       // ⚠ `deal_damage_rolled` 的 asc 分档不在这里：它的值是**出生时掷定**的
       //   （虱子的咬击区间 `asc2 ? random(6,8) : random(5,7)`，见 constructMonster）。
-      // ⚠ `deal_damage_multi` 暂时没有 `ascAmount`——本批 19 只怪没有一只用到多段攻击的
-      //   asc 分档；六火幽魂的地狱之火（`asc4 ? 3 : 2, 6`）要等第二十二批，那时再加字段。
+      // ⚠ `deal_damage_multi` 的 `ascAmount` 覆盖的是**每一击的伤害**，`times` 没有分档
+      //   ——参考写的是 `attackPlayerHelper(bc, asc4 ? 3 : 2, 6)`（六火幽魂地狱之火
+      //   MonsterSpecific.cpp:808）与 `(bc, asc4 ? 6 : 5, 2)`（冲撞 :841），第二个实参恒定。
+      //   第二十二批加的字段：在此之前没有一只已登记的怪用到多段攻击的 asc 分档。
       const base =
-        eff.kind === "deal_damage_rolled"
-          ? m.miscInfo
-          : eff.kind === "deal_damage"
-            ? ascValue(bc, eff.amount, eff.ascAmount)
-            : eff.amount;
+        eff.kind === "deal_damage_rolled" ? m.miscInfo : ascValue(bc, eff.amount, eff.ascAmount);
       const times = eff.kind === "deal_damage" ? 1 : (eff.times ?? 1);
       const dmg = calculateDamageToPlayer(bc, m, base);
       const idx = bc.monsters.indexOf(m);
@@ -7342,7 +7364,11 @@ function takeTurn(bc: BattleContext, m: CombatMonster): string | null {
       // ⚠ 「塞的是升级版还是原版」由 `CardInstance` 的构造实参决定，在**排队那一刻**求值
       //   （六火幽魂的灼烧：`CardInstance(CardId::BURN, bc.turn > 8)`，MonsterSpecific.cpp:825）。
       //   所以这里在闭包**外面**算好再捕获，不是在闭包里读 `c.turn`。
-      const { cardId, count } = eff;
+      // ⚠ 张数也有爬升度分档（第二十二批）：哨卫的射钉 `asc18 ? 3 : 2`
+      //   （MonsterSpecific.cpp:1064）、史莱姆王的黏液喷射 `asc19 ? 5 : 3`（:1112）。
+      //   它与 `upgradedAfterTurn` 正交——一个管几张、一个管升不升级。
+      const { cardId } = eff;
+      const count = ascValue(bc, eff.count, eff.ascAmount);
       const upgraded = eff.upgradedAfterTurn !== undefined && bc.turn > eff.upgradedAfterTurn;
       if (eff.sync === true) {
         makeTempCardInDiscard(bc, cardId, count, upgraded);
@@ -7973,11 +7999,12 @@ export function isEncounterSupported(encounterId: string): boolean {
 }
 
 /**
- * 爬升度分档**已有 trace 背书**的编队（第二十一批：14 个普通编队）。
+ * 爬升度分档**已有 trace 背书**的编队（第二十一批 14 个普通编队 + 第二十二批
+ * 三精英 + 三 Boss = 第一幕 20 个编队全覆盖）。
  *
  * ⚠ 与 `SUPPORTED_ENCOUNTERS` 是两条独立的轴：一个编队可以「asc0 有背书」而
- * 「asc>0 没有」。精英（`gremlin_nob` / `lagavulin` / `three_sentries`）与三个 Boss
- * 的 asc 分档留给第二十二批——它们的 `hpHigh` 阈值是 8 / 9 而不是 7，招式分档也另有一批。
+ * 「asc>0 没有」。两张表现在恰好同集合，但**不要合并**——第二幕的编队装进
+ * `SUPPORTED_ENCOUNTERS` 时，它的 asc 分档仍然要单独一批才有预言机。
  *
  * 真正的兜底在 `constructMonster`（按**怪**查 `EnemyDef.ascCalibrated`，直接抛错）：
  * 这里是编队粒度的**事前**判断，好让 run 层能在开战前就说「这场打不了」。
@@ -7998,6 +8025,14 @@ export const ASC_SUPPORTED_ENCOUNTERS: readonly string[] = [
   "exordium_thugs",
   "exordium_wildlife",
   "gremlin_gang",
+  // —— 第二十二批：三个精英（血量阈值 asc>=8、数值档 asc3/asc18）——
+  "gremlin_nob",
+  "lagavulin",
+  "three_sentries",
+  // —— 第二十二批：三个 Boss（血量阈值 asc>=9、数值档 asc4/asc19）——
+  "the_guardian",
+  "slime_boss",
+  "hexaghost",
 ];
 
 /** 这个编队在这个爬升度下有没有背书。asc0 恒等于 `isEncounterSupported`。 */

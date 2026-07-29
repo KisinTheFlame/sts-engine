@@ -156,7 +156,10 @@ export type Effect =
   // ascAmount：敌人专用的爬升度分档，覆盖 `amount`（见 AscTier）。
   | { kind: "deal_damage"; amount: number; strengthMultiplier?: number; ascAmount?: AscTier[] }
   | { kind: "deal_damage_all"; amount: number }
-  | { kind: "deal_damage_multi"; amount: number; times: number }
+  // ascAmount 覆盖**每一击**的 amount，`times` 没有分档——参考写的是
+  // `attackPlayerHelper(bc, asc4 ? 6 : 5, 2)`（六火幽魂冲撞 MonsterSpecific.cpp:841），
+  // 分档挂在那个伤害数上，段数是第二个实参、恒定。
+  | { kind: "deal_damage_multi"; amount: number; times: number; ascAmount?: AscTier[] }
   // 每次命中随机挑一个存活敌人（剑刃回旋镖：3 点 ×3，逐次随机目标）。
   | { kind: "deal_damage_random"; amount: number; times: number }
   | { kind: "deal_damage_equal_to_block" }
@@ -239,6 +242,10 @@ export type Effect =
   // ——六火幽魂的灼烧是 `CardInstance(CardId::BURN, bc.turn > 8)`（MonsterSpecific.cpp:825），
   // 即**第 10 个怪物回合起**塞的是灼伤+（回合末 4 点而不是 2 点）。省略 = 恒不升级。
   // ⚠ 阈值与 asc 无关（asc 只分张数），且实参在**排队那一刻**求值。
+  // ascAmount：敌人专用的爬升度分档，覆盖 **`count`**（不是别的字段）——参考的
+  //   `MakeTempCardInDiscard({DAZED}, asc18 ? 3 : 2)`（哨卫射钉 MonsterSpecific.cpp:1064）与
+  //   `MakeTempCardInDiscard({SLIMED}, asc19 ? 5 : 3)`（史莱姆王黏液喷射 :1112）都是分张数。
+  //   ⚠ 与 `upgradedAfterTurn` 正交：一个管**几张**、一个管**升不升级**，两条分档互不影响。
   | {
       kind: "add_card";
       cardId: string;
@@ -246,6 +253,7 @@ export type Effect =
       count: number;
       sync?: boolean;
       upgradedAfterTurn?: number;
+      ascAmount?: AscTier[];
     }
   // —— X 费牌：xValue = 打出时的能量，以下效果按 X 次 / X 倍结算 ——
   | { kind: "deal_damage_all_x"; amount: number } // 对所有敌人造成 amount 伤害，X 次（旋风斩）
