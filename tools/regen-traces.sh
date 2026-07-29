@@ -76,7 +76,13 @@ ENC_ALL="cultist jaw_worm jaw_worm_horde three_louse two_louse"
 # 第二十二批：三精英 + 三 Boss × asc19（harness 的 variant 22，独立追加在 variant 21 之后，
 #   variant 21 的 encounters 一个字没动，所以那 14 个文件逐字节不变）。装完这 6 个，
 #   第一幕 20 个编队在 asc0 与 asc19 两个档位上都满了。
-ENC_V0_ASC0="small_slimes lots_of_slimes large_slime blue_slaver red_slaver looter exordium_thugs exordium_wildlife gremlin_gang gremlin_nob lagavulin three_sentries the_guardian slime_boss hexaghost"
+# 第二十三批：**第二幕开张**。harness 的编队循环从此有两个：原来那个（第一幕 20 个，
+#   一个字不许动）跑完之后，再跑一遍 `act2Encounters × act2Variants`。traceIdx 接着往下走，
+#   所以第一幕那 40 个文件逐字节不变（加空循环时单独跑过一次 `--check` 证明了这一点）。
+#   本批只装三个**单怪、无召唤、无塞牌**的编队，把第二幕的管线跑通而不叠机制。
+#   ⚠ 全是 asc0：第二 / 三幕 40 只怪一只都没校准爬升度，`ascCalibrated` 闸门照旧抛错。
+ENC_V0_ACT2="spheric_guardian chosen snake_plant"
+ENC_V0_ASC0="small_slimes lots_of_slimes large_slime blue_slaver red_slaver looter exordium_thugs exordium_wildlife gremlin_gang gremlin_nob lagavulin three_sentries the_guardian slime_boss hexaghost $ENC_V0_ACT2"
 ENC_V0_ASC19="cultist@asc19 jaw_worm@asc19 jaw_worm_horde@asc19 two_louse@asc19 three_louse@asc19 small_slimes@asc19 lots_of_slimes@asc19 large_slime@asc19 blue_slaver@asc19 red_slaver@asc19 looter@asc19 exordium_thugs@asc19 exordium_wildlife@asc19 gremlin_gang@asc19 gremlin_nob@asc19 lagavulin@asc19 three_sentries@asc19 the_guardian@asc19 slime_boss@asc19 hexaghost@asc19"
 # ⚠ 必须拼成**单行**：policy_of 用 `case " $ENC_V0 " in *" $1 "*` 做匹配，中间夹一个换行会让
 #   两段接缝处的名字（hexaghost / cultist@asc19）匹配不上，静默失去校验。
