@@ -516,37 +516,49 @@ describe("敌人与编队表", () => {
 
   // 第二十一批：爬升度分档。这两条守的是「半填」——`ascCalibrated` 与 `hpHigh` 必须同进同退，
   // 只填一个会让 `constructMonster` 放行一只其实没校准的怪（或反过来，抛掉一只已校准的）。
-  const ASC_CALIBRATED = [
-    "cultist",
-    "jaw_worm",
-    "louse",
-    "green_louse",
-    "acid_slime_s",
-    "acid_slime_m",
-    "acid_slime_l",
-    "spike_slime_s",
-    "spike_slime_m",
-    "spike_slime_l",
-    "blue_slaver",
-    "red_slaver",
-    "looter",
-    "fungi_beast",
-    "mad_gremlin",
-    "sneaky_gremlin",
-    "fat_gremlin",
-    "shield_gremlin",
-    "gremlin_wizard",
-  ];
+  //
+  // ⚠ 第二十二批把值从「一律 7」改成**逐怪的期望阈值**：`Monster::initHp`
+  //（MonsterSpecific.cpp:26-128）里普通怪是 `asc>=7`、精英 `asc>=8`、Boss `asc>=9`，
+  //   三档在同一个 switch 里并排写着。写死 7 的话，精英/Boss 抄错阈值不会被任何东西发现。
+  const ASC_CALIBRATED: Record<string, number> = {
+    cultist: 7,
+    jaw_worm: 7,
+    louse: 7,
+    green_louse: 7,
+    acid_slime_s: 7,
+    acid_slime_m: 7,
+    acid_slime_l: 7,
+    spike_slime_s: 7,
+    spike_slime_m: 7,
+    spike_slime_l: 7,
+    blue_slaver: 7,
+    red_slaver: 7,
+    looter: 7,
+    fungi_beast: 7,
+    mad_gremlin: 7,
+    sneaky_gremlin: 7,
+    fat_gremlin: 7,
+    shield_gremlin: 7,
+    gremlin_wizard: 7,
+    // —— 第二十二批：三个精英（MonsterSpecific.cpp:91-102）——
+    gremlin_nob: 8,
+    lagavulin: 8,
+    sentry: 8,
+    // —— 第二十二批：三个 Boss（MonsterSpecific.cpp:76-89）——
+    the_guardian: 9,
+    slime_boss: 9,
+    hexaghost: 9,
+  };
 
   it("已校准爬升度的敌人都带第二组血量区间，且区间合法", () => {
-    for (const id of ASC_CALIBRATED) {
+    for (const [id, atLeast] of Object.entries(ASC_CALIBRATED)) {
       const def = getEnemyDef(id);
       expect(def.ascCalibrated, `${id} 没有标 ascCalibrated`).toBe(true);
       const high = def.hpHigh;
       expect(high, `${id} 标了 ascCalibrated 却没有 hpHigh`).toBeDefined();
       if (high === undefined) continue;
-      // 阈值只可能是 7 / 8 / 9（Monster::initHp 的三档）。本批 19 只全是普通怪，故全是 7。
-      expect(high.atLeast, `${id} 的 hpHigh.atLeast 不是普通怪的 7`).toBe(7);
+      // 阈值只可能是 7 / 8 / 9（Monster::initHp 的三档），逐怪对表。
+      expect(high.atLeast, `${id} 的 hpHigh.atLeast 抄错了档`).toBe(atLeast);
       expect(high.hpMin, `${id} 的高档 HP 下限非正`).toBeGreaterThan(0);
       expect(high.hpMax, `${id} 的高档 HP 区间反了`).toBeGreaterThanOrEqual(high.hpMin);
       // 参考的第二组恒不低于第一组（爬升度只会让怪更硬）。
@@ -556,18 +568,18 @@ describe("敌人与编队表", () => {
   });
 
   it("没标 ascCalibrated 的敌人不许带 hpHigh（半填会静默放行）", () => {
-    const calibrated = new Set(ASC_CALIBRATED);
-    // 抽查几只**本批故意没有校准**的：三个精英与三个 Boss 的阈值是 8 / 9 而不是 7，
-    // 招式分档也另有一批，留给第二十二批。
+    // 抽查几只**第一幕之外**、按 WORKFLOW 短期内不会被校准的：harness 的 20 个编队跑满了
+    // 第一幕，第二 / 三幕的怪要等 harness 追加一遍循环才有预言机。
+    // ⚠ 别再拿三精英 / 三 Boss 当样本——第二十二批把它们全校准了。
     for (const id of [
-      "gremlin_nob",
-      "lagavulin",
-      "sentry",
-      "the_guardian",
-      "slime_boss",
-      "hexaghost",
+      "centurion",
+      "book_of_stabbing",
+      "byrd",
+      "snecko",
+      "champ",
+      "the_collector",
     ]) {
-      expect(calibrated.has(id), `${id} 不该在本批的已校准名单里`).toBe(false);
+      expect(ASC_CALIBRATED[id], `${id} 不该在已校准名单里`).toBeUndefined();
       const def = getEnemyDef(id);
       expect(def.ascCalibrated ?? false, `${id} 不该标 ascCalibrated`).toBe(false);
       expect(def.hpHigh, `${id} 没标 ascCalibrated 却带了 hpHigh`).toBeUndefined();

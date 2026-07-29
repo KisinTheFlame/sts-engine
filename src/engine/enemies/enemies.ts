@@ -6,17 +6,21 @@ import { nextFloat } from "../rng.js";
 // 血量区间、出招数值为功能性游戏规则；意图选择规则显式、可被种子 RNG 驱动（issue #234 C8）。
 // 出招名称为原创中文。精确权重 / 连续限制 / 守卫者阈值待真机 ground truth 校准（见设计文档 Assignment）。
 
-// === 爬升度分档（第二十一批）===
+// === 爬升度分档（第二十一批开轴，第二十二批补上精英与 Boss）===
 //
 // 每条 `ascAmount` / `hpHigh` 都是 `MonsterSpecific.cpp` / `MonsterIds.h` 的逐位转写，
-// 行号标在各自的招式上。三条通用规则，读的时候记住就不必逐条重复：
+// 行号标在各自的招式上。四条通用规则，读的时候记住就不必逐条重复：
 //
 //  * **`hpHigh.atLeast` 逐怪不同**：`Monster::initHp`（MonsterSpecific.cpp:26-128）
-//    普通怪 `asc>=7`、精英 `asc>=8`、Boss `asc>=9`。本批 19 只全是普通怪，所以全是 7；
-//    照抄时不要以为它是常数。
+//    普通怪 `asc>=7`、精英 `asc>=8`（:91-102）、Boss `asc>=9`（:76-89）。
+//    照抄时不要以为它是常数——三档在同一个 switch 里并排写着。
+//  * **数值分档也跟着「怪的层级」换阈值**，而且与血量那一档**不是同一个数**：
+//    走廊小怪 `getTriIdx(asc, 2, 17)`、精英 `getTriIdx(asc, 3, 18)`、
+//    Boss `getTriIdx(asc, 4, 19)`（三个变量并排声明在 `takeTurn` 顶部，:337-348）。
+//    所以精英的伤害档是 **asc3 / asc18**、Boss 是 **asc4 / asc19**，
+//    照抄邻居那只怪的 `atLeast: 2 / 17` 必错。
 //  * **`{a,b,c}[getTriIdx(asc, 2, 17)]` 展开成两条 tier**：`[{17,c},{2,b}]` + 基础 `a`。
-//    参考里这个惯用法叫 `hallwayIdx`（takeTurn 顶部），只用于走廊小怪的力量 / 仪式层数。
-//  * **只有 asc19 一档预言机。** 本批的 trace 是 asc0 与 asc19 两个档，所以每条
+//  * **只有 asc19 一档预言机。** 现有 trace 是 asc0 与 asc19 两个档，所以每条
 //    `asc >= N` 的**两个方向**都有背书，但「阈值恰好是 N 而不是 N±1」没有——
 //    那要成对档位（asc16/17 之类），记在 TODOS 的盲区里。
 const ENEMY_LIST: EnemyDef[] = [
@@ -1640,31 +1644,45 @@ const ENEMY_LIST: EnemyDef[] = [
   {
     id: "gremlin_nob",
     name: "地精头目",
-    // MonsterIds.h:175 `{{82,86},{85,90}}`（asc<8 取前者）。
+    // MonsterIds.h:175 `{{82,86},{85,90}}`。⚠ **精英的血量阈值是 asc>=8**，不是走廊小怪的 7
+    //（MonsterSpecific.cpp:91-102 那一组 case 走 `setRandomHp(hpRng, ascension >= 8)`）。
     hpMin: 82,
     hpMax: 86,
+    hpHigh: { atLeast: 8, hpMin: 85, hpMax: 90 },
+    ascCalibrated: true,
     moves: [
       {
         // MonsterSpecific.cpp:756-758 `buff<MS::ENRAGE>(asc18 ? 3 : 2)`——**同步** buff。
+        // ⚠ 分档是 **asc18**（不是常见的 17）：精英走 `getTriIdx(asc, 3, 18)` 那一档。
         id: "bellow",
         name: "咆哮",
-        effects: [{ kind: "apply_power", power: "enrage", amount: 2, on: "self" }],
+        effects: [
+          {
+            kind: "apply_power",
+            power: "enrage",
+            amount: 2,
+            on: "self",
+            ascAmount: [{ atLeast: 18, amount: 3 }],
+          },
+        ],
         intent: "buff",
       },
       {
         // MonsterSpecific.cpp:761-763 `attackPlayerHelper(bc, asc3 ? 16 : 14)`。
+        // ⚠ 精英的伤害分档是 **asc3**（走廊小怪是 asc2）。
         id: "rush",
         name: "猛冲",
-        effects: [{ kind: "deal_damage", amount: 14 }],
+        effects: [{ kind: "deal_damage", amount: 14, ascAmount: [{ atLeast: 3, amount: 16 }] }],
         intent: "attack",
       },
       {
         // MonsterSpecific.cpp:766-769：伤害 `asc3 ? 8 : 6`，随后
         // `addToBot(DebuffPlayer<VULNERABLE>(2, true))`——第二个参数是 isSourceMonster。
+        // ⚠ 易伤那 2 层**没有**分档，只有伤害有。
         id: "skull_bash",
         name: "碎颅击",
         effects: [
-          { kind: "deal_damage", amount: 6 },
+          { kind: "deal_damage", amount: 6, ascAmount: [{ atLeast: 3, amount: 8 }] },
           { kind: "apply_power", power: "vulnerable", amount: 2, on: "target" },
         ],
         intent: "attack",
@@ -1688,9 +1706,11 @@ const ENEMY_LIST: EnemyDef[] = [
   {
     id: "lagavulin",
     name: "拉加维林",
-    // MonsterIds.h:179 `{{109,111},{112,115}}`（asc<8 取前者）。
+    // MonsterIds.h:179 `{{109,111},{112,115}}`。⚠ 精英阈值 **asc>=8**（MonsterSpecific.cpp:96）。
     hpMin: 109,
     hpMax: 111,
+    hpHigh: { atLeast: 8, hpMin: 112, hpMax: 115 },
+    ascCalibrated: true,
     moves: [
       {
         // MonsterSpecific.cpp:888-894：整条 case **没有任何效果**，只有收尾
@@ -1701,10 +1721,10 @@ const ENEMY_LIST: EnemyDef[] = [
         intent: "unknown",
       },
       {
-        // MonsterSpecific.cpp:871 `attackPlayerHelper(bc, asc3 ? 20 : 18)`。
+        // MonsterSpecific.cpp:871 `attackPlayerHelper(bc, asc3 ? 20 : 18)`（精英档 asc3）。
         id: "lag_attack",
         name: "重击",
-        effects: [{ kind: "deal_damage", amount: 18 }],
+        effects: [{ kind: "deal_damage", amount: 18, ascAmount: [{ atLeast: 3, amount: 20 }] }],
         intent: "attack",
       },
       {
@@ -1712,12 +1732,27 @@ const ENEMY_LIST: EnemyDef[] = [
         //  ① **顺序是敏捷在前、力量在后**（照抄，别按「力量优先」的直觉写）；
         //  ② 两条都是 `.actFunc(bc)` —— **同步**执行，不是 addToBot。这是全项目
         //     唯一一处「怪物给玩家上减益却不入队」，故加 `sync: true`。
-        // 数值 `asc18 ? -2 : -1`，asc0 取 -1。
+        // 数值 `asc18 ? -2 : -1`，asc0 取 -1。⚠ 分档在**负数**上：asc18 起是 -2，
+        //   `ascAmount` 只管「换个数」，符号是数据自己的一部分。
         id: "siphon_soul",
         name: "吸取灵魂",
         effects: [
-          { kind: "apply_power", power: "dexterity", amount: -1, on: "target", sync: true },
-          { kind: "apply_power", power: "strength", amount: -1, on: "target", sync: true },
+          {
+            kind: "apply_power",
+            power: "dexterity",
+            amount: -1,
+            on: "target",
+            sync: true,
+            ascAmount: [{ atLeast: 18, amount: -2 }],
+          },
+          {
+            kind: "apply_power",
+            power: "strength",
+            amount: -1,
+            on: "target",
+            sync: true,
+            ascAmount: [{ atLeast: 18, amount: -2 }],
+          },
         ],
         intent: "debuff",
       },
@@ -1736,25 +1771,36 @@ const ENEMY_LIST: EnemyDef[] = [
   {
     id: "sentry",
     name: "哨卫",
-    // MonsterIds.h:192 `{{38,42},{39,45}}`（asc<8 取前者）。
+    // MonsterIds.h:192 `{{38,42},{39,45}}`。⚠ 精英阈值 **asc>=8**（MonsterSpecific.cpp:98）。
     hpMin: 38,
     hpMax: 42,
+    hpHigh: { atLeast: 8, hpMin: 39, hpMax: 45 },
+    ascCalibrated: true,
     moves: [
       {
-        // MonsterSpecific.cpp:1057-1061 `attackPlayerHelper(bc, asc3 ? 10 : 9)`。
+        // MonsterSpecific.cpp:1057-1061 `attackPlayerHelper(bc, asc3 ? 10 : 9)`（精英档 asc3）。
         id: "beam",
         name: "光束",
-        effects: [{ kind: "deal_damage", amount: 9 }],
+        effects: [{ kind: "deal_damage", amount: 9, ascAmount: [{ atLeast: 3, amount: 10 }] }],
         intent: "attack",
       },
       {
         // MonsterSpecific.cpp:1063-1067
         // `addToBot(MakeTempCardInDiscard({CardId::DAZED}, asc18 ? 3 : 2))`。
         // ⚠ **是弃牌堆不是抽牌堆**（洗入抽牌堆那一路要掷 cardRandomRng，这里一次都不掷），
-        //   与史莱姆的黏液走的是同一条路。asc0 是 2 张。
+        //   与史莱姆的黏液走的是同一条路。asc0 是 2 张、asc18 起 3 张。
+        // ⚠ 分档挂在 `count` 上（`add_card.ascAmount` 的语义就是张数），不是别的字段。
         id: "bolt",
         name: "射钉",
-        effects: [{ kind: "add_card", cardId: "dazed", pile: "discard", count: 2 }],
+        effects: [
+          {
+            kind: "add_card",
+            cardId: "dazed",
+            pile: "discard",
+            count: 2,
+            ascAmount: [{ atLeast: 18, amount: 3 }],
+          },
+        ],
         intent: "debuff",
       },
     ],
@@ -1781,9 +1827,12 @@ const ENEMY_LIST: EnemyDef[] = [
     name: "守卫者",
     // MonsterIds.h:211 `{{240,240},{250,250}}`（Boss 走 `setRandomHp(hpRng, asc>=9)`，
     // MonsterSpecific.cpp:85-88）。⚠ 上下界相同**照样掷一次** monsterHpRng
-    //（`Random::random(int,int)` 无条件 `++counter`，Random.h:159）。
+    //（`Random::random(int,int)` 无条件 `++counter`，Random.h:159）——高档那一组同理。
+    // ⚠ **Boss 的阈值是 9**，精英是 8、走廊小怪是 7，三档各写各的。
     hpMin: 240,
     hpMax: 240,
+    hpHigh: { atLeast: 9, hpMin: 250, hpMax: 250 },
+    ascCalibrated: true,
     moves: [
       {
         // MonsterSpecific.cpp:1347 `addBlock(9)`。⚠ 是**同步**的裸 `addBlock`，
@@ -1797,23 +1846,32 @@ const ENEMY_LIST: EnemyDef[] = [
         // MonsterSpecific.cpp:1352 `buff<MS::SHARP_HIDE>(asc19 ? 4 : 3)`（同步自 buff）。
         // 尖锐外壳 = 玩家每打出一张**攻击牌**就吃 3 点无视格挡伤害，触发点在
         // `BattleContext::onUseAttackCard` 的最末（BattleContext.cpp:1756-1759）。
+        // ⚠ 分档是 **asc19**（Boss 走 `getTriIdx(asc, 4, 19)` 那一档），asc19 起 4 点。
         id: "defensive_mode",
         name: "防御形态",
-        effects: [{ kind: "apply_power", power: "sharp_hide", amount: 3, on: "self" }],
+        effects: [
+          {
+            kind: "apply_power",
+            power: "sharp_hide",
+            amount: 3,
+            on: "self",
+            ascAmount: [{ atLeast: 19, amount: 4 }],
+          },
+        ],
         intent: "buff",
       },
       {
-        // MonsterSpecific.cpp:1362 `attackPlayerHelper(bc, asc4 ? 10 : 9)`。
+        // MonsterSpecific.cpp:1362 `attackPlayerHelper(bc, asc4 ? 10 : 9)`（Boss 档 asc4）。
         id: "roll_attack",
         name: "滚压",
-        effects: [{ kind: "deal_damage", amount: 9 }],
+        effects: [{ kind: "deal_damage", amount: 9, ascAmount: [{ atLeast: 4, amount: 10 }] }],
         intent: "attack",
       },
       {
-        // MonsterSpecific.cpp:1357 `attackPlayerHelper(bc, asc4 ? 36 : 32)`。
+        // MonsterSpecific.cpp:1357 `attackPlayerHelper(bc, asc4 ? 36 : 32)`（Boss 档 asc4）。
         id: "fierce_bash",
         name: "重砸",
-        effects: [{ kind: "deal_damage", amount: 32 }],
+        effects: [{ kind: "deal_damage", amount: 32, ascAmount: [{ atLeast: 4, amount: 36 }] }],
         intent: "attack",
       },
       {
@@ -1869,12 +1927,14 @@ const ENEMY_LIST: EnemyDef[] = [
     name: "六火幽魂",
     // MonsterIds.h:178 `{{250,250},{264,264}}`（Boss 走 `setRandomHp(hpRng, asc>=9)`，
     // MonsterSpecific.cpp:81-89）。⚠ 上下界相同**照样掷一次** monsterHpRng
-    //（`Random::random(int,int)` 无条件 `++counter`，Random.h:159）。
+    //（`Random::random(int,int)` 无条件 `++counter`，Random.h:159）——高档那一组同理。
     // ⚠ 它**没有** `Monster::construct` 的怪种特例（Monster.cpp:109 的 switch 只有虱子与
     //   暗黑爬虫），也**没有** `preBattleAction`（MonsterSpecific.cpp:140 的 switch 里没有它），
     //   所以建怪只掷一次 monsterHpRng、开局身上一个 Power 都没有。
     hpMin: 250,
     hpMax: 250,
+    hpHigh: { atLeast: 9, hpMin: 264, hpMax: 264 },
+    ascCalibrated: true,
     moves: [
       {
         // MonsterSpecific.cpp:793-798。case 里**只有**一句 `miscInfo = bc.player.curHp / 12 + 1;`
@@ -1898,22 +1958,38 @@ const ENEMY_LIST: EnemyDef[] = [
       {
         // MonsterSpecific.cpp:823-826：`attackPlayerHelper(bc, 6)` 之后
         // `addToBot(MakeTempCardInDiscard(CardInstance(BURN, bc.turn > 8), asc19 ? 2 : 1))`。
-        // ⚠ 两个分档是**独立**的：张数按 asc19（asc0 恒 1 张），升不升级按 `bc.turn > 8`
-        //   ——`bc.turn` 从 0 起、在 `afterMonsterTurns` 里才自增，所以第 10 个怪物回合起
-        //   塞的是灼伤+（回合末 4 点）。asc0 也走得到，见 `upgradedAfterTurn`。
+        // ⚠ 两个分档是**独立**的：张数按 asc19（asc0 恒 1 张、asc19 起 2 张），
+        //   升不升级按 `bc.turn > 8`——`bc.turn` 从 0 起、在 `afterMonsterTurns` 里才自增，
+        //   所以第 10 个怪物回合起塞的是灼伤+（回合末 4 点）。asc0 也走得到，
+        //   见 `upgradedAfterTurn`。⚠ **伤害那 6 点没有分档**，只有张数有。
         id: "sear",
         name: "灼烧",
         effects: [
           { kind: "deal_damage", amount: 6 },
-          { kind: "add_card", cardId: "burn", pile: "discard", count: 1, upgradedAfterTurn: 8 },
+          {
+            kind: "add_card",
+            cardId: "burn",
+            pile: "discard",
+            count: 1,
+            upgradedAfterTurn: 8,
+            ascAmount: [{ atLeast: 19, amount: 2 }],
+          },
         ],
         intent: "attack",
       },
       {
         // MonsterSpecific.cpp:841 `attackPlayerHelper(bc, asc4 ? 6 : 5, 2)`。
+        // ⚠ 分档挂在**每一击**的伤害上，段数 2 恒定（第二个实参）。
         id: "tackle",
         name: "冲撞",
-        effects: [{ kind: "deal_damage_multi", amount: 5, times: 2 }],
+        effects: [
+          {
+            kind: "deal_damage_multi",
+            amount: 5,
+            times: 2,
+            ascAmount: [{ atLeast: 4, amount: 6 }],
+          },
+        ],
         intent: "attack",
       },
       {
@@ -1921,22 +1997,36 @@ const ENEMY_LIST: EnemyDef[] = [
         // ⚠ `addBlock` 是**同步**的裸调用（不是 `addToBot(MonsterGainBlock)`），故 `sync: true`
         //   ——与守卫者的蓄能同族；两句都同步，所以书写顺序就是结算顺序。
         // ⚠ 攻击白名单里**没有** `HEXAGHOST_INFLAME`，与 buff 一致。
+        // ⚠ **格挡那 12 点没有分档**，只有力量有（asc19 起 3）。
         id: "inflame",
         name: "燃焰",
         effects: [
           { kind: "gain_block", amount: 12, sync: true },
-          { kind: "apply_power", power: "strength", amount: 2, on: "self" },
+          {
+            kind: "apply_power",
+            power: "strength",
+            amount: 2,
+            on: "self",
+            ascAmount: [{ atLeast: 19, amount: 3 }],
+          },
         ],
         intent: "buff",
       },
       {
-        // MonsterSpecific.cpp:808 `attackPlayerHelper(bc, asc4 ? 3 : 2, 6)`。
+        // MonsterSpecific.cpp:808 `attackPlayerHelper(bc, asc4 ? 3 : 2, 6)`（Boss 档 asc4）。
         // ⚠ **参考的地狱之火只有伤害**：真实游戏里它还会把牌堆里已有的灼伤全部升级，
         //   而参考全项目没有任何「升级灼伤」的代码（`grep BURN` 只有生成那几处）。
         //   本批照抄参考、不打补丁，理由与关门条件记在 TODOS「已确认但尚未打补丁」。
         id: "inferno",
         name: "地狱之火",
-        effects: [{ kind: "deal_damage_multi", amount: 2, times: 6 }],
+        effects: [
+          {
+            kind: "deal_damage_multi",
+            amount: 2,
+            times: 6,
+            ascAmount: [{ atLeast: 4, amount: 3 }],
+          },
+        ],
         intent: "attack",
       },
     ],
@@ -2085,8 +2175,12 @@ const ENEMY_LIST: EnemyDef[] = [
     name: "史莱姆王",
     // MonsterIds.h:196 `{{140,140},{150,150}}`（Boss 走 `setRandomHp(hpRng, asc>=9)`）。
     // ⚠ 上下界相同照样掷一次 monsterHpRng，同守卫者。
+    // ⚠ 分裂出来的两只大史莱姆继承**分裂那一刻的当前生命**、不重掷血量，所以
+    //   150 血这一档只改母体的起点；两只 L 号自己的 `hpHigh`（阈值 7）在这条路上用不上。
     hpMin: 140,
     hpMax: 140,
+    hpHigh: { atLeast: 9, hpMin: 150, hpMax: 150 },
+    ascCalibrated: true,
     // 分裂去向（MonsterSpecific.cpp:3400-3404）：**下标 0 是尖刺大、下标 2 是酸液大**。
     // ⚠ 顺序绑定，不是随机——与 `small_slimes` / `large_slime` 那种 randomBoolean 不同族。
     splitInto: ["spike_slime_l", "acid_slime_l"],
@@ -2096,9 +2190,19 @@ const ENEMY_LIST: EnemyDef[] = [
         // `Actions::MakeTempCardInDiscard({SLIMED}, asc19 ? 5 : 3).actFunc(bc)`。
         // ⚠ 是 `.actFunc(bc)` —— **同步**执行，与史莱姆们的 `addToBot(...)` 不同，故 sync: true。
         // ⚠ 进的是**弃牌堆**，一次 RNG 都不掷（洗入抽牌堆那一路才要 cardRandomRng）。
+        // ⚠ 张数分档是 **asc19**（3 → 5），与哨卫射钉的 asc18 不同档，逐条对参考别照抄邻居。
         id: "goop_spray",
         name: "黏液喷射",
-        effects: [{ kind: "add_card", cardId: "slimed", pile: "discard", count: 3, sync: true }],
+        effects: [
+          {
+            kind: "add_card",
+            cardId: "slimed",
+            pile: "discard",
+            count: 3,
+            sync: true,
+            ascAmount: [{ atLeast: 19, amount: 5 }],
+          },
+        ],
         intent: "debuff",
       },
       {
@@ -2109,13 +2213,13 @@ const ENEMY_LIST: EnemyDef[] = [
         intent: "unknown",
       },
       {
-        // MonsterSpecific.cpp:1121 `attackPlayerHelper(bc, asc4 ? 38 : 35)`。
+        // MonsterSpecific.cpp:1121 `attackPlayerHelper(bc, asc4 ? 38 : 35)`（Boss 档 asc4）。
         // ⚠ 参考在收尾那行注了 `// the attack is executed after, which is critical`：
         //   `setMove(GOOP_SPRAY)` 是**同步**的，而伤害是 `addToBot`，所以快照里意图先变、
         //   伤害后落。照抄这个顺序。
         id: "slam",
         name: "猛砸",
-        effects: [{ kind: "deal_damage", amount: 35 }],
+        effects: [{ kind: "deal_damage", amount: 35, ascAmount: [{ atLeast: 4, amount: 38 }] }],
         intent: "attack",
       },
       {
