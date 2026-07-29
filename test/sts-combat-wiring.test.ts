@@ -635,7 +635,9 @@ describe("接线：尚未迁移的内容显式抛错", () => {
   // 同源：**它不在 harness 的 20 个第一幕编队里**，而那个列表按 WORKFLOW 是不许增删的
   //（`traceIdx` 一移，遗物/药水轮换整体错位），所以它在可预见的将来都不会有预言机。
   // ⚠ 原先用的是 `gremlin_nob`，第十八批把它登记了，故换掉。别换成 `the_guardian` /
-  //   `hexaghost` / `slime_boss`——它们就在 harness 的列表里，第十九/二十批就要登记。
+  //   `hexaghost` / `slime_boss`——它们就在 harness 的列表里，第十九/二十批已经登记了。
+  // ⚠ 第二十批之后那 20 个编队**全部**登记完毕，所以这个样本只能来自第二/三幕，
+  //   而覆盖第二/三幕要先给 harness 追加一遍循环——在那之前 `giant_head` 是安全的。
   it("未迁移的编队：startCombat 抛错，且不留半个战斗状态", () => {
     const state = runAtMap();
     expect(() => startCombat(state, "giant_head")).toThrow(/giant_head/);

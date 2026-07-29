@@ -144,9 +144,9 @@ export type Effect =
   // 每次命中随机挑一个存活敌人（剑刃回旋镖：3 点 ×3，逐次随机目标）。
   | { kind: "deal_damage_random"; amount: number; times: number }
   | { kind: "deal_damage_equal_to_block" }
-  // 敌人用：伤害取自本敌人锁定的固定值（红虱咬击；六火之灵分割 times 连击）。
+  // 敌人用：伤害取自本敌人锁定的固定值（红虱咬击；六火幽魂六重打击 times 连击）。
   | { kind: "deal_damage_rolled"; times?: number }
-  // 敌人用：按玩家当前生命锁定一个每击伤害存入 miscInfo（六火之灵激活：floor(hp/divisor)+add）。
+  // 敌人用：按玩家当前生命锁定一个每击伤害存入 miscInfo（六火幽魂激活：floor(hp/divisor)+add）。
   | { kind: "store_hp_scaled_damage"; divisor: number; add: number }
   // sync：敌人专用。参考的怪物加格挡有**两种写法并存**——绝大多数是**同步** `addBlock(n)`
   // （拾荒者烟雾弹 MonsterSpecific.cpp:937 等 20 余处），少数是 `addToBot(MonsterGainBlock)`
@@ -213,12 +213,17 @@ export type Effect =
   // `addToBot(Actions::MakeTempCardInDiscard(...))`，而史莱姆王的黏液喷射写的是
   // `Actions::MakeTempCardInDiscard({SLIMED}, 3).actFunc(bc)`（MonsterSpecific.cpp:1112）
   // ——**当场执行**。省略 = 入队。与 `gain_block` / `apply_power` 的 sync 同族。
+  // upgradedAfterTurn：敌人专用。参考造牌时把「升不升级」写进 `CardInstance` 的构造实参
+  // ——六火幽魂的灼烧是 `CardInstance(CardId::BURN, bc.turn > 8)`（MonsterSpecific.cpp:825），
+  // 即**第 10 个怪物回合起**塞的是灼伤+（回合末 4 点而不是 2 点）。省略 = 恒不升级。
+  // ⚠ 阈值与 asc 无关（asc 只分张数），且实参在**排队那一刻**求值。
   | {
       kind: "add_card";
       cardId: string;
       pile: "draw" | "discard" | "hand";
       count: number;
       sync?: boolean;
+      upgradedAfterTurn?: number;
     }
   // —— X 费牌：xValue = 打出时的能量，以下效果按 X 次 / X 倍结算 ——
   | { kind: "deal_damage_all_x"; amount: number } // 对所有敌人造成 amount 伤害，X 次（旋风斩）

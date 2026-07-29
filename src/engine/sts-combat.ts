@@ -476,13 +476,33 @@ export type CombatMonster = {
    *   * 地精巫师：蓄力计数（第十七批）。⚠ 它由**三处**协同维护，改一处就错：
    *     `MOVE_RULES.gremlin_wizard` 置 1（起点）、`MOVE_TURN_BEGIN["gremlin_wizard/charging"]`
    *     每回合 +1、`MOVE_TURN_END["gremlin_wizard/ultimate_blast"]` 清 0。
+   *   * 守卫者：下一次形态切换的阈值（第十九批，`PRE_BATTLE_ACTION` 置起点、双重猛击 +10）。
+   *   * 六火幽魂：六重打击的每击伤害（第二十批，激活那一回合按玩家当时生命算定）。
    * ⚠ 参考的 `Monster::rollMove` 把它**按引用**传进 `getMoveForRoll`（Monster.cpp:629-634：
    * 拷出去、传引用、写回），所以**出招规则本身也能改它**——地精巫师那条就是这么写的
    * （而红色奴隶主那条读的却是**成员**，两者当前等价）。
    * 参考里还有若干种我们没用到的含义：刺穿之书的连刺计数、暗影的咬击伤害、
-   * 六火幽魂的分割伤害、蠕动血块的位掩码。未使用该机制的怪保持 0。
+   * 蠕动血块的位掩码。未使用该机制的怪保持 0。
    */
   miscInfo: number;
+  /**
+   * 怪物侧的**第二个**通用整数字段（对齐 `Monster::uniquePower0`，Monster.h:66）。
+   *
+   * ⚠ 它与 `miscInfo` 是参考里**两个不同的成员**，不能合并：六火幽魂同时用到两个
+   * （`miscInfo` = 六重打击伤害、`uniquePower0` = 六焰计数），合并必错。
+   *
+   * ⚠ 参考里它同时兼任一批 Power 的存储后端（`Monster::getStatusInternal`，
+   * Monster.cpp:190-211：MODE_SHIFT / SPORE_CLOUD / THORNS / THIEVERY / RITUAL / …）。
+   * 我们把 Power 建模成 `powers` 数组，所以这里只留「非 Power 的那一种用法」。
+   * 当前唯一的使用者是六火幽魂，而它身上**没有**任何走 uniquePower0 的 Power，
+   * 因此两种含义不会在同一只怪身上撞车。以后登记既有此类 Power、又用它当计数器的怪
+   * （参考里目前没有）时要回来重新审这条。
+   *
+   * ⚠ 它**不进 trace 快照**（harness 只 dump `hasStatus` 为真的 Power），所以六焰计数
+   * 只能通过「下一招是谁」被间接看到——写错不会当场报「未映射的 power」，
+   * 而是几回合后招式序列整体错位。
+   */
+  uniquePower0: number;
 };
 
 /**
@@ -1111,6 +1131,24 @@ const MOVE_RULES: Record<string, MoveForRoll> = {
     }
     return "goop_spray";
   },
+
+  // —— 第一幕最后一个 Boss（第二十批）——
+
+  // 六火幽魂：对齐 MonsterSpecific.cpp:2464-2470 HEXAGHOST——整条 case 就是
+  // `assert(firstTurn()); return HEXAGHOST_ACTIVATE;`，**完全不看 roll**
+  //（顶部那次 `aiRng.random(99)` 照掷、结果丢弃）。
+  // ⚠ 那句 assert 在 `#ifdef sts_asserts` 里，而构建命令不带任何 `-D`，所以参考实际
+  //   编译出来是「无条件返回激活」。我们照 assert 的**意图**写成抛错（同 slime_boss）：
+  //   六条 case 的收尾全是同步 setMove / noOpRollMove，一次 RollMove 都不排，
+  //   真被第二次调用说明我们哪条收尾抄错了，要当场知道而不是静默返回激活。
+  // ⚠ 于是这只 250 血、能打二三十个回合的 Boss，`rng.ai` 一整场只 +（1 + 每回合 1 次
+  //   noOpRollMove）——次数是钉死的，抄错当场落在 counter 上。
+  hexaghost: (_bc, m) => {
+    if (!firstTurn(m)) {
+      throw new Error("sts-combat: hexaghost 的 getMoveForRoll 只应在开局被调用一次");
+    }
+    return "activate";
+  },
 };
 
 // ============================================================================
@@ -1432,6 +1470,85 @@ const MOVE_TURN_END: Record<string, MoveTurnEnd> = {
   // ⚠ 但两者的 aiRng 消耗完全不同：大史莱姆那条在函数内部掷 2 次 noOpRollMove，
   //   史莱姆王这条**一次都不掷**，见 `slimeBossSplit`。
   "slime_boss/split": "none",
+
+  // —— 第一幕最后一个 Boss（第二十批）：六火幽魂的**固定七招循环** ——
+  //
+  // 六条 case 的收尾全是第五形态（任意函数），因为每一条都是
+  // 「同步 setMove + 一次 noOpRollMove」，再加上对 `uniquePower0`（六焰计数）的读写。
+  //
+  // ⚠ **出招序完全不掷 roll**：`getMoveForRoll` 只在开局被调用一次（恒返回激活），
+  //   之后每一步都由这里的同步 `setMove` 钉死。整条序列是
+  //     激活 → 六重打击 → 灼烧 → 冲撞 → 灼烧 → 燃焰 → 冲撞 → 灼烧 → 地狱之火 →（回到灼烧）
+  //   ——分岔全部藏在灼烧那条 case 的 `uniquePower0` 三分支里，其余五条都是无条件的。
+  //
+  // ⚠ `uniquePower0` 由**五处**协同维护（六重打击 / 地狱之火清零，灼烧 / 冲撞 / 燃焰 +1），
+  //   而且灼烧那条是**先读后加**。任意一处抄错都不会当场报错，只会让几回合后的招式错位。
+  //
+  // ⚠ noOpRollMove 的两种写法在这只怪身上同样并存，照抄不要统一：
+  //     激活 / 燃焰            `bc.noOpRollMove()`                    —— **同步**（:796 / :819）
+  //     六重打击 / 地狱之火 /  `bc.addToBot(Actions::NoOpRollMove())` —— **入队**
+  //     灼烧 / 冲撞                                    （:804 / :811 / :837 / :844）
+  //   次数相同，差别只在「这一掷发生在本回合排的动作之前还是之后」。
+
+  // 激活（MonsterSpecific.cpp:793-798）：case 里效果之后是 `setMove(DIVIDER)` + **同步**
+  // noOpRollMove。伤害那句（`miscInfo = curHp/12 + 1`）是效果，在数据表里。
+  "hexaghost/activate": (bc, m) => {
+    setMove(m, "divider");
+    bc.rng.aiRng.random(99); // ★ 消耗一次 aiRng（noOpRollMove，同步）
+  },
+  // 六重打击（MonsterSpecific.cpp:800-805）：`uniquePower0 = 0` 排在攻击**之后**、setMove 之前。
+  // ⚠ 清零而不是 +1——它把六焰计数拉回起点，于是紧接着的灼烧走 `== 0` 那支（转冲撞）。
+  "hexaghost/divider": (bc, m) => {
+    m.uniquePower0 = 0;
+    setMove(m, "sear");
+    addToBot(bc, (c) => {
+      c.rng.aiRng.random(99); // ★ 消耗一次 aiRng（NoOpRollMove，入队）
+    });
+  },
+  // 地狱之火（MonsterSpecific.cpp:807-812）：与六重打击**逐字同形**（清零 → 灼烧 → 入队 NoOp）。
+  // 所以一轮大循环之后计数从头开始，七招序列稳定重复。
+  "hexaghost/inferno": (bc, m) => {
+    m.uniquePower0 = 0;
+    setMove(m, "sear");
+    addToBot(bc, (c) => {
+      c.rng.aiRng.random(99); // ★ 消耗一次 aiRng（NoOpRollMove，入队）
+    });
+  },
+  // 燃焰（MonsterSpecific.cpp:814-820）：`++uniquePower0` 排在 setMove **之前**，
+  // 收尾是**同步** noOpRollMove（与激活同写法）。
+  "hexaghost/inflame": (bc, m) => {
+    m.uniquePower0 += 1;
+    setMove(m, "tackle");
+    bc.rng.aiRng.random(99); // ★ 消耗一次 aiRng（noOpRollMove，同步）
+  },
+  // 灼烧（MonsterSpecific.cpp:822-838）：整只怪唯一的分岔点，三分支照抄。
+  // ⚠ 判据读的是**自增之前**的 `uniquePower0`：
+  //     == 0 → 冲撞（刚被六重打击 / 地狱之火清过零）
+  //     == 2 → 燃焰
+  //     其它 → 地狱之火（实际走到这一支时它恒为 5）
+  //   `++uniquePower0` 排在整个 if/else 之后，最后才入队 NoOpRollMove。
+  "hexaghost/sear": (bc, m) => {
+    if (m.uniquePower0 === 0) {
+      setMove(m, "tackle");
+    } else if (m.uniquePower0 === 2) {
+      setMove(m, "inflame");
+    } else {
+      setMove(m, "inferno");
+    }
+    m.uniquePower0 += 1;
+    addToBot(bc, (c) => {
+      c.rng.aiRng.random(99); // ★ 消耗一次 aiRng（NoOpRollMove，入队）
+    });
+  },
+  // 冲撞（MonsterSpecific.cpp:840-845）：`setMove(SEAR)` 在前、`++uniquePower0` 在后
+  // ——与灼烧那条的顺序**相反**，照抄（两句都同步，当前不可分辨，但方向照参考）。
+  "hexaghost/tackle": (bc, m) => {
+    setMove(m, "sear");
+    m.uniquePower0 += 1;
+    addToBot(bc, (c) => {
+      c.rng.aiRng.random(99); // ★ 消耗一次 aiRng（NoOpRollMove，入队）
+    });
+  },
 };
 
 /**
@@ -1511,6 +1628,7 @@ function constructMonster(bc: BattleContext, defId: string): CombatMonster {
     powers: [],
     alive: true,
     miscInfo: 0,
+    uniquePower0: 0,
   };
   // construct 的怪种特例：虱子的咬击伤害整场固定，出生时掷定（对齐 Monster.cpp:116）。
   if (defId === "louse" || defId === "green_louse") {
@@ -1577,6 +1695,7 @@ function emptyMonsterSlot(): CombatMonster {
     powers: [],
     alive: false,
     miscInfo: 0,
+    uniquePower0: 0,
   };
 }
 
@@ -1599,6 +1718,7 @@ function spawnSplitMonster(bc: BattleContext, defId: string, at: number, hp: num
     powers: [],
     alive: true,
     miscInfo: 0,
+    uniquePower0: 0,
   };
   // 先落位再 rollMove，对齐 `arr[idx] = Monster(); arr[idx].initSpawnedMonster(...)`。
   bc.monsters[at] = nm;
@@ -2055,6 +2175,14 @@ function overwriteMove(m: CombatMonster, move: string): void {
  *     三条都不在白名单，与直觉一致；而**真正的反例就在紧邻的几行**
  *     （`SPHERIC_GUARDIAN_HARDEN`，`:500`：加格挡 + 打人，被算作攻击。球状守卫是第二幕的怪，
  *     等它那一批时数据表的 intent 会与白名单**真的分岔**，那时就得改成读白名单）。
+ *   * 六火幽魂（第二十批）：白名单里有 `HEXAGHOST_DIVIDER` / `_INFERNO` / `_SEAR` /
+ *     `_TACKLE`（`MonsterMoves.h:463-466`，四条连着）。**不在**的两条是
+ *     `HEXAGHOST_ACTIVATE` 与 `HEXAGHOST_INFLAME`，与我们的 `unknown` / `buff` 一致。
+ *     ⚠ 这两条是 WORKFLOW 点名要盯的：`_ACTIVATE` 一点效果都没有（只把六重打击的伤害
+ *     算定存进 `miscInfo`），`_INFLAME` 是「加格挡 + 加力量」——后者正是**最像**
+ *     `SPHERIC_GUARDIAN_HARDEN` 那个反例的形状（都是「加防御 + 变强」），但它**不在**
+ *     白名单里。所以这一条再次证实：方向只能逐条回白名单读，不能按效果形状类推。
+ *     ⚠ `_SEAR` 反过来也值得记：它「打 6 点 + 塞一张灼伤」，两栏都有，白名单算攻击。
  * 新登记怪种时**必须**回白名单复核，因为白名单里存在「带伤害却不算攻击」与反向的例外
  *（如球状守卫的 HARDEN 被算作攻击）。
  */
@@ -3356,10 +3484,20 @@ function useNoTriggerCard(bc: BattleContext, item: CardQueueItem): void {
     throw new Error("useNoTriggerCard: 队列项没有牌");
   }
   if (card.defId === "burn") {
-    // 灼伤：升级形态 4 点（灼伤+ 只由六焰鬼在第 9 回合后生成，我们尚无来源）。
+    // 灼伤：升级形态 4 点（`BattleContext.cpp:939-940`）。
+    // ⚠ 灼伤+ 的**唯一来源**是六火幽魂的灼烧（第二十批登记）：`bc.turn > 8` 时它塞的就是
+    //   升级版（MonsterSpecific.cpp:825），即第 10 个怪物回合起。牌堆快照只 dump 牌名、
+    //   不 dump 升级位，所以这一支唯一的可观察面就是回合末的 4 点而不是 2 点。
     // ⚠ selfDamage=true（`DamagePlayer(…, true)`）——灼伤的自伤**会**触发破裂。
+    // ⚠ `clearOnCombatVictory` 是 **false**：`Actions::DamagePlayer` 那行是
+    //   `return {[=](BattleContext &bc){...}, false};`（Actions.cpp:91-95，与 `AttackPlayer`
+    //   逐字同形）。第十九批修 `AttackPlayer` 时把这一条记进了 TODOS 的「尚未修」，
+    //   第二十批一并修掉。⚠ **它没有预言机（0 例），而且是结构性的**：这条动作走的是
+    //   `addToTop`、下一步就出队，中间不可能插进任何能判胜的东西（灼伤只打玩家，
+    //   `clearPostCombatActions` 又只在**胜利**时跑）。`AttackPlayer` 那一位能被看见靠的是
+    //   「多段攻击 + 荆棘反伤打死怪」，灼伤没有这个结构。理由与量测记在 TODOS。
     const damage = card.upgraded ? 4 : 2;
-    addToTop(bc, (c) => damagePlayerNonAttack(c, damage, true));
+    addToTop(bc, (c) => damagePlayerNonAttack(c, damage, true), false);
   }
   removeFromHandByUid(bc, card.uid);
   addToBot(bc, (c) => {
@@ -7008,8 +7146,11 @@ function takeTurn(bc: BattleContext, m: CombatMonster): string | null {
       // ⚠ `Actions::AttackPlayer` 的 `clearOnCombatVictory` 是 **false**（Actions.cpp:85-88
       //   那行的第二个参数）。多段攻击才让这一位可观察：第一段触发荆棘 / 火焰屏障、
       //   反伤打死了怪 → `checkCombat` 清扫队列，剩下几段**照样落在玩家身上**。
+      // ⚠ `deal_damage_rolled` 也带 `times`（六火幽魂的六重打击是 `attackPlayerHelper(bc,
+      //   miscInfo, 6)`），只是虱子那条省略了它——所以这里必须 `?? 1` 而不是「只有
+      //   deal_damage_multi 才多段」。第二十批修：漏掉它时六重打击只打一段。
       const base = eff.kind === "deal_damage_rolled" ? m.miscInfo : eff.amount;
-      const times = eff.kind === "deal_damage_multi" ? eff.times : 1;
+      const times = eff.kind === "deal_damage" ? 1 : (eff.times ?? 1);
       const dmg = calculateDamageToPlayer(bc, m, base);
       const idx = bc.monsters.indexOf(m);
       for (let i = 0; i < times; i += 1) {
@@ -7065,12 +7206,25 @@ function takeTurn(bc: BattleContext, m: CombatMonster): string | null {
       if (eff.pile !== "discard") {
         throw new Error(`sts-combat 暂未登记怪物塞牌去向: ${eff.pile}`);
       }
+      // ⚠ 「塞的是升级版还是原版」由 `CardInstance` 的构造实参决定，在**排队那一刻**求值
+      //   （六火幽魂的灼烧：`CardInstance(CardId::BURN, bc.turn > 8)`，MonsterSpecific.cpp:825）。
+      //   所以这里在闭包**外面**算好再捕获，不是在闭包里读 `c.turn`。
       const { cardId, count } = eff;
+      const upgraded = eff.upgradedAfterTurn !== undefined && bc.turn > eff.upgradedAfterTurn;
       if (eff.sync === true) {
-        makeTempCardInDiscard(bc, cardId, count);
+        makeTempCardInDiscard(bc, cardId, count, upgraded);
       } else {
-        addToBot(bc, (c) => makeTempCardInDiscard(c, cardId, count));
+        addToBot(bc, (c) => makeTempCardInDiscard(c, cardId, count, upgraded));
       }
+    } else if (eff.kind === "store_hp_scaled_damage") {
+      // 按玩家**此刻**的生命算定一个每击伤害，存进 miscInfo（六火幽魂的激活，
+      // MonsterSpecific.cpp:794 `miscInfo = bc.player.curHp / 12 + 1;`）。
+      // ⚠ 三处照抄：
+      //  ① 时点是**激活那一回合的怪物阶段**，不是六重打击落下的时候——此后玩家掉多少血
+      //     （灼伤自伤、别的攻击）都不再改这个数；
+      //  ② 是 C++ 的**整数除法**（向零截断），不是四舍五入；
+      //  ③ 它是**同步**语句（整条 case 里没有任何 addToBot），所以紧随其后的收尾看得见它。
+      m.miscInfo = Math.trunc(bc.player.hp / eff.divisor) + eff.add;
     } else if (eff.kind === "split") {
       // 分裂：**同步**执行，不入队——参考的那条 case 就是一句裸的
       // `largeSlimeSplit(bc, ...)`（MonsterSpecific.cpp:365 / :1221），
@@ -7677,6 +7831,8 @@ export const SUPPORTED_ENCOUNTERS: readonly string[] = [
   // —— 第十九批：第一幕两个 Boss ——
   "the_guardian",
   "slime_boss",
+  // —— 第二十批：第一幕最后一个 Boss（装完这一个，第一幕 20 个编队全部有背书）——
+  "hexaghost",
 ];
 
 export function isEncounterSupported(encounterId: string): boolean {

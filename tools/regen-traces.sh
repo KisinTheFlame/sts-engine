@@ -62,8 +62,10 @@ ENC_ALL="cultist jaw_worm jaw_worm_horde three_louse two_louse"
 # 第十六批：荒野二人组（真菌兽在第一幕**只**出现在这里）；
 # 第十七批：地精帮（五只地精在第一幕**只**出现在这里，护盾地精与巫师在整个第一幕独此一家）；
 # 第十八批：第一幕三个精英（地精头目 / 拉加维林 / 三哨卫），三只怪各自只出现在自己的编队里；
-# 第十九批：第一幕两个 Boss（守卫者 / 史莱姆王），同样各自是自己那只怪唯一的来源。
-ENC_V0="small_slimes lots_of_slimes large_slime blue_slaver red_slaver looter exordium_thugs exordium_wildlife gremlin_gang gremlin_nob lagavulin three_sentries the_guardian slime_boss"
+# 第十九批：第一幕两个 Boss（守卫者 / 史莱姆王），同样各自是自己那只怪唯一的来源；
+# 第二十批：六火幽魂——第一幕最后一个编队，装完这 20 个就把 harness 的 encounters 列表
+#   跑满了，再往下铺量必须给 harness **追加一遍第二幕循环**（不能动原列表，见 WORKFLOW）。
+ENC_V0="small_slimes lots_of_slimes large_slime blue_slaver red_slaver looter exordium_thugs exordium_wildlife gremlin_gang gremlin_nob lagavulin three_sentries the_guardian slime_boss hexaghost"
 
 policy_of() {
   case " $ENC_ALL " in *" $1 "*) echo all; return;; esac

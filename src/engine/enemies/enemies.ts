@@ -1707,57 +1707,92 @@ const ENEMY_LIST: EnemyDef[] = [
     intentRule: { scripted: [], weighted: [] },
   },
 
-  // —— Boss：六火之灵（激活锁伤 → 分割6连 → 7 段仪轨循环）——
+  // —— Boss：六火幽魂（第二十批：激活锁伤 → 分割 6 连 → 固定七招循环）——
+  //
+  // ⚠ 三样东西**都不写在这里**（写进数据表就是第二份真相，与守卫者 / 拉加维林同族）：
+  //   * 「分割每击打多少」由**激活**那一回合按玩家当时的生命算定，存进 `miscInfo`
+  //     （`store_hp_scaled_damage`），分割自己读 `deal_damage_rolled`；
+  //   * 「下一招是谁」全部是 case 尾部的语句，六条都在 `MOVE_TURN_END`——而且它们读写的
+  //     `uniquePower0`（六焰计数）是**另一个字段**，不是 `miscInfo`；
+  //   * 灼烧塞的是灼伤+还是灼伤，由 `bc.turn > 8` 在**排队那一刻**决定（`upgradedAfterTurn`）。
+  // ⚠ 于是这只怪的 `getMoveForRoll` **一场仗只被调用一次**（开局那次，恒返回激活），
+  //   与守卫者 / 史莱姆王同形。
   {
     id: "hexaghost",
-    name: "六火之灵",
+    name: "六火幽魂",
+    // MonsterIds.h:178 `{{250,250},{264,264}}`（Boss 走 `setRandomHp(hpRng, asc>=9)`，
+    // MonsterSpecific.cpp:2465-2473）。⚠ 上下界相同**照样掷一次** monsterHpRng。
+    // ⚠ 它**没有** `Monster::construct` 的怪种特例（Monster.cpp:113 的 switch 只有虱子与
+    //   暗黑爬虫），也**没有** `preBattleAction`（MonsterSpecific.cpp:140 的 switch 里没有它），
+    //   所以建怪只掷一次 monsterHpRng、开局身上一个 Power 都没有。
     hpMin: 250,
     hpMax: 250,
     moves: [
       {
+        // MonsterSpecific.cpp:793-798。case 里**只有**一句 `miscInfo = bc.player.curHp / 12 + 1;`
+        // ——是 C++ 的整数除法（向零截断），且**只在这一刻**算，此后玩家掉多少血都不再变。
+        // 收尾（同步 setMove + 同步 noOpRollMove）在 MOVE_TURN_END。
+        // ⚠ 攻击白名单（MonsterMoves.h:463-466）里**没有** `HEXAGHOST_ACTIVATE`，与 unknown 一致。
         id: "activate",
         name: "激活",
         effects: [{ kind: "store_hp_scaled_damage", divisor: 12, add: 1 }],
-        intent: "buff",
+        intent: "unknown",
       },
       {
+        // MonsterSpecific.cpp:801 `attackPlayerHelper(bc, miscInfo, 6)`——每击的伤害取
+        // 激活那一刻存下的 `miscInfo`，六段共用同一次 `calculateDamageToPlayer`
+        // （多段攻击伤害只算一次，Monster.cpp:601-607）。
         id: "divider",
-        name: "分割",
+        name: "六重打击",
         effects: [{ kind: "deal_damage_rolled", times: 6 }],
         intent: "attack",
       },
       {
+        // MonsterSpecific.cpp:823-826：`attackPlayerHelper(bc, 6)` 之后
+        // `addToBot(MakeTempCardInDiscard(CardInstance(BURN, bc.turn > 8), asc19 ? 2 : 1))`。
+        // ⚠ 两个分档是**独立**的：张数按 asc19（asc0 恒 1 张），升不升级按 `bc.turn > 8`
+        //   ——`bc.turn` 从 0 起、在 `afterMonsterTurns` 里才自增，所以第 10 个怪物回合起
+        //   塞的是灼伤+（回合末 4 点）。asc0 也走得到，见 `upgradedAfterTurn`。
         id: "sear",
         name: "灼烧",
         effects: [
           { kind: "deal_damage", amount: 6 },
-          { kind: "add_card", cardId: "burn", pile: "discard", count: 1 },
+          { kind: "add_card", cardId: "burn", pile: "discard", count: 1, upgradedAfterTurn: 8 },
         ],
         intent: "attack",
       },
       {
+        // MonsterSpecific.cpp:841 `attackPlayerHelper(bc, asc4 ? 6 : 5, 2)`。
         id: "tackle",
         name: "冲撞",
         effects: [{ kind: "deal_damage_multi", amount: 5, times: 2 }],
         intent: "attack",
       },
       {
+        // MonsterSpecific.cpp:815-816：`addBlock(12)` 然后 `buff<MS::STRENGTH>(asc19 ? 3 : 2)`。
+        // ⚠ `addBlock` 是**同步**的裸调用（不是 `addToBot(MonsterGainBlock)`），故 `sync: true`
+        //   ——与守卫者的蓄能同族；两句都同步，所以书写顺序就是结算顺序。
+        // ⚠ 攻击白名单里**没有** `HEXAGHOST_INFLAME`，与 buff 一致。
         id: "inflame",
         name: "燃焰",
         effects: [
-          { kind: "gain_block", amount: 12 },
+          { kind: "gain_block", amount: 12, sync: true },
           { kind: "apply_power", power: "strength", amount: 2, on: "self" },
         ],
         intent: "buff",
       },
       {
+        // MonsterSpecific.cpp:808 `attackPlayerHelper(bc, asc4 ? 3 : 2, 6)`。
+        // ⚠ **参考的地狱之火只有伤害**：真实游戏里它还会把牌堆里已有的灼伤全部升级，
+        //   而参考全项目没有任何「升级灼伤」的代码（`grep BURN` 只有生成那几处）。
+        //   本批照抄参考、不打补丁，理由与关门条件记在 TODOS「已确认但尚未打补丁」。
         id: "inferno",
-        name: "地狱火",
+        name: "地狱之火",
         effects: [{ kind: "deal_damage_multi", amount: 2, times: 6 }],
         intent: "attack",
       },
     ],
-    // 出招由 sts-combat.ts 的 MOVE_RULES 登记 hexaghost（待迁移），intentRule 留空。
+    // 出招规则见 sts-combat.ts 的 MOVE_RULES（恒返回激活，只在开局被调用一次）。
     intentRule: { scripted: [], weighted: [] },
   },
 

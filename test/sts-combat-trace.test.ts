@@ -301,6 +301,8 @@ const ENCOUNTER: Record<string, string> = {
   // —— 第十九批：第一幕两个 Boss ——
   THE_GUARDIAN: "the_guardian",
   SLIME_BOSS: "slime_boss",
+  // —— 第二十批：第一幕最后一个 Boss。装完这一个，harness 的 20 个编队全部有背书。
+  HEXAGHOST: "hexaghost",
 };
 const MONSTER: Record<string, string> = {
   CULTIST: "cultist",
@@ -340,6 +342,8 @@ const MONSTER: Record<string, string> = {
   // 分裂成中号——所以 `slime_boss.jsonl` 里会出现 L 与 M 两代，那四行前面都有了。
   THE_GUARDIAN: "the_guardian",
   SLIME_BOSS: "slime_boss",
+  // —— 第二十批：六火幽魂。单怪编队，全场只有它一只（不分裂、不召唤）。
+  HEXAGHOST: "hexaghost",
   // ⚠ **分裂留下的空格**。参考的 `MonsterGroup::arr` 是定长 5 的数组，`monsterCount` 只是
   // 「dump 到第几格」；史莱姆王分裂时 `arr[0]` 与 `arr[2]` 被写、`monsterCount = 3`，
   // 于是 1 号格那只**从没被构造过**的默认 `Monster` 也被 dump 出来
@@ -422,6 +426,14 @@ const MOVE: Record<string, string> = {
   SLIME_BOSS_SLAM: "slam",
   // 与两只大史莱姆的分裂同名（各自怪的命名空间里都叫 `split`），比对逐怪进行，重名不要紧。
   SLIME_BOSS_SPLIT: "split",
+  // —— 第二十批：六火幽魂六条。⚠ `tackle` 与中号酸液史莱姆重名——同上，比对逐怪进行，
+  // 招式 id 只需在**本只怪**的 `moves` 里唯一。
+  HEXAGHOST_ACTIVATE: "activate",
+  HEXAGHOST_DIVIDER: "divider",
+  HEXAGHOST_INFERNO: "inferno",
+  HEXAGHOST_INFLAME: "inflame",
+  HEXAGHOST_SEAR: "sear",
+  HEXAGHOST_TACKLE: "tackle",
   // 分裂留下的空格：那只默认 `Monster` 的 `moveHistory[0]` 是 `MMID::INVALID`
   // （`monsterMoveStrings[0] == "INVALID"`，MonsterMoves.h:215）。我们的空占位
   // `currentMove` 是空串。⚠ 这一条只有那个空格用得到——所有真怪在 `MonsterGroup::init`

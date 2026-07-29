@@ -107,6 +107,10 @@ function migrateMonsterMiscInfo(combat: Record<string, unknown>): void {
     const old: unknown = m["rolledDamage"];
     delete m["rolledDamage"];
     backfill(m, "miscInfo", typeof old === "number" ? old : 0);
+    // 怪物侧的**第二个**通用整数字段（第二十批新增，对齐 `Monster::uniquePower0`）。
+    // 回填 0 是**无损**的：唯一的使用者是六火幽魂的六焰计数，而它本批才登记
+    // ——在此之前任何老档里都不可能有一只怪用到它。
+    backfill(m, "uniquePower0", 0);
   }
 }
 
