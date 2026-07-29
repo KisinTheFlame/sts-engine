@@ -97,6 +97,23 @@ type Trace = {
    * ⚠ 缺省即 0，不要写成必填：绝大多数行没有这个字段。
    */
   ascension?: number;
+  /**
+   * 入场时（`BattleContext::init` **之前**）的玩家生命，第二十一批新增。
+   *
+   * ⚠ `initial.player.hp` 是 **init 之后**的值，而 `BattleContext::init` 里已经跑过
+   * `initRelics`（BattleContext.cpp:73），血瓶的 `heal(2)` 就在里面。所以拿
+   * `initial.player.hp` 当重放的入场血量会**多回一次血**。
+   *
+   * asc0 下发现不了：`GameContext::initPlayer` 末尾是
+   * `curHp = ascension < 6 ? maxHp : round(maxHp * 0.9f)`（GameContext.cpp:522），
+   * 满血入场时那 2 点被上限吃掉，前后相等。asc19 是 68/75，于是每一条relic 里带血瓶的
+   * trace 都差整整 2 点——本批实测 420 例（14 编队 × 30 条，血瓶在 8 个遗物的轮换里占 1/4）。
+   *
+   * harness **只在它与 maxHp 不等时**输出，故 asc0 的行逐字节不变；缺省即 `maxHp`
+   * ——但这里退回 `initial.player.hp` 而不是 maxHp，因为 asc0 下两者恒等，
+   * 而万一以后有别的东西改 maxHp，用 initial 那份更贴近旧行为。
+   */
+  playerHp?: number;
   initial: Snapshot;
   steps: Step[];
 };
@@ -283,6 +300,15 @@ const CARD: Record<string, string> = {
   // 与 BURN / WOUND / DAZED 不同，它**真的会被打出**（唯一不需要医疗包的状态牌），
   // 所以它进了 CARD_RULES；这里的映射既覆盖牌堆快照、也覆盖打出它的那一步。
   SLIMED: "slimed",
+  // —— 第二十一批：爬升度 ≥10 起始牌组里多出来的那张诅咒 ——
+  //
+  // `GameContext::initPlayer`（GameContext.cpp:479-481）在**角色起始牌之前** obtain 它，
+  // 所以它排在 `deck` 数组的**最前面**（重放侧照数组顺序建牌，顺序即洗牌输入）。
+  // ⚠ 它是诅咒、`cardCanUse` 恒假，所以**不进 `CARD_RULES`**（与 BURN / WOUND / DAZED 同族）；
+  //   但它躺在牌组与三个牌堆的快照里，映射必须有。
+  // ⚠ 它是**虚无（ethereal）**：回合末没打出去就被消耗，`cards.ts:3450` 已登记该属性，
+  //   asc19 的 trace 里逐帧可见（手牌 → 消耗堆）。
+  ASCENDERS_BANE: "ascenders_bane",
 };
 const ENCOUNTER: Record<string, string> = {
   CULTIST: "cultist",
@@ -686,13 +712,18 @@ const start = (t: Trace): BattleContext =>
       defId: CARD[c] ?? c,
       upgraded: (t.deckUpgraded?.[i] ?? 0) === 1,
     })),
-    playerHp: t.initial.player.hp,
+    // 见 Trace.playerHp：`initial` 是 init **之后**的快照，血瓶已经加过血了。
+    playerHp: t.playerHp ?? t.initial.player.hp,
     playerMaxHp: t.initial.player.maxHp,
     // 见 HARNESS_GOLD_BASELINE：偷金按绝对值钳制，起点必须与 harness 一致。
     gold: HARNESS_GOLD_BASELINE,
     character: "ironclad",
     relics: t.relics,
     potions: t.initial.potions.map(mapPotion),
+    // harness 的快照按 `bc.potionCapacity` 输出药水槽，而 asc≥11 是 2 槽而不是 3
+    // （GameContext.cpp:66）。不跟着传的话重放侧的 capacity 恒为 3，
+    // 熵酿之类按 capacity 遍历槽位的地方会读到不存在的第 3 格。
+    potionCapacity: t.initial.potions.length,
     // potionRng 是 run 级持久流，harness 明确把它钉在 Random(seed)。
     potionRng: new StsRandom(BigInt(t.potionRngSeed)),
   });

@@ -65,7 +65,19 @@ ENC_ALL="cultist jaw_worm jaw_worm_horde three_louse two_louse"
 # 第十九批：第一幕两个 Boss（守卫者 / 史莱姆王），同样各自是自己那只怪唯一的来源；
 # 第二十批：六火幽魂——第一幕最后一个编队，装完这 20 个就把 harness 的 encounters 列表
 #   跑满了，再往下铺量必须给 harness **追加一遍第二幕循环**（不能动原列表，见 WORKFLOW）。
-ENC_V0="small_slimes lots_of_slimes large_slime blue_slaver red_slaver looter exordium_thugs exordium_wildlife gremlin_gang gremlin_nob lagavulin three_sentries the_guardian slime_boss hexaghost"
+# 第二十一批：爬升度这条轴。文件名是 `<编队>@asc19`——harness 只在爬升度非 0 时输出
+#   `"ascension"` 字段，`split-traces.mjs` 把它拼进分组键，于是 asc0 的 20 个文件名一个字不改
+#   （管线改造那一步单独跑过一次 `--check` 证明这是空操作）。
+#   这些文件同样走 `variant0` 策略：一份文件里只有那一个 asc19 variant，
+#   `variant0-rows.mjs` 因此返回整份长度 = 整份冻结，正是我们要的。
+#   ⚠ 只有 14 个**普通**编队。精英与 Boss 的血量阈值是 asc>=8 / >=9 而不是 7，
+#     招式还另有 asc17/18/19 分档，留给第二十二批——那一批要**另开一个 variant**，
+#     不能往本批这个 variant 的 encounters 里加（会平移其后所有 traceIdx）。
+ENC_V0_ASC0="small_slimes lots_of_slimes large_slime blue_slaver red_slaver looter exordium_thugs exordium_wildlife gremlin_gang gremlin_nob lagavulin three_sentries the_guardian slime_boss hexaghost"
+ENC_V0_ASC19="cultist@asc19 jaw_worm@asc19 jaw_worm_horde@asc19 two_louse@asc19 three_louse@asc19 small_slimes@asc19 lots_of_slimes@asc19 large_slime@asc19 blue_slaver@asc19 red_slaver@asc19 looter@asc19 exordium_thugs@asc19 exordium_wildlife@asc19 gremlin_gang@asc19"
+# ⚠ 必须拼成**单行**：policy_of 用 `case " $ENC_V0 " in *" $1 "*` 做匹配，中间夹一个换行会让
+#   两段接缝处的名字（hexaghost / cultist@asc19）匹配不上，静默失去校验。
+ENC_V0="$ENC_V0_ASC0 $ENC_V0_ASC19"
 
 policy_of() {
   case " $ENC_ALL " in *" $1 "*) echo all; return;; esac

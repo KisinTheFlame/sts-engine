@@ -135,10 +135,26 @@ export type PowerId =
   | "draw_reduction" // 抽牌削减：下个玩家回合少抽 = 层数张（时间吞噬者头槌，玩家身上·一次性）
   | "duplication"; // 复制：接下来 = 层数张打出的牌各额外结算一次（复制药水；每张 -1 层）
 
+/**
+ * 爬升度分档（第二十一批）。**敌人专用**——参考里带 asc 分档的全部是怪物侧数值。
+ *
+ * 匹配规则：按 `atLeast` **降序**取第一条满足 `ascension >= atLeast` 的，一条都不满足就用
+ * 效果自己的基础值。所以基础值恒等于 asc0，既有数据一个字节都不用改。
+ *
+ * 为什么放在**效果**上而不是「整条招式换一份效果表」：参考写的是
+ * `attackPlayerHelper(bc, asc2 ? 12 : 11)`——分档挂在**那个数**上。挂在招式上就得把整份
+ * 效果表复制一遍，以后改基础表要记得同步改每一档，而这里改的是同一处。
+ *
+ * ⚠ 三档以上也照抄得动：参考的 `strengthBuff[] = {3,4,5}` + `hallwayIdx =
+ * getTriIdx(asc, 2, 17)` 等价于 `[{atLeast:17,amount:5},{atLeast:2,amount:4}]` + 基础 3。
+ */
+export type AscTier = { atLeast: number; amount: number };
+
 /** 玩家出牌 / 敌人出招共用的效果原语。target 相对「行动者」解析。 */
 export type Effect =
   // strengthMultiplier：力量按该倍率计入伤害（重刃 ×3/×5）；省略即 ×1（普通攻击）。
-  | { kind: "deal_damage"; amount: number; strengthMultiplier?: number }
+  // ascAmount：敌人专用的爬升度分档，覆盖 `amount`（见 AscTier）。
+  | { kind: "deal_damage"; amount: number; strengthMultiplier?: number; ascAmount?: AscTier[] }
   | { kind: "deal_damage_all"; amount: number }
   | { kind: "deal_damage_multi"; amount: number; times: number }
   // 每次命中随机挑一个存活敌人（剑刃回旋镖：3 点 ×3，逐次随机目标）。
@@ -151,7 +167,7 @@ export type Effect =
   // sync：敌人专用。参考的怪物加格挡有**两种写法并存**——绝大多数是**同步** `addBlock(n)`
   // （拾荒者烟雾弹 MonsterSpecific.cpp:937 等 20 余处），少数是 `addToBot(MonsterGainBlock)`
   // （颚虫的猛击/咆哮 :858/:865 等 6 处）。省略 = 入队（既有怪都是这一种）。
-  | { kind: "gain_block"; amount: number; sync?: boolean }
+  | { kind: "gain_block"; amount: number; sync?: boolean; ascAmount?: AscTier[] }
   // 玩家用：当前格挡翻倍（坚守）。
   | { kind: "double_block" }
   // 玩家用：充能一颗指定类型的球（机器人；球槽满则先唤醒最左侧的球）。
@@ -161,18 +177,24 @@ export type Effect =
   // 玩家用：进入指定姿态（观者；离开平静时 +2 能量）。
   | { kind: "enter_stance"; stance: PlayerStance }
   // 敌人用：给一名随机存活友军加格挡（护盾地精保护）。
-  | { kind: "gain_block_ally"; amount: number }
+  | { kind: "gain_block_ally"; amount: number; ascAmount?: AscTier[] }
   // sync：敌人专用，且**只对 `on: "target"` 有意义**（`on: "self"` 在参考里一律是同步的
   // `buff<MS::X>()`）。给玩家上减益同样有两种写法并存：绝大多数是
   // `addToBot(Actions::DebuffPlayer<...>)`，而拉加维林的吸取灵魂写的是
   // `Actions::DebuffPlayer<PS::DEXTERITY>(-1).actFunc(bc)`（MonsterSpecific.cpp:882-883）
   // ——**当场执行**。省略 = 入队（既有怪都是这一种）。与 `gain_block` 的 sync 同族。
+  // ascAmount：敌人专用的爬升度分档，覆盖 `amount`（见 AscTier）。
+  // minAscension：敌人专用——**整条效果**只在 `ascension >= minAscension` 时才结算。
+  //   参考里这是「case 里多出来的一句 `if (asc17) addToBot(...)`」，与「同一个数换个值」
+  //   是两回事：肥胖地精的猛击在 asc17 会**额外**上一层脆弱（MonsterSpecific.cpp:646-648）。
   | {
       kind: "apply_power";
       power: PowerId;
       amount: number;
       on: "self" | "target" | "all_enemies";
       sync?: boolean;
+      ascAmount?: AscTier[];
+      minAscension?: number;
     }
   | { kind: "draw"; amount: number }
   | { kind: "gain_energy"; amount: number }
@@ -482,6 +504,26 @@ export type EnemyDef = {
   name: string;
   hpMin: number;
   hpMax: number;
+  /**
+   * 高爬升度的**第二组**血量区间（第二十一批）。
+   *
+   * 参考的 `monsterHpRange[id]`（`MonsterIds.h:150`）每只怪都有**两组**，由
+   * `Monster::initHp`（`MonsterSpecific.cpp:26-128`）按爬升度阈值二选一——而阈值**逐怪不同**：
+   * 普通怪 `>= 7`、精英 `>= 8`、Boss `>= 9`。所以阈值必须跟着区间一起写，
+   * 不能在引擎里按「是不是精英」猜。
+   *
+   * 省略 = 这只怪的爬升度分档**还没校准**（见 `ascCalibrated`），不是「没有第二组」。
+   */
+  hpHigh?: { atLeast: number; hpMin: number; hpMax: number };
+  /**
+   * 本条目的爬升度分档（血量第二组 + 招式数值的 asc 档）是否已按 trace 预言机校准。
+   *
+   * ⚠ **不是「支持爬升度」的开关，而是「这份数据在 asc>0 下可信」的断言。**
+   * `sts-combat.ts` 的 `constructMonster` 在 `ascension > 0` 且此位不为 true 时**直接抛错**
+   * ——与「未登记的编队/卡牌显式抛错」同一条理由：静默拿 asc0 的数值去打 asc19 的仗
+   * 比直接失败危险得多。第二十一批只校准了 14 个普通编队涉及的 19 只怪。
+   */
+  ascCalibrated?: boolean;
   moves: EnemyMove[];
   intentRule: IntentRule;
   // ⚠ 第十九批删掉了 `modeShiftThreshold` / `stanceMoves` 两个「守卫者专用」字段。

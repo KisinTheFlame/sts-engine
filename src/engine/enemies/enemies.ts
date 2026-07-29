@@ -6,20 +6,51 @@ import { nextFloat } from "../rng.js";
 // 血量区间、出招数值为功能性游戏规则；意图选择规则显式、可被种子 RNG 驱动（issue #234 C8）。
 // 出招名称为原创中文。精确权重 / 连续限制 / 守卫者阈值待真机 ground truth 校准（见设计文档 Assignment）。
 
+// === 爬升度分档（第二十一批）===
+//
+// 每条 `ascAmount` / `hpHigh` 都是 `MonsterSpecific.cpp` / `MonsterIds.h` 的逐位转写，
+// 行号标在各自的招式上。三条通用规则，读的时候记住就不必逐条重复：
+//
+//  * **`hpHigh.atLeast` 逐怪不同**：`Monster::initHp`（MonsterSpecific.cpp:26-128）
+//    普通怪 `asc>=7`、精英 `asc>=8`、Boss `asc>=9`。本批 19 只全是普通怪，所以全是 7；
+//    照抄时不要以为它是常数。
+//  * **`{a,b,c}[getTriIdx(asc, 2, 17)]` 展开成两条 tier**：`[{17,c},{2,b}]` + 基础 `a`。
+//    参考里这个惯用法叫 `hallwayIdx`（takeTurn 顶部），只用于走廊小怪的力量 / 仪式层数。
+//  * **只有 asc19 一档预言机。** 本批的 trace 是 asc0 与 asc19 两个档，所以每条
+//    `asc >= N` 的**两个方向**都有背书，但「阈值恰好是 N 而不是 N±1」没有——
+//    那要成对档位（asc16/17 之类），记在 TODOS 的盲区里。
 const ENEMY_LIST: EnemyDef[] = [
   {
     id: "cultist",
     name: "邪教徒",
     hpMin: 48,
     hpMax: 54,
+    // MonsterIds.h:164 `{{48,54},{50,56}}`；`setRandomHp(hpRng, asc >= 7)`（MonsterSpecific.cpp:44）。
+    hpHigh: { atLeast: 7, hpMin: 50, hpMax: 56 },
+    ascCalibrated: true,
     moves: [
       {
+        // MonsterSpecific.cpp:681-684 `ritualAmount[] = {3,4,5}`、下标 `hallwayIdx`。
         id: "incantation",
         name: "仪式咏唱",
-        effects: [{ kind: "apply_power", power: "ritual", amount: 3, on: "self" }],
+        effects: [
+          {
+            kind: "apply_power",
+            power: "ritual",
+            amount: 3,
+            on: "self",
+            ascAmount: [
+              { atLeast: 17, amount: 5 },
+              { atLeast: 2, amount: 4 },
+            ],
+          },
+        ],
         intent: "buff",
       },
       {
+        // MonsterSpecific.cpp:676 `attackPlayerHelper(bc, 6)`——**没有 asc 分档**
+        // （MonsterMoveDamage.cpp:58 同样是裸的 `{6}`）。所以邪教徒在 asc19 下变强的
+        // 只有血量与仪式层数，暗袭还是 6。
         id: "dark_strike",
         name: "暗袭",
         effects: [{ kind: "deal_damage", amount: 6 }],
@@ -36,14 +67,20 @@ const ENEMY_LIST: EnemyDef[] = [
     name: "颚虫",
     hpMin: 40,
     hpMax: 44,
+    // MonsterIds.h:178 `{{40,44},{42,46}}`；`setRandomHp(hpRng, asc >= 7)`。
+    hpHigh: { atLeast: 7, hpMin: 42, hpMax: 46 },
+    ascCalibrated: true,
     moves: [
       {
+        // MonsterSpecific.cpp:850 `attackPlayerHelper(bc, asc2 ? 12 : 11)`。
         id: "chomp",
         name: "撕咬",
-        effects: [{ kind: "deal_damage", amount: 11 }],
+        effects: [{ kind: "deal_damage", amount: 11, ascAmount: [{ atLeast: 2, amount: 12 }] }],
         intent: "attack",
       },
       {
+        // MonsterSpecific.cpp:863-865 `attackPlayerHelper(bc, 7)` + `MonsterGainBlock(idx, 5)`
+        // ——两个数**都没有 asc 分档**。
         id: "thrash",
         name: "猛击",
         effects: [
@@ -53,11 +90,23 @@ const ENEMY_LIST: EnemyDef[] = [
         intent: "attack",
       },
       {
+        // MonsterSpecific.cpp:855-859 `strengthBuff[] = {3,4,5}`（下标 `hallwayIdx`）
+        //   + `MonsterGainBlock(idx, asc17 ? 9 : 6)`。
+        // ⚠ 两个数的分档**不同宽**：力量是 2/17 两级，格挡只有 17 一级。
         id: "bellow",
         name: "咆哮",
         effects: [
-          { kind: "apply_power", power: "strength", amount: 3, on: "self" },
-          { kind: "gain_block", amount: 6 },
+          {
+            kind: "apply_power",
+            power: "strength",
+            amount: 3,
+            on: "self",
+            ascAmount: [
+              { atLeast: 17, amount: 5 },
+              { atLeast: 2, amount: 4 },
+            ],
+          },
+          { kind: "gain_block", amount: 6, ascAmount: [{ atLeast: 17, amount: 9 }] },
         ],
         intent: "buff",
       },
@@ -76,18 +125,32 @@ const ENEMY_LIST: EnemyDef[] = [
     name: "红虱",
     hpMin: 10,
     hpMax: 15,
+    // MonsterIds.h:187 `{{10,15},{11,16}}`；`setRandomHp(hpRng, asc >= 7)`。
+    hpHigh: { atLeast: 7, hpMin: 11, hpMax: 16 },
+    ascCalibrated: true,
     moves: [
       {
         id: "bite",
-        // 咬击基础伤害在出生时掷定（5~7）、整场固定，见 sts-combat.ts 的 createMonster。
+        // 咬击基础伤害在出生时掷定、整场固定，见 sts-combat.ts 的 constructMonster。
+        // ⚠ **区间本身带 asc 分档**：`Monster.cpp:116-121` 是 `asc2 ? random(6,8) : random(5,7)`，
+        //   那一档写在 constructMonster 里（它消耗 monsterHpRng，属于建怪而不是招式）。
         name: "啃咬",
         effects: [{ kind: "deal_damage_rolled" }],
         intent: "attack",
       },
       {
+        // MonsterSpecific.cpp:1011 `buff<MS::STRENGTH>(asc17 ? 4 : 3)`。
         id: "grow",
         name: "强化",
-        effects: [{ kind: "apply_power", power: "strength", amount: 3, on: "self" }],
+        effects: [
+          {
+            kind: "apply_power",
+            power: "strength",
+            amount: 3,
+            on: "self",
+            ascAmount: [{ atLeast: 17, amount: 4 }],
+          },
+        ],
         intent: "buff",
       },
     ],
@@ -104,15 +167,20 @@ const ENEMY_LIST: EnemyDef[] = [
     name: "绿虱",
     hpMin: 11,
     hpMax: 17,
+    // MonsterIds.h:173 `{{11,17},{12,18}}`；`setRandomHp(hpRng, asc >= 7)`。
+    hpHigh: { atLeast: 7, hpMin: 12, hpMax: 18 },
+    ascCalibrated: true,
     moves: [
       {
         id: "bite",
-        // 与红虱同理：咬击基础伤害出生时掷定（5~7）、整场固定。
+        // 与红虱同理：咬击基础伤害出生时掷定、整场固定，区间的 asc2 分档在 constructMonster。
         name: "啃咬",
         effects: [{ kind: "deal_damage_rolled" }],
         intent: "attack",
       },
       {
+        // MonsterSpecific.cpp:750 `addToBot(DebuffPlayer<WEAK>(2))`——**没有 asc 分档**
+        // （与红虱的强化不对称：那条有 asc17）。
         id: "spit_web",
         name: "吐丝",
         effects: [{ kind: "apply_power", power: "weak", amount: 2, on: "target" }],
@@ -145,20 +213,23 @@ const ENEMY_LIST: EnemyDef[] = [
     // MonsterIds.h:153 `{{28,32},{29,34}}`（asc<7 取前者）。
     hpMin: 28,
     hpMax: 32,
+    hpHigh: { atLeast: 7, hpMin: 29, hpMax: 34 },
+    ascCalibrated: true,
     moves: [
       {
         // MonsterSpecific.cpp:373 `attackPlayerHelper(asc2 ? 8 : 7)`
         //   + `addToBot(MakeTempCardInDiscard(SLIMED))`。
+        // ⚠ 黏液**张数没有 asc 分档**（只有史莱姆王的黏液喷射才有 asc19 的 5:3）。
         id: "corrosive_spit",
         name: "腐蚀喷吐",
         effects: [
-          { kind: "deal_damage", amount: 7 },
+          { kind: "deal_damage", amount: 7, ascAmount: [{ atLeast: 2, amount: 8 }] },
           { kind: "add_card", cardId: "slimed", pile: "discard", count: 1 },
         ],
         intent: "attack",
       },
       {
-        // MonsterSpecific.cpp:381 `addToBot(DebuffPlayer<WEAK>(1, true))`。
+        // MonsterSpecific.cpp:381 `addToBot(DebuffPlayer<WEAK>(1, true))`——没有 asc 分档。
         id: "lick",
         name: "舔舐",
         effects: [{ kind: "apply_power", power: "weak", amount: 1, on: "target" }],
@@ -168,7 +239,7 @@ const ENEMY_LIST: EnemyDef[] = [
         // MonsterSpecific.cpp:386 `attackPlayerHelper(asc2 ? 12 : 10)`。
         id: "tackle",
         name: "冲撞",
-        effects: [{ kind: "deal_damage", amount: 10 }],
+        effects: [{ kind: "deal_damage", amount: 10, ascAmount: [{ atLeast: 2, amount: 12 }] }],
         intent: "attack",
       },
     ],
@@ -188,6 +259,8 @@ const ENEMY_LIST: EnemyDef[] = [
     // MonsterIds.h:203 `{{28,32},{29,34}}`。
     hpMin: 28,
     hpMax: 32,
+    hpHigh: { atLeast: 7, hpMin: 29, hpMax: 34 },
+    ascCalibrated: true,
     moves: [
       {
         // MonsterSpecific.cpp:1178 `attackPlayerHelper(asc2 ? 10 : 8)`
@@ -195,13 +268,14 @@ const ENEMY_LIST: EnemyDef[] = [
         id: "flame_tackle",
         name: "扑击",
         effects: [
-          { kind: "deal_damage", amount: 8 },
+          { kind: "deal_damage", amount: 8, ascAmount: [{ atLeast: 2, amount: 10 }] },
           { kind: "add_card", cardId: "slimed", pile: "discard", count: 1 },
         ],
         intent: "attack",
       },
       {
-        // MonsterSpecific.cpp:1172 `addToBot(DebuffPlayer<FRAIL>(1))`。
+        // MonsterSpecific.cpp:1172 `addToBot(DebuffPlayer<FRAIL>(1))`——**没有 asc 分档**。
+        // ⚠ 与 L 号的舔舐不对称：那条是 `asc17 ? 3 : 2`。
         // ⚠ 这一条**没有显式传** isSourceMonster，但 `Actions.h:35` 的默认值就是 true，
         //   与同族三条显式传 true 的舔舐行为一致（施加当回合不递减）。
         id: "lick_frail",
@@ -224,12 +298,14 @@ const ENEMY_LIST: EnemyDef[] = [
     // MonsterIds.h:204 `{{10,14},{11,15}}`。
     hpMin: 10,
     hpMax: 14,
+    hpHigh: { atLeast: 7, hpMin: 11, hpMax: 15 },
+    ascCalibrated: true,
     moves: [
       {
         // MonsterSpecific.cpp:1204 `attackPlayerHelper(asc2 ? 6 : 5)`。
         id: "tackle_s",
         name: "冲撞",
-        effects: [{ kind: "deal_damage", amount: 5 }],
+        effects: [{ kind: "deal_damage", amount: 5, ascAmount: [{ atLeast: 2, amount: 6 }] }],
         intent: "attack",
       },
     ],
@@ -244,16 +320,18 @@ const ENEMY_LIST: EnemyDef[] = [
     // MonsterIds.h:154 `{{8,12},{9,13}}`。
     hpMin: 8,
     hpMax: 12,
+    hpHigh: { atLeast: 7, hpMin: 9, hpMax: 13 },
+    ascCalibrated: true,
     moves: [
       {
         // MonsterSpecific.cpp:398 `attackPlayerHelper(asc2 ? 4 : 3)`。
         id: "tackle_acid_s",
         name: "冲撞",
-        effects: [{ kind: "deal_damage", amount: 3 }],
+        effects: [{ kind: "deal_damage", amount: 3, ascAmount: [{ atLeast: 2, amount: 4 }] }],
         intent: "attack",
       },
       {
-        // MonsterSpecific.cpp:393 `addToBot(DebuffPlayer<WEAK>(1, true))`。
+        // MonsterSpecific.cpp:393 `addToBot(DebuffPlayer<WEAK>(1, true))`——没有 asc 分档。
         id: "lick_weak",
         name: "舔舐",
         effects: [{ kind: "apply_power", power: "weak", amount: 1, on: "target" }],
@@ -274,22 +352,31 @@ const ENEMY_LIST: EnemyDef[] = [
     // MonsterIds.h:157 `{{46,50},{48,52}}`（asc<7 取前者）。
     hpMin: 46,
     hpMax: 50,
+    hpHigh: { atLeast: 7, hpMin: 48, hpMax: 52 },
+    ascCalibrated: true,
     moves: [
       {
         // MonsterSpecific.cpp:450 `attackPlayerHelper(asc2 ? 13 : 12)`。
         id: "stab",
         name: "刺击",
-        effects: [{ kind: "deal_damage", amount: 12 }],
+        effects: [{ kind: "deal_damage", amount: 12, ascAmount: [{ atLeast: 2, amount: 13 }] }],
         intent: "attack",
       },
       {
         // MonsterSpecific.cpp:443 `attackPlayerHelper(asc2 ? 8 : 7)`
         //   + `addToBot(DebuffPlayer<WEAK>(asc17 ? 2 : 1, true))`。
+        // ⚠ 两个数分档**不同宽**（伤害 asc2、虚弱 asc17），照抄不要统一。
         id: "rake",
         name: "耙击",
         effects: [
-          { kind: "deal_damage", amount: 7 },
-          { kind: "apply_power", power: "weak", amount: 1, on: "target" },
+          { kind: "deal_damage", amount: 7, ascAmount: [{ atLeast: 2, amount: 8 }] },
+          {
+            kind: "apply_power",
+            power: "weak",
+            amount: 1,
+            on: "target",
+            ascAmount: [{ atLeast: 17, amount: 2 }],
+          },
         ],
         intent: "attack",
       },
@@ -310,6 +397,8 @@ const ENEMY_LIST: EnemyDef[] = [
     // MonsterIds.h:172 `{{22,28},{24,28}}`（asc<7 取前者）。
     hpMin: 22,
     hpMax: 28,
+    hpHigh: { atLeast: 7, hpMin: 24, hpMax: 28 },
+    ascCalibrated: true,
     // ⚠ **孢子云不写在这里。** 参考把它建模成一个 Power：`preBattleAction` 里
     // `buff<MS::SPORE_CLOUD>(2)`（MonsterSpecific.cpp:182-184，参考自注「the value here
     // isn't used. it is always 2」），死亡时由 `Monster::die` 读 `hasStatus<SPORE_CLOUD>()`
@@ -333,7 +422,18 @@ const ENEMY_LIST: EnemyDef[] = [
         // ⚠ 是**同步** buff（不是 addToBot），与颚虫的咆哮同形。
         id: "fungi_grow",
         name: "成长",
-        effects: [{ kind: "apply_power", power: "strength", amount: 3, on: "self" }],
+        effects: [
+          {
+            kind: "apply_power",
+            power: "strength",
+            amount: 3,
+            on: "self",
+            ascAmount: [
+              { atLeast: 17, amount: 5 },
+              { atLeast: 2, amount: 4 },
+            ],
+          },
+        ],
         intent: "buff",
       },
     ],
@@ -354,6 +454,8 @@ const ENEMY_LIST: EnemyDef[] = [
     // MonsterIds.h:182 `{{20,24},{21,25}}`（asc<7 取前者）。
     hpMin: 20,
     hpMax: 24,
+    hpHigh: { atLeast: 7, hpMin: 21, hpMax: 25 },
+    ascCalibrated: true,
     // ⚠ **狂怒（ANGRY）不写在这里**：参考在 `preBattleAction` 里 `buff<MS::ANGRY>(asc17 ? 2 : 1)`
     // （MonsterSpecific.cpp:156-158），受击时由 `Monster::attacked` 读它加力量
     // （Monster.cpp:424-426）。理由与真菌兽的孢子云同：它会出现在 trace 的怪物快照里
@@ -364,7 +466,7 @@ const ENEMY_LIST: EnemyDef[] = [
         // MonsterSpecific.cpp:659 `attackPlayerHelper(bc, asc2 ? 5 : 4)`。
         id: "scratch",
         name: "抓挠",
-        effects: [{ kind: "deal_damage", amount: 4 }],
+        effects: [{ kind: "deal_damage", amount: 4, ascAmount: [{ atLeast: 2, amount: 5 }] }],
         intent: "attack",
       },
     ],
@@ -376,12 +478,14 @@ const ENEMY_LIST: EnemyDef[] = [
     // MonsterIds.h:198 `{{10,14},{11,15}}`（asc<7 取前者）。
     hpMin: 10,
     hpMax: 14,
+    hpHigh: { atLeast: 7, hpMin: 11, hpMax: 15 },
+    ascCalibrated: true,
     moves: [
       {
         // MonsterSpecific.cpp:669 `attackPlayerHelper(bc, asc2 ? 10 : 9)`。
         id: "puncture",
         name: "穿刺",
-        effects: [{ kind: "deal_damage", amount: 9 }],
+        effects: [{ kind: "deal_damage", amount: 9, ascAmount: [{ atLeast: 2, amount: 10 }] }],
         intent: "attack",
       },
     ],
@@ -393,17 +497,22 @@ const ENEMY_LIST: EnemyDef[] = [
     // MonsterIds.h:171 `{{13,17},{14,18}}`（asc<7 取前者）。
     hpMin: 13,
     hpMax: 17,
+    hpHigh: { atLeast: 7, hpMin: 14, hpMax: 18 },
+    ascCalibrated: true,
     moves: [
       {
-        // MonsterSpecific.cpp:643-647 `attackPlayerHelper(bc, asc2 ? 5 : 4)`
-        //   + `addToBot(DebuffPlayer<WEAK>(1, true))`。
-        // ⚠ 虚弱层数**没有 asc 分档**（恒 1）；asc17 会再追加一条脆弱，当前 trace 全是 asc0，
-        //   没有预言机，故不写（写了也走不到）。
+        // MonsterSpecific.cpp:643-648 `attackPlayerHelper(bc, asc2 ? 5 : 4)`
+        //   + `addToBot(DebuffPlayer<WEAK>(1, true))`
+        //   + `if (asc17) addToBot(DebuffPlayer<FRAIL>(1, true))`。
+        // ⚠ 虚弱层数**没有 asc 分档**（恒 1）；asc17 是**多出来一整条效果**（脆弱 1），
+        //   不是把某个数换掉——这是 `minAscension` 存在的唯一理由，见 types.ts。
+        // ⚠ 脆弱排在虚弱**之后**（入队顺序 = 书写顺序），照抄不要提前。
         id: "smash",
         name: "猛击",
         effects: [
-          { kind: "deal_damage", amount: 4 },
+          { kind: "deal_damage", amount: 4, ascAmount: [{ atLeast: 2, amount: 5 }] },
           { kind: "apply_power", power: "weak", amount: 1, on: "target" },
+          { kind: "apply_power", power: "frail", amount: 1, on: "target", minAscension: 17 },
         ],
         intent: "attack",
       },
@@ -416,15 +525,29 @@ const ENEMY_LIST: EnemyDef[] = [
     // MonsterIds.h:195 `{{12,15},{13,17}}`（asc<7 取前者）。
     hpMin: 12,
     hpMax: 15,
+    hpHigh: { atLeast: 7, hpMin: 13, hpMax: 17 },
+    ascCalibrated: true,
     moves: [
       {
         // MonsterSpecific.cpp:1095-1099 `blockAmounts[] = {7,8,11}`、
-        // `getTriIdx(asc, 7, 17)` → asc0 取 7，然后 `addToBot(GainBlockRandomEnemy(idx, 7))`。
+        // `getTriIdx(asc, 7, 17)` → asc0 取 7，然后 `addToBot(GainBlockRandomEnemy(idx, ...))`。
+        // ⚠⚠ **这条的分档阈值是 7/17，不是 2/17**——`getTriIdx(asc, 7, 17)` 与走廊小怪那个
+        //   `hallwayIdx = getTriIdx(asc, 2, 17)` 长得几乎一样，全项目只有这一处用 7。
+        //   照抄别顺手写成 2。
         // ⚠ 目标是**随机一名友军**（排除自己、排除已死的），只剩自己时才给自己
         // ——那一支**不掷 aiRng**。见 sts-combat.ts 的 `gainBlockRandomEnemy`。
         id: "protect",
         name: "保护",
-        effects: [{ kind: "gain_block_ally", amount: 7 }],
+        effects: [
+          {
+            kind: "gain_block_ally",
+            amount: 7,
+            ascAmount: [
+              { atLeast: 17, amount: 11 },
+              { atLeast: 7, amount: 8 },
+            ],
+          },
+        ],
         intent: "defend",
       },
       {
@@ -433,7 +556,7 @@ const ENEMY_LIST: EnemyDef[] = [
         //   所以它是本批覆盖最薄的一条。
         id: "shield_bash",
         name: "盾击",
-        effects: [{ kind: "deal_damage", amount: 6 }],
+        effects: [{ kind: "deal_damage", amount: 6, ascAmount: [{ atLeast: 2, amount: 8 }] }],
         intent: "attack",
       },
     ],
@@ -449,6 +572,8 @@ const ENEMY_LIST: EnemyDef[] = [
     // MonsterIds.h:177 `{{21,25},{22,26}}`（asc<7 取前者）。
     hpMin: 21,
     hpMax: 25,
+    hpHigh: { atLeast: 7, hpMin: 22, hpMax: 26 },
+    ascCalibrated: true,
     moves: [
       // MonsterSpecific.cpp:774-780：整条 case **没有任何效果**，只有 `++miscInfo`
       // 与「攒够 3 次就改出大招」。两句都是引擎侧记账，分别落在 sts-combat.ts 的
@@ -456,9 +581,12 @@ const ENEMY_LIST: EnemyDef[] = [
       { id: "charging", name: "蓄力", effects: [], intent: "unknown" },
       {
         // MonsterSpecific.cpp:782-789 `attackPlayerHelper(bc, asc2 ? 30 : 25)`。
+        // ⚠ 同一条 case 的**收尾**也带 asc 分档（`if (!asc17) { miscInfo = 0; setMove(蓄力); }`）
+        //   ——asc17 起大招之后意图**不回蓄力**，于是它每回合都放。那一半在
+        //   sts-combat.ts 的 `MOVE_TURN_END["gremlin_wizard/ultimate_blast"]`。
         id: "ultimate_blast",
         name: "终极爆发",
-        effects: [{ kind: "deal_damage", amount: 25 }],
+        effects: [{ kind: "deal_damage", amount: 25, ascAmount: [{ atLeast: 2, amount: 30 }] }],
         intent: "attack",
       },
     ],
@@ -475,6 +603,8 @@ const ENEMY_LIST: EnemyDef[] = [
     // MonsterIds.h:181 `{{44,48},{46,50}}`（asc<7 取前者）。
     hpMin: 44,
     hpMax: 48,
+    hpHigh: { atLeast: 7, hpMin: 46, hpMax: 50 },
+    ascCalibrated: true,
     moves: [
       {
         // MonsterSpecific.cpp:918 `stealGoldFromPlayer(bc, getStatus<MS::THIEVERY>())`
@@ -483,9 +613,14 @@ const ENEMY_LIST: EnemyDef[] = [
         // ⚠ 这条 case 的首尾还有两处只能写进代码的东西，见 sts-combat.ts 的
         //   `MOVE_TURN_BEGIN` / `MOVE_TURN_END`（首回合白掷一次 aiRng 的对白、
         //   以及「下一招是什么」那个带 aiRng 的分支）。
+        // ⚠ 偷金额度本身也有 asc 分档（`buff<THIEVERY>(asc17 ? 20 : 15)`），但那是
+        //   preBattleAction 里的 Power 层数，不是招式数值，写在 sts-combat.ts。
         id: "mug",
         name: "抢劫",
-        effects: [{ kind: "steal_gold" }, { kind: "deal_damage", amount: 10 }],
+        effects: [
+          { kind: "steal_gold" },
+          { kind: "deal_damage", amount: 10, ascAmount: [{ atLeast: 2, amount: 11 }] },
+        ],
         intent: "attack",
       },
       {
@@ -493,12 +628,16 @@ const ENEMY_LIST: EnemyDef[] = [
         // ⚠ asc0 是 **12**，不是与 MUG 同族的 11——参考这两行的 asc2 差值不同（+2 / +1）。
         id: "lunge",
         name: "猛扑",
-        effects: [{ kind: "steal_gold" }, { kind: "deal_damage", amount: 12 }],
+        effects: [
+          { kind: "steal_gold" },
+          { kind: "deal_damage", amount: 12, ascAmount: [{ atLeast: 2, amount: 14 }] },
+        ],
         intent: "attack",
       },
       {
         // MonsterSpecific.cpp:937 `addBlock(6)`——**同步**加格挡，不是
         // `addToBot(MonsterGainBlock)`（颚虫才是入队的那种），故 `sync: true`。
+        // **没有 asc 分档**（恒 6）。
         id: "smoke_bomb",
         name: "烟雾弹",
         effects: [{ kind: "gain_block", amount: 6, sync: true }],
@@ -524,12 +663,14 @@ const ENEMY_LIST: EnemyDef[] = [
     // MonsterIds.h:189 `{{46,50},{48,52}}`（asc<7 取前者）。
     hpMin: 46,
     hpMax: 50,
+    hpHigh: { atLeast: 7, hpMin: 48, hpMax: 52 },
+    ascCalibrated: true,
     moves: [
       {
         // MonsterSpecific.cpp:1029 `attackPlayerHelper(asc2 ? 14 : 13)`。
         id: "rs_stab",
         name: "刺击",
-        effects: [{ kind: "deal_damage", amount: 13 }],
+        effects: [{ kind: "deal_damage", amount: 13, ascAmount: [{ atLeast: 2, amount: 14 }] }],
         intent: "attack",
       },
       {
@@ -540,8 +681,14 @@ const ENEMY_LIST: EnemyDef[] = [
         id: "scrape",
         name: "刮擦",
         effects: [
-          { kind: "deal_damage", amount: 8 },
-          { kind: "apply_power", power: "vulnerable", amount: 1, on: "target" },
+          { kind: "deal_damage", amount: 8, ascAmount: [{ atLeast: 2, amount: 9 }] },
+          {
+            kind: "apply_power",
+            power: "vulnerable",
+            amount: 1,
+            on: "target",
+            ascAmount: [{ atLeast: 17, amount: 2 }],
+          },
         ],
         intent: "attack",
       },
@@ -1816,6 +1963,8 @@ const ENEMY_LIST: EnemyDef[] = [
     // MonsterIds.h:152 `{{65,69},{68,72}}`（asc<7 取前者）。
     hpMin: 65,
     hpMax: 69,
+    hpHigh: { atLeast: 7, hpMin: 68, hpMax: 72 },
+    ascCalibrated: true,
     splitInto: ["acid_slime_m", "acid_slime_m"],
     moves: [
       {
@@ -1824,7 +1973,7 @@ const ENEMY_LIST: EnemyDef[] = [
         id: "corrosive_spit_l",
         name: "腐蚀喷吐",
         effects: [
-          { kind: "deal_damage", amount: 11 },
+          { kind: "deal_damage", amount: 11, ascAmount: [{ atLeast: 2, amount: 12 }] },
           { kind: "add_card", cardId: "slimed", pile: "discard", count: 2 },
         ],
         intent: "attack",
@@ -1833,11 +1982,12 @@ const ENEMY_LIST: EnemyDef[] = [
         // MonsterSpecific.cpp:368 `attackPlayerHelper(asc2 ? 18 : 16)`。
         id: "tackle_l",
         name: "冲撞",
-        effects: [{ kind: "deal_damage", amount: 16 }],
+        effects: [{ kind: "deal_damage", amount: 16, ascAmount: [{ atLeast: 2, amount: 18 }] }],
         intent: "attack",
       },
       {
-        // MonsterSpecific.cpp:359 `addToBot(DebuffPlayer<WEAK>(2, true))`。
+        // MonsterSpecific.cpp:359 `addToBot(DebuffPlayer<WEAK>(2, true))`——**没有 asc 分档**
+        // （与尖刺 L 的舔舐不对称：那条脆弱是 `asc17 ? 3 : 2`）。
         id: "lick_l",
         name: "舔舐",
         effects: [{ kind: "apply_power", power: "weak", amount: 2, on: "target" }],
@@ -1873,6 +2023,8 @@ const ENEMY_LIST: EnemyDef[] = [
     // MonsterIds.h:202 `{{64,70},{67,73}}`。
     hpMin: 64,
     hpMax: 70,
+    hpHigh: { atLeast: 7, hpMin: 67, hpMax: 73 },
+    ascCalibrated: true,
     splitInto: ["spike_slime_m", "spike_slime_m"],
     moves: [
       {
@@ -1881,7 +2033,7 @@ const ENEMY_LIST: EnemyDef[] = [
         id: "flame_tackle_l",
         name: "火焰冲撞",
         effects: [
-          { kind: "deal_damage", amount: 16 },
+          { kind: "deal_damage", amount: 16, ascAmount: [{ atLeast: 2, amount: 18 }] },
           { kind: "add_card", cardId: "slimed", pile: "discard", count: 2 },
         ],
         intent: "attack",
@@ -1890,7 +2042,15 @@ const ENEMY_LIST: EnemyDef[] = [
         // MonsterSpecific.cpp:1193 `addToBot(DebuffPlayer<FRAIL>(asc17 ? 3 : 2, true))`。
         id: "lick_frail_l",
         name: "舔舐",
-        effects: [{ kind: "apply_power", power: "frail", amount: 2, on: "target" }],
+        effects: [
+          {
+            kind: "apply_power",
+            power: "frail",
+            amount: 2,
+            on: "target",
+            ascAmount: [{ atLeast: 17, amount: 3 }],
+          },
+        ],
         intent: "debuff",
       },
       {

@@ -11,6 +11,7 @@ import {
   importState,
   initCombat,
   isCardSupported,
+  isEncounterAscSupported,
   isEncounterSupported,
   isPotionSupported,
   playCard as stsPlayCard,
@@ -44,15 +45,23 @@ export type CombatCoverage = { supported: true } | { supported: false; reason: s
 /**
  * 这场战斗 sts-combat 能不能打。
  *
- * 只查「会不会漏东西或错配 RNG」的三类：编队、牌组里的牌、手上的药水。
+ * 只查「会不会漏东西或错配 RNG」的四类：编队、**编队 × 爬升度**、牌组里的牌、手上的药水。
  * 遗物不在此列——它的战斗内行为要么已登记进 sts-combat，要么还没迁移（那就是无行为），
- * 两种都不会错配 RNG。ascension 也不查：怪物的 asc 分支是逐行转写的（只是 trace 只跑了 asc 0）。
+ * 两种都不会错配 RNG。
+ *
+ * ⚠ 爬升度是**第二十一批新加的一条独立轴**。此前这里的注释写着「ascension 不查：怪物的
+ * asc 分支是逐行转写的」——那句话当时就不完全成立（`enemies.ts` 只有一组血量区间、
+ * 招式数值全是 asc0 的值），开了爬升度这条轴之后更不成立。现在按编队查，
+ * 兜底在 `constructMonster`（按怪查 `EnemyDef.ascCalibrated`，直接抛错）。
  */
 export function stsCombatCoverage(state: GameState, encounterId: string): CombatCoverage {
   const no = (reason: string): CombatCoverage => ({ supported: false, reason });
 
   if (!isEncounterSupported(encounterId)) {
     return no(`编队「${encounterId}」尚未迁移（无 trace 背书）`);
+  }
+  if (!isEncounterAscSupported(encounterId, state.ascension)) {
+    return no(`编队「${encounterId}」的爬升度分档尚未校准（ascension=${String(state.ascension)}）`);
   }
   for (const card of state.deck) {
     const def = getCardDef(card.defId);

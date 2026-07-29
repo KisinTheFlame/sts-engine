@@ -11,6 +11,7 @@ import {
   usePotion,
 } from "../src/engine/combat-bridge.js";
 import {
+  ASC_SUPPORTED_ENCOUNTERS,
   SUPPORTED_ENCOUNTERS,
   addToBot,
   exportState,
@@ -701,5 +702,27 @@ describe("接线：覆盖面登记与 trace 数据双向对齐", () => {
     ].sort();
     // 多列（登记了却没 trace 背书）与漏列（有 trace 却不启用）都会在这里失败。
     expect([...SUPPORTED_ENCOUNTERS].sort()).toEqual(withTrace);
+  });
+
+  it("ASC_SUPPORTED_ENCOUNTERS 与 test/golden/traces 的 @ascN 文件一一对应", () => {
+    const traceDir = fileURLToPath(new URL("./golden/traces", import.meta.url));
+    // 一个编队只要在**任一**爬升度上有 trace，就算它的 asc 分档有背书。
+    const withAscTrace = [
+      ...new Set(
+        readdirSync(traceDir)
+          .filter((f) => f.endsWith(".jsonl"))
+          .map((f) => /^(.+)@asc\d+\.jsonl$/.exec(f))
+          .flatMap((m) => (m === null ? [] : [m[1]!])),
+      ),
+    ].sort();
+    // 多列 = 声称校准过却没有任何 asc trace 走到它（`stsCombatCoverage` 会放行一场
+    // 没有预言机的战斗）；漏列 = 有 asc trace 却不启用。两个方向都必须失败。
+    expect([...ASC_SUPPORTED_ENCOUNTERS].sort()).toEqual(withAscTrace);
+  });
+
+  it("ASC_SUPPORTED_ENCOUNTERS 必须是 SUPPORTED_ENCOUNTERS 的子集", () => {
+    // 「asc>0 有背书、asc0 没有」是不可能的：asc19 那批 variant 用的是同一批编队。
+    const base = new Set(SUPPORTED_ENCOUNTERS);
+    expect(ASC_SUPPORTED_ENCOUNTERS.filter((e) => !base.has(e))).toEqual([]);
   });
 });

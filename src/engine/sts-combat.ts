@@ -27,7 +27,7 @@ import type { RandomState } from "./sts-rng.js";
 import { getEnemyDef, getEncounterDef } from "./enemies/enemies.js";
 import { costOf, etherealOf, exhaustsOf, getCardDef, targetedOf } from "./cards/cards.js";
 import { getPotionDef } from "./potions/potions.js";
-import type { CharacterId } from "./types.js";
+import type { AscTier, CharacterId } from "./types.js";
 
 // ============================================================================
 // 战斗结局（对齐 Outcome）
@@ -871,10 +871,35 @@ const MOVE_RULES: Record<string, MoveForRoll> = {
   //     `lastMove(冲撞)`——**一个看两回合、一个只看一回合**，不是笔误，asc17 那份才两段
   //     都用 lastTwoMoves（见下）。
   //  ② 第一段追加的 randomBoolean **不带概率参数**（即 0.5），另两段是 0.4f。
+  //     ⚠ `randomBoolean()` 走 `nextBoolean()`、`randomBoolean(0.5f)` 走 `nextFloat() < 0.5f`
+  //     ——**两条不同的路径，同种子下取值不同**（Random.h:126 / :196）。asc17 那份第二段
+  //     写的正是显式的 `0.5f`，不能与这里的无参版本合并。
   //  ③ 三条 randomBoolean 的 true 分支各自返回不同的招，别按「true=攻击」想当然。
-  // TODO(后续PR): asc>=17 是**另一整块**（阈值 40/80，且第二段改用 lastTwoMoves(冲撞)、
-  //   第三段改用 lastMove(舔舐)）。当前 trace 全是 asc0，写了也没有预言机，故不转写。
+  // ⚠ asc>=17 是**另一整块**（第二十一批转写）：阈值 40/80（而非 30/70）、
+  //   第二段改用 `lastTwoMoves(冲撞)` + 显式 `0.5f`、第三段改用 `lastMove(舔舐)`。
+  //   四处差别没有一处是「等价改写」，逐条照抄。
   acid_slime_m: (bc, m, roll) => {
+    if (bc.ascension >= 17) {
+      // —— START ASCENSION 17（MonsterSpecific.cpp:1928-1963）——
+      if (roll < 40) {
+        if (lastTwoMoves(m, "corrosive_spit")) {
+          return bc.rng.aiRng.randomBoolean() ? "tackle" : "lick"; // ★ 追加一次 aiRng
+        }
+        return "corrosive_spit";
+      }
+      if (roll < 80) {
+        if (lastTwoMoves(m, "tackle")) {
+          // ⚠ 显式 0.5f（走 nextFloat 那条路），与 asc<17 第一段的无参 randomBoolean 不同。
+          return bc.rng.aiRng.randomBoolean(Math.fround(0.5)) ? "corrosive_spit" : "lick"; // ★ 追加一次 aiRng
+        }
+        return "tackle";
+      }
+      if (lastMove(m, "lick")) {
+        return bc.rng.aiRng.randomBoolean(Math.fround(0.4)) ? "corrosive_spit" : "tackle"; // ★ 追加一次 aiRng
+      }
+      return "lick";
+      // —— END ASCENSION 17 ——
+    }
     if (roll < 30) {
       if (lastTwoMoves(m, "corrosive_spit")) {
         return bc.rng.aiRng.randomBoolean() ? "tackle" : "lick"; // ★ 追加一次 aiRng
@@ -898,8 +923,15 @@ const MOVE_RULES: Record<string, MoveForRoll> = {
   // rollMove 恒消耗 **2** 次 aiRng（roll 那次照掷、只是结果被丢掉）。
   // ⚠ 而且这个 rule 一场仗只会被调用一次：takeTurn 那两条用的是**同步 setMove** 严格交替，
   // 压根不排 RollMove（见 MOVE_TURN_END）。
-  // TODO(后续PR): asc>=17 直接 `return ACID_SLIME_S_LICK`，**不掷** randomBoolean。
-  acid_slime_s: (bc) => (bc.rng.aiRng.randomBoolean() ? "tackle_acid_s" : "lick_weak"), // ★ 追加一次 aiRng
+  // ⚠ asc>=17 直接 `return ACID_SLIME_S_LICK`（MonsterSpecific.cpp:1912-1913），
+  //   **不掷** randomBoolean——于是它的 rollMove 从恒 2 次 aiRng 变成恒 1 次。
+  //   这不是「少个分支」，是 aiRng 计数器整场错位，第二十一批转写。
+  acid_slime_s: (bc) => {
+    if (bc.ascension >= 17) {
+      return "lick_weak";
+    }
+    return bc.rng.aiRng.randomBoolean() ? "tackle_acid_s" : "lick_weak"; // ★ 追加一次 aiRng
+  },
 
   // 尖刺史莱姆（中）：对齐 MonsterSpecific.cpp:2820 SPIKE_SLIME_M。
   // 纯 roll 分支，不追加 aiRng。asc17 那条判断是**内联**在同一表达式里的，故一并转写。
@@ -927,10 +959,39 @@ const MOVE_RULES: Record<string, MoveForRoll> = {
   // 与 acid_slime_m 逐分支同构（阈值 30/70、三条追加 randomBoolean 的概率 0.5/0.4/0.4、
   // 连续限制 lastTwoMoves/lastMove/lastTwoMoves），只有返回的招式 id 换成 L 号自己的。
   // ⚠ 同样是「第一段看两回合、第二段只看一回合」那个非直觉但照抄的形状。
-  // TODO(后续PR): asc>=17 是另一整块（阈值 40/80）。⚠ 参考那一块的第一段写的是
-  //   `lastTwoMoves(ACID_SLIME_M_CORROSIVE_SPIT)`——**M 号**的枚举，看着像笔误，
-  //   但当前 trace 全是 asc0，没有预言机能判它，故连同整块一起不转写。
+  // ⚠ asc>=17 是另一整块（第二十一批转写）：阈值 **40/70**（M 号是 40/80）、
+  //   前两段的追加概率是 **0.6f**（M 号是 0.5f/0.4f）、第三段才是 0.4f。
+  // ⚠⚠ **参考那一块的第一段写的是 `lastTwoMoves(ACID_SLIME_M_CORROSIVE_SPIT)`
+  //   ——M 号的枚举，出现在 L 号的 case 里**（MonsterSpecific.cpp:2006）。L 号的
+  //   moveHistory 里永远不会有 M 号的招式，所以那个条件**恒假**，追加的
+  //   `randomBoolean(0.6F)` 与它后面的两个返回值全是死代码：roll<40 时恒出腐蚀喷吐。
+  //   真实游戏那里读的是它自己的腐蚀喷吐，所以这**看着是参考的复制粘贴笔误**。
+  //   **本批照抄、不打补丁**，按 WORKFLOW 第 5 步「参考项目看着像 bug → 不要自己拍板」
+  //   写进报告与 TODOS「已确认但尚未打补丁」。
+  //   我们这边照抄的形状就是「拿 M 号的招式 id 去查 L 号的历史」——同样恒假，
+  //   将来要打补丁也只需把 `"corrosive_spit"` 改成 `"corrosive_spit_l"` 一个词。
   acid_slime_l: (bc, m, roll) => {
+    if (bc.ascension >= 17) {
+      // —— START ASCENSION 17（MonsterSpecific.cpp:2002-2033）——
+      if (roll < 40) {
+        // ⚠ 见上：参考写的是 **M 号**的腐蚀喷吐，恒假。照抄。
+        if (lastTwoMoves(m, "corrosive_spit")) {
+          return bc.rng.aiRng.randomBoolean(Math.fround(0.6)) ? "tackle_l" : "lick_l"; // ★ 追加一次 aiRng
+        }
+        return "corrosive_spit_l";
+      }
+      if (roll < 70) {
+        if (lastTwoMoves(m, "tackle_l")) {
+          return bc.rng.aiRng.randomBoolean(Math.fround(0.6)) ? "corrosive_spit_l" : "lick_l"; // ★ 追加一次 aiRng
+        }
+        return "tackle_l";
+      }
+      if (lastMove(m, "lick_l")) {
+        return bc.rng.aiRng.randomBoolean(Math.fround(0.4)) ? "corrosive_spit_l" : "tackle_l"; // ★ 追加一次 aiRng
+      }
+      return "lick_l";
+      // —— END ASCENSION 17 ——
+    }
     if (roll < 30) {
       if (lastTwoMoves(m, "corrosive_spit_l")) {
         return bc.rng.aiRng.randomBoolean() ? "tackle_l" : "lick_l"; // ★ 追加一次 aiRng
@@ -1617,7 +1678,25 @@ function getMonsterTurnNumber(bc: BattleContext): number {
  */
 function constructMonster(bc: BattleContext, defId: string): CombatMonster {
   const def = getEnemyDef(defId);
-  const hp = bc.rng.monsterHpRng.random(def.hpMin, def.hpMax); // ★ 消耗一次 monsterHpRng
+  // 爬升度未校准就**直接抛错**（对齐「未登记的内容显式抛错」那条总纲）。
+  // 静默拿 asc0 的血量区间与招式数值去打 asc19 的仗，比开不了战危险得多——
+  // 它会产出看着合理、其实与原版不符的数值，而「同种子复现原版」正是这个项目的全部价值。
+  // 第二十一批只校准了 14 个普通编队涉及的 19 只怪，精英与 Boss 等第二十二批。
+  if (bc.ascension > 0 && def.ascCalibrated !== true) {
+    throw new Error(
+      `sts-combat: 敌人「${defId}」的爬升度分档尚未按预言机校准，无法在 ascension=${String(bc.ascension)} 下开战`,
+    );
+  }
+  // 血量区间的第二组（对齐 `Monster::initHp` → `setRandomHp(hpRng, ascension >= N)`，
+  // MonsterSpecific.cpp:26-128）。⚠ 阈值 N **逐怪不同**（普通 7 / 精英 8 / Boss 9），
+  // 所以它写在数据表里跟着区间走，这里不猜。
+  // ⚠ 无论走哪一组都**只掷一次** monsterHpRng——`setRandomHp` 只有一句 `hpRng.random(a,b)`，
+  //   换组不改 RNG 消耗次数，只改上下界。
+  const range =
+    def.hpHigh !== undefined && bc.ascension >= def.hpHigh.atLeast
+      ? { min: def.hpHigh.hpMin, max: def.hpHigh.hpMax }
+      : { min: def.hpMin, max: def.hpMax };
+  const hp = bc.rng.monsterHpRng.random(range.min, range.max); // ★ 消耗一次 monsterHpRng
   const m: CombatMonster = {
     defId,
     hp,
@@ -1989,17 +2068,30 @@ const ENCOUNTER_BUILDERS: Record<string, EncounterBuilder> = {
 
 type PreBattleAction = (bc: BattleContext, m: CombatMonster) => void;
 
+/**
+ * 虱子蜷缩的层数（对齐 `Monster::preBattleAction` 的 GREEN_LOUSE / RED_LOUSE 那条
+ * case，MonsterSpecific.cpp:290-306）。红绿虱共用同一条 case，故这里也共用一个函数。
+ *
+ * ⚠ 三级分档、**一次** monsterHpRng：参考先按 asc 选好 `curlUpMin` / `curlUpMax`，
+ *   末尾才 `bc.monsterHpRng.random(curlUpMin, curlUpMax)`。
+ */
+function rollCurlUp(bc: BattleContext): number {
+  const [min, max] = bc.ascension >= 17 ? [9, 12] : bc.ascension >= 7 ? [4, 8] : [3, 7];
+  return bc.rng.monsterHpRng.random(min, max); // ★ 消耗一次 monsterHpRng
+}
+
 const PRE_BATTLE_ACTION: Record<string, PreBattleAction> = {
   // 虱子蜷缩：首次受到未被格挡的攻击时获得格挡，层数开局掷定（走 monsterHpRng）。
+  //
+  // 对齐 MonsterSpecific.cpp:290-306：分档是**三级** asc17 / asc7 / 其余，
+  // 而且是先算好上下界、最后**只掷一次** `monsterHpRng.random(min, max)`。
+  // ⚠ 第二十一批修：此前只写了 asc7 那一级，漏掉 asc17 的 9~12——asc0 下走不到，
+  //   开了爬升度这条轴才暴露。**别把它写成两次 random 的分支**，次数是钉死的。
   louse: (bc, m) => {
-    const amount =
-      bc.ascension >= 7 ? bc.rng.monsterHpRng.random(4, 8) : bc.rng.monsterHpRng.random(3, 7);
-    addPower(m.powers, "curl_up", amount);
+    addPower(m.powers, "curl_up", rollCurlUp(bc));
   },
   green_louse: (bc, m) => {
-    const amount =
-      bc.ascension >= 7 ? bc.rng.monsterHpRng.random(4, 8) : bc.rng.monsterHpRng.random(3, 7);
-    addPower(m.powers, "curl_up", amount);
+    addPower(m.powers, "curl_up", rollCurlUp(bc));
   },
   // 抢劫者的偷窃额度（对齐 MonsterSpecific.cpp:233 `buff<MS::THIEVERY>(asc17 ? 20 : 15)`，
   // 与劫匪共用同一条 case）。**不消耗 RNG**，但它是抢劫/猛扑偷多少的唯一数值来源，
@@ -7107,6 +7199,27 @@ function doMonsterTurn(bc: BattleContext, idx: number): void {
  * 返回实际执行的招式 id（找不到招式返回 null），调用方据此查 `MOVE_TURN_END` 决定收尾——
  * 收尾必须用**执行的那一招**而不是 `m.currentMove`，因为同步 setMove 会当场改掉后者。
  */
+/**
+ * 取效果的实际数值：有 `ascAmount` 就按爬升度分档，没有就用基础值（见 types.ts 的 `AscTier`）。
+ *
+ * ⚠ 取的是**满足 `ascension >= atLeast` 中 `atLeast` 最大**的那一条，不是数组第一条命中的
+ *   ——顺序无关，写反了也不会错。参考的 `{a,b,c}[getTriIdx(asc, x, y)]` 语义正是这个。
+ */
+function ascValue(bc: BattleContext, base: number, tiers: AscTier[] | undefined): number {
+  if (tiers === undefined) {
+    return base;
+  }
+  let value = base;
+  let matched = -1;
+  for (const tier of tiers) {
+    if (bc.ascension >= tier.atLeast && tier.atLeast > matched) {
+      value = tier.amount;
+      matched = tier.atLeast;
+    }
+  }
+  return value;
+}
+
 function takeTurn(bc: BattleContext, m: CombatMonster): string | null {
   const def = getEnemyDef(m.defId);
   const move = def.moves.find((mv) => mv.id === m.currentMove);
@@ -7116,6 +7229,14 @@ function takeTurn(bc: BattleContext, m: CombatMonster): string | null {
   // 开场语句（当前只有抢劫者首回合那次白掷的 aiRng），见 MOVE_TURN_BEGIN。
   MOVE_TURN_BEGIN[`${m.defId}/${move.id}`]?.(bc, m);
   for (const eff of move.effects) {
+    // 爬升度门（第二十一批）：参考里「case 里多出来的一句 `if (asc17) addToBot(...)`」。
+    // ⚠ 它必须**在 outcome 判断之前**跳过，否则会白占一次循环——不过两者都不消耗 RNG，
+    //   放在这里只是为了让「这条效果压根不存在」这个语义最直白。
+    if (eff.kind === "apply_power" && eff.minAscension !== undefined) {
+      if (bc.ascension < eff.minAscension) {
+        continue;
+      }
+    }
     // 同理：一旦分出胜负，后续排队效果在参考里也不会再执行。
     if (bc.outcome !== "undecided") {
       return move.id;
@@ -7125,7 +7246,7 @@ function takeTurn(bc: BattleContext, m: CombatMonster): string | null {
     // `addToBot(Actions::...)`。差别看得见——荆棘伤害走 addToTop 会插到排队的
     // 加格挡之前，若格挡改成同步就会把荆棘吃掉。
     if (eff.kind === "apply_power" && eff.on === "self") {
-      addPower(m.powers, eff.power, eff.amount);
+      addPower(m.powers, eff.power, ascValue(bc, eff.amount, eff.ascAmount));
       if (eff.power === "ritual") {
         // 仪式当回合不结算（skipFirst），回合末只清标志。
         const ritual = m.powers.find((p) => p.id === "ritual");
@@ -7149,7 +7270,16 @@ function takeTurn(bc: BattleContext, m: CombatMonster): string | null {
       // ⚠ `deal_damage_rolled` 也带 `times`（六火幽魂的六重打击是 `attackPlayerHelper(bc,
       //   miscInfo, 6)`），只是虱子那条省略了它——所以这里必须 `?? 1` 而不是「只有
       //   deal_damage_multi 才多段」。第二十批修：漏掉它时六重打击只打一段。
-      const base = eff.kind === "deal_damage_rolled" ? m.miscInfo : eff.amount;
+      // ⚠ `deal_damage_rolled` 的 asc 分档不在这里：它的值是**出生时掷定**的
+      //   （虱子的咬击区间 `asc2 ? random(6,8) : random(5,7)`，见 constructMonster）。
+      // ⚠ `deal_damage_multi` 暂时没有 `ascAmount`——本批 19 只怪没有一只用到多段攻击的
+      //   asc 分档；六火幽魂的地狱之火（`asc4 ? 3 : 2, 6`）要等第二十二批，那时再加字段。
+      const base =
+        eff.kind === "deal_damage_rolled"
+          ? m.miscInfo
+          : eff.kind === "deal_damage"
+            ? ascValue(bc, eff.amount, eff.ascAmount)
+            : eff.amount;
       const times = eff.kind === "deal_damage" ? 1 : (eff.times ?? 1);
       const dmg = calculateDamageToPlayer(bc, m, base);
       const idx = bc.monsters.indexOf(m);
@@ -7163,7 +7293,9 @@ function takeTurn(bc: BattleContext, m: CombatMonster): string | null {
       //   sync:true `Actions::DebuffPlayer<...>(n).actFunc(bc)`     —— 拉加维林的吸取灵魂
       // ⚠ 注意 `.actFunc(bc)` 那两条**没有传第二个参数**，取的是默认值 `true`
       //   （Actions.h:35 `bool isSourceMonster=true`），与入队那条一致。
-      const { power, amount } = eff;
+      // ⚠ 层数在**排队那一刻**按当下爬升度算好（爬升度整场不变，所以这只是形式上的讲究）。
+      const { power } = eff;
+      const amount = ascValue(bc, eff.amount, eff.ascAmount);
       if (eff.sync === true) {
         debuffPlayer(bc, power, amount, true);
       } else {
@@ -7174,11 +7306,12 @@ function takeTurn(bc: BattleContext, m: CombatMonster): string | null {
       //   省略      `addToBot(Actions::MonsterGainBlock(idx, n))` —— 颚虫的猛击/咆哮
       //   sync:true 同步 `addBlock(n)`                            —— 抢劫者的烟雾弹
       // 差别在于「这次加格挡与本回合排的其它动作谁先」，例如荆棘的 addToTop 反伤。
+      const blockAmount = ascValue(bc, eff.amount, eff.ascAmount);
       if (eff.sync === true) {
-        m.block += eff.amount;
+        m.block += blockAmount;
       } else {
         addToBot(bc, () => {
-          m.block += eff.amount;
+          m.block += blockAmount;
         });
       }
     } else if (eff.kind === "gain_block_ally") {
@@ -7186,7 +7319,7 @@ function takeTurn(bc: BattleContext, m: CombatMonster): string | null {
       // `addToBot(Actions::GainBlockRandomEnemy(idx, blockAmount))`（MonsterSpecific.cpp:1098）
       // ——**入队**，所以选目标那次 aiRng 掷在动作**出队执行**的那一刻，不是排队的这一刻。
       // 差别可观察：同一回合里排在它前面的攻击若打死了某只怪，选目标时那只已经被排除。
-      const { amount } = eff;
+      const amount = ascValue(bc, eff.amount, eff.ascAmount);
       const src = bc.monsters.indexOf(m);
       addToBot(bc, (c) => gainBlockRandomEnemy(c, src, amount));
     } else if (eff.kind === "steal_gold") {
@@ -7837,6 +7970,39 @@ export const SUPPORTED_ENCOUNTERS: readonly string[] = [
 
 export function isEncounterSupported(encounterId: string): boolean {
   return SUPPORTED_ENCOUNTERS.includes(encounterId);
+}
+
+/**
+ * 爬升度分档**已有 trace 背书**的编队（第二十一批：14 个普通编队）。
+ *
+ * ⚠ 与 `SUPPORTED_ENCOUNTERS` 是两条独立的轴：一个编队可以「asc0 有背书」而
+ * 「asc>0 没有」。精英（`gremlin_nob` / `lagavulin` / `three_sentries`）与三个 Boss
+ * 的 asc 分档留给第二十二批——它们的 `hpHigh` 阈值是 8 / 9 而不是 7，招式分档也另有一批。
+ *
+ * 真正的兜底在 `constructMonster`（按**怪**查 `EnemyDef.ascCalibrated`，直接抛错）：
+ * 这里是编队粒度的**事前**判断，好让 run 层能在开战前就说「这场打不了」。
+ * 两处必须一起改；`test/sts-combat-wiring.test.ts` 有一条用例把它们对起来。
+ */
+export const ASC_SUPPORTED_ENCOUNTERS: readonly string[] = [
+  "cultist",
+  "jaw_worm",
+  "jaw_worm_horde",
+  "two_louse",
+  "three_louse",
+  "small_slimes",
+  "lots_of_slimes",
+  "large_slime",
+  "blue_slaver",
+  "red_slaver",
+  "looter",
+  "exordium_thugs",
+  "exordium_wildlife",
+  "gremlin_gang",
+];
+
+/** 这个编队在这个爬升度下有没有背书。asc0 恒等于 `isEncounterSupported`。 */
+export function isEncounterAscSupported(encounterId: string, ascension: number): boolean {
+  return ascension === 0 || ASC_SUPPORTED_ENCOUNTERS.includes(encounterId);
 }
 
 export function isCardSupported(defId: string): boolean {

@@ -514,6 +514,66 @@ describe("敌人与编队表", () => {
     }
   });
 
+  // 第二十一批：爬升度分档。这两条守的是「半填」——`ascCalibrated` 与 `hpHigh` 必须同进同退，
+  // 只填一个会让 `constructMonster` 放行一只其实没校准的怪（或反过来，抛掉一只已校准的）。
+  const ASC_CALIBRATED = [
+    "cultist",
+    "jaw_worm",
+    "louse",
+    "green_louse",
+    "acid_slime_s",
+    "acid_slime_m",
+    "acid_slime_l",
+    "spike_slime_s",
+    "spike_slime_m",
+    "spike_slime_l",
+    "blue_slaver",
+    "red_slaver",
+    "looter",
+    "fungi_beast",
+    "mad_gremlin",
+    "sneaky_gremlin",
+    "fat_gremlin",
+    "shield_gremlin",
+    "gremlin_wizard",
+  ];
+
+  it("已校准爬升度的敌人都带第二组血量区间，且区间合法", () => {
+    for (const id of ASC_CALIBRATED) {
+      const def = getEnemyDef(id);
+      expect(def.ascCalibrated, `${id} 没有标 ascCalibrated`).toBe(true);
+      const high = def.hpHigh;
+      expect(high, `${id} 标了 ascCalibrated 却没有 hpHigh`).toBeDefined();
+      if (high === undefined) continue;
+      // 阈值只可能是 7 / 8 / 9（Monster::initHp 的三档）。本批 19 只全是普通怪，故全是 7。
+      expect(high.atLeast, `${id} 的 hpHigh.atLeast 不是普通怪的 7`).toBe(7);
+      expect(high.hpMin, `${id} 的高档 HP 下限非正`).toBeGreaterThan(0);
+      expect(high.hpMax, `${id} 的高档 HP 区间反了`).toBeGreaterThanOrEqual(high.hpMin);
+      // 参考的第二组恒不低于第一组（爬升度只会让怪更硬）。
+      expect(high.hpMin, `${id} 的高档下限比低档还低`).toBeGreaterThanOrEqual(def.hpMin);
+      expect(high.hpMax, `${id} 的高档上限比低档还低`).toBeGreaterThanOrEqual(def.hpMax);
+    }
+  });
+
+  it("没标 ascCalibrated 的敌人不许带 hpHigh（半填会静默放行）", () => {
+    const calibrated = new Set(ASC_CALIBRATED);
+    // 抽查几只**本批故意没有校准**的：三个精英与三个 Boss 的阈值是 8 / 9 而不是 7，
+    // 招式分档也另有一批，留给第二十二批。
+    for (const id of [
+      "gremlin_nob",
+      "lagavulin",
+      "sentry",
+      "the_guardian",
+      "slime_boss",
+      "hexaghost",
+    ]) {
+      expect(calibrated.has(id), `${id} 不该在本批的已校准名单里`).toBe(false);
+      const def = getEnemyDef(id);
+      expect(def.ascCalibrated ?? false, `${id} 不该标 ascCalibrated`).toBe(false);
+      expect(def.hpHigh, `${id} 没标 ascCalibrated 却带了 hpHigh`).toBeUndefined();
+    }
+  });
+
   it("意图规则只引用本敌人有的招式", () => {
     for (const id of ["cultist", "jaw_worm", "louse", "green_louse"]) {
       const def = getEnemyDef(id);
