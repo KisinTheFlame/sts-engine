@@ -1617,67 +1617,93 @@ const ENEMY_LIST: EnemyDef[] = [
     intentRule: { scripted: [], weighted: [] },
   },
 
-  // —— 切片 Boss：守卫者（模式切换 = 引擎能力验证点，issue #234 C10）——
+  // —— Boss：守卫者（第十九批：形态切换 + 尖锐外壳）——
+  //
+  // ⚠ 三样东西**都不写在这里**，理由与真菌兽的孢子云 / 拉加维林的沉睡同族
+  //（写在数据表里就是第二份真相）：
+  //   * `MODE_SHIFT` 的初值（asc19 ? 40 : asc9 ? 35 : 30）由 `preBattleAction` 给，
+  //     同一个数还要写进 `miscInfo` 当「下次的阈值」，见 `PRE_BATTLE_ACTION.the_guardian`；
+  //   * 攒够伤害 → 进防御形态那一整套（读 MODE_SHIFT 层数、归零时 `setMove` +
+  //     `addToBot(MonsterGainBlock(20))`）在 `MONSTER_ON_HP_LOST.the_guardian`；
+  //   * 七条招式的「下一招是谁」全是 case 尾部的**同步 `setMove`**，在 `MOVE_TURN_END`。
+  //     双重猛击的尾部还有三句（清尖锐外壳 / `miscInfo += 10` / `addToBot(BuffEnemy
+  //     <MODE_SHIFT>(idx, miscInfo))`），一并写在那里。
+  // ⚠ 于是这只怪的 `getMoveForRoll` **一场仗只被调用一次**（开局那次，恒返回蓄能）。
   {
     id: "the_guardian",
     name: "守卫者",
+    // MonsterIds.h:211 `{{240,240},{250,250}}`（Boss 走 `setRandomHp(hpRng, asc>=9)`，
+    // MonsterSpecific.cpp:85-88）。⚠ 上下界相同**照样掷一次** monsterHpRng
+    //（`Random::random(int,int)` 无条件 `++counter`，Random.h:159）。
     hpMin: 240,
     hpMax: 240,
-    modeShiftThreshold: 30,
-    stanceMoves: {
-      offensive: ["charging_up", "fierce_bash", "vent_steam", "whirlwind"],
-      // 防御姿态三招链：进入获得反甲 → 滚压 → 双重猛击（打完清反甲、回进攻的旋风）。
-      defensive: ["defensive_mode", "roll_attack", "twin_slam"],
-    },
     moves: [
       {
+        // MonsterSpecific.cpp:1347 `addBlock(9)`。⚠ 是**同步**的裸 `addBlock`，
+        // 不是 `addToBot(MonsterGainBlock)`，故 `sync: true`。
         id: "charging_up",
         name: "蓄能",
-        effects: [{ kind: "gain_block", amount: 9 }],
+        effects: [{ kind: "gain_block", amount: 9, sync: true }],
         intent: "defend",
       },
       {
+        // MonsterSpecific.cpp:1352 `buff<MS::SHARP_HIDE>(asc19 ? 4 : 3)`（同步自 buff）。
+        // 尖锐外壳 = 玩家每打出一张**攻击牌**就吃 3 点无视格挡伤害，触发点在
+        // `BattleContext::onUseAttackCard` 的最末（BattleContext.cpp:1756-1759）。
         id: "defensive_mode",
         name: "防御形态",
-        // 获得反甲 3（被攻击反弹 3 点无视格挡伤害），持续到防御链结束。
         effects: [{ kind: "apply_power", power: "sharp_hide", amount: 3, on: "self" }],
         intent: "buff",
       },
       {
+        // MonsterSpecific.cpp:1362 `attackPlayerHelper(bc, asc4 ? 10 : 9)`。
         id: "roll_attack",
         name: "滚压",
         effects: [{ kind: "deal_damage", amount: 9 }],
         intent: "attack",
       },
       {
+        // MonsterSpecific.cpp:1357 `attackPlayerHelper(bc, asc4 ? 36 : 32)`。
         id: "fierce_bash",
         name: "重砸",
         effects: [{ kind: "deal_damage", amount: 32 }],
         intent: "attack",
       },
       {
+        // MonsterSpecific.cpp:1375-1376。⚠ **顺序是易伤在前、虚弱在后**——照抄，
+        //   别按「虚弱更常见」的直觉写。方向是可观察的：玩家带神器（古代药水）时，
+        //   被吃掉的是**排在前面**的那一条。两条都是 `addToBot(DebuffPlayer<…>(2, true))`。
         id: "vent_steam",
         name: "泄气",
         effects: [
-          { kind: "apply_power", power: "weak", amount: 2, on: "target" },
           { kind: "apply_power", power: "vulnerable", amount: 2, on: "target" },
+          { kind: "apply_power", power: "weak", amount: 2, on: "target" },
         ],
         intent: "debuff",
       },
       {
+        // MonsterSpecific.cpp:1381 `attackPlayerHelper(bc, 5, 4)`。⚠ 没有 asc 分档。
+        // 多段攻击的伤害**只算一次**（`attackPlayerHelper` 先 `calculateDamageToPlayer`
+        // 再循环 `addToBot`，Monster.cpp:601-607），所以四段吃的是同一个易伤/虚弱快照。
         id: "whirlwind",
         name: "旋风",
         effects: [{ kind: "deal_damage_multi", amount: 5, times: 4 }],
         intent: "attack",
       },
       {
+        // MonsterSpecific.cpp:1367 `attackPlayerHelper(bc, 8, 2)`。同上，无 asc 分档。
+        // ⚠ 这条 case 的尾部还有三句（清尖锐外壳 / 抬阈值 / 重新挂 MODE_SHIFT），
+        //   见 `MOVE_TURN_END["the_guardian/twin_slam"]`。
         id: "twin_slam",
         name: "双重猛击",
         effects: [{ kind: "deal_damage_multi", amount: 8, times: 2 }],
         intent: "attack",
       },
     ],
-    // Boss 出招走 stanceMoves 循环，不用 intentRule；留空满足类型。
+    // 出招规则见 sts-combat.ts 的 MOVE_RULES（恒返回蓄能，只在开局被调用一次）。
+    // ⚠ 攻击白名单（MonsterMoves.h:518-521）里只有 `THE_GUARDIAN_FIERCE_BASH` /
+    //   `_WHIRLWIND` / `_ROLL_ATTACK` / `_TWIN_SLAM`，`_CHARGING_UP` / `_DEFENSIVE_MODE` /
+    //   `_VENT_STEAM` **都不在**——与上面的 defend / buff / debuff 一致。
     intentRule: { scripted: [], weighted: [] },
   },
 
@@ -1851,34 +1877,66 @@ const ENEMY_LIST: EnemyDef[] = [
     },
   },
 
-  // —— Boss：史莱姆王（3 回合循环 + 半血分裂成两只大史莱姆）——
+  // —— Boss：史莱姆王（第十九批：3 回合循环 + 半血分裂成两只**大**史莱姆）——
+  //
+  // ⚠ 它**没有** `preBattleAction`、也没有 `Monster::construct` 的怪种特例，
+  //   所以建怪只掷一次 monsterHpRng。
+  // ⚠ 分裂不由 `getMoveForRoll` 掷出：`Monster::onHpLost`（Monster.cpp:507-511）在掉到
+  //   `curHp <= maxHp/2` 时**直接改写** `moveHistory[0]`（不是 setMove、不前移历史），
+  //   与两只大史莱姆逐字同构。
   {
     id: "slime_boss",
     name: "史莱姆王",
+    // MonsterIds.h:196 `{{140,140},{150,150}}`（Boss 走 `setRandomHp(hpRng, asc>=9)`）。
+    // ⚠ 上下界相同照样掷一次 monsterHpRng，同守卫者。
     hpMin: 140,
     hpMax: 140,
+    // 分裂去向（MonsterSpecific.cpp:3400-3404）：**下标 0 是尖刺大、下标 2 是酸液大**。
+    // ⚠ 顺序绑定，不是随机——与 `small_slimes` / `large_slime` 那种 randomBoolean 不同族。
     splitInto: ["spike_slime_l", "acid_slime_l"],
     moves: [
       {
+        // MonsterSpecific.cpp:1112
+        // `Actions::MakeTempCardInDiscard({SLIMED}, asc19 ? 5 : 3).actFunc(bc)`。
+        // ⚠ 是 `.actFunc(bc)` —— **同步**执行，与史莱姆们的 `addToBot(...)` 不同，故 sync: true。
+        // ⚠ 进的是**弃牌堆**，一次 RNG 都不掷（洗入抽牌堆那一路才要 cardRandomRng）。
         id: "goop_spray",
         name: "黏液喷射",
-        effects: [{ kind: "add_card", cardId: "slimed", pile: "discard", count: 3 }],
+        effects: [{ kind: "add_card", cardId: "slimed", pile: "discard", count: 3, sync: true }],
         intent: "debuff",
       },
       {
+        // MonsterSpecific.cpp:1116-1118：整条 case **没有任何效果**，只有收尾 setMove(SLAM)。
         id: "preparing",
         name: "蓄力",
         effects: [],
         intent: "unknown",
       },
       {
+        // MonsterSpecific.cpp:1121 `attackPlayerHelper(bc, asc4 ? 38 : 35)`。
+        // ⚠ 参考在收尾那行注了 `// the attack is executed after, which is critical`：
+        //   `setMove(GOOP_SPRAY)` 是**同步**的，而伤害是 `addToBot`，所以快照里意图先变、
+        //   伤害后落。照抄这个顺序。
         id: "slam",
         name: "猛砸",
         effects: [{ kind: "deal_damage", amount: 35 }],
         intent: "attack",
       },
+      {
+        // 分裂（MonsterSpecific.cpp:1125-1127 → `slimeBossSplit(bc, curHp)`）。
+        // ⚠ 用的是 `split_boss` 而**不是** `split`：两者是参考里两个不同的函数，
+        //   形状差五处，见 `Effect` 的注释与 sts-combat.ts 的 `slimeBossSplit`。
+        // ⚠ 意图必须**不是** attack：白名单（MonsterMoves.h:494）里只有 `SLIME_BOSS_SLAM`。
+        id: "split",
+        name: "分裂",
+        effects: [{ kind: "split_boss" }],
+        intent: "unknown",
+      },
     ],
-    // 出招由 sts-combat.ts 的 MOVE_RULES 登记 slime_boss（待迁移）（黏液→蓄力→猛砸 循环），intentRule 留空。
+    // 出招规则见 sts-combat.ts 的 MOVE_RULES（首回合必黏液喷射，之后整场再不调用它——
+    // 三条 case 的收尾全是同步 setMove，分裂那条压根没有收尾）。
+    // ⚠ 攻击白名单里只有 `SLIME_BOSS_SLAM`（MonsterMoves.h:494），`_GOOP_SPRAY` /
+    //   `_PREPARING` / `_SPLIT` 都不在——与上面的 debuff / unknown / unknown 一致。
     intentRule: { scripted: [], weighted: [] },
   },
 
@@ -2291,7 +2349,10 @@ const ENCOUNTERS: Record<string, EncounterDef> = {
   awakened_one: { id: "awakened_one", enemies: ["awakened_one"], isBoss: true },
   time_eater: { id: "time_eater", enemies: ["time_eater"], isBoss: true },
   nemesis: { id: "nemesis", enemies: ["nemesis"], isBoss: false },
-  guardian: { id: "guardian", enemies: ["the_guardian"], isBoss: true },
+  // ⚠ 第十九批把它从 `guardian` 改名成 `the_guardian`：编队 id 必须与参考的
+  //   `MonsterEncounter::THE_GUARDIAN` 同名（trace 文件名就是它，`SUPPORTED_ENCOUNTERS`
+  //   与 `test/golden/traces/*.jsonl` 是双向对齐的）。
+  the_guardian: { id: "the_guardian", enemies: ["the_guardian"], isBoss: true },
   hexaghost: { id: "hexaghost", enemies: ["hexaghost"], isBoss: true },
   slime_boss: { id: "slime_boss", enemies: ["slime_boss"], isBoss: true },
 };
@@ -2451,7 +2512,7 @@ export function pickEliteEncounter(rng: RngState, act = 1): string {
 
 // Act1 Boss 池（等权重随机）。
 const BOSS_ENCOUNTER_POOL: readonly WeightedEncounter[] = [
-  { id: "guardian", weight: 1 },
+  { id: "the_guardian", weight: 1 },
   { id: "hexaghost", weight: 1 },
   { id: "slime_boss", weight: 1 },
 ];

@@ -1090,6 +1090,27 @@ const MOVE_RULES: Record<string, MoveForRoll> = {
     }
     return bc.monsters.indexOf(m) % 2 === 0 ? "bolt" : "beam";
   },
+
+  // —— 第一幕两个 Boss（第十九批）——
+
+  // 守卫者：对齐 MonsterSpecific.cpp:2961-2964 THE_GUARDIAN——**无条件**返回蓄能，
+  // 连 `firstTurn()` 都不判（roll 照掷、结果丢弃）。
+  // ⚠ 它整场只被调用一次：七条 case 的收尾全是**同步 setMove**，一次 RollMove 都不排；
+  //   形态切换那条也是 `setMove`（在 `MONSTER_ON_HP_LOST` 里），同样不掷 aiRng。
+  //   所以这只 240 血、能打十几个回合的 Boss，`rng.ai` 一整场只 +1。
+  the_guardian: () => "charging_up",
+
+  // 史莱姆王：对齐 MonsterSpecific.cpp:2724-2733 SLIME_BOSS。
+  // ⚠ 与哨卫同形：`if (firstTurn()) return GOOP_SPRAY;` 之后**没有 else**，参考直接
+  //   `break` 掉出 switch、落到函数末尾的 `return MMID::INVALID`（:3344）。这不是漏写——
+  //   三条 case 的收尾都是同步 setMove、分裂那条压根没有收尾，所以它永远不会被第二次调用。
+  //   我们照抄成「非首回合就抛错」，真被调用到要当场知道，而不是静默返回一个瞎猜的招式。
+  slime_boss: (_bc, m) => {
+    if (!firstTurn(m)) {
+      throw new Error("sts-combat: slime_boss 的 getMoveForRoll 只应在开局被调用一次");
+    }
+    return "goop_spray";
+  },
 };
 
 // ============================================================================
@@ -1121,8 +1142,44 @@ const MONSTER_ON_HP_LOST: Record<string, OnHpLost> = {
       overwriteMove(m, "split");
     }
   },
-  // TODO(后续PR): SLIME_BOSS（第十九批，同样的半血判定）、THE_GUARDIAN 的模式切换
-  //   （读 MODE_SHIFT 层数、归零时 setMove + addToBot(MonsterGainBlock)）。
+  // 史莱姆王：对齐 Monster.cpp:507-511，与两只大史莱姆**逐字同构**（同样是裸的
+  // `moveHistory[0] = X`、同样的 `curHp <= maxHp/2` 整除阈值）。差别全在分裂函数本身，
+  // 见 `slimeBossSplit`。
+  slime_boss: (_bc, m) => {
+    if (m.hp <= Math.trunc(m.maxHp / 2)) {
+      overwriteMove(m, "split");
+    }
+  },
+
+  // 守卫者的形态切换：对齐 Monster.cpp:519-529。这是同一个 switch 里**形状完全不同**的
+  // 另一支，四处照抄：
+  //  ① 入口是 `hasStatus<MODE_SHIFT>()` —— 已经在防御形态里（层数被摘掉）时整条不跑，
+  //     所以防御链那三回合再挨多少打也不会二次切换；
+  //  ② 扣的是**这一次掉的血**（`amount`），不是「累计伤害」——`onHpLost` 的实参就是
+  //     未被格挡的那一段，打在怪物格挡上的部分不算；
+  //  ③ 归零判据是 `<= 0`（不是 `== 0`），溢出的伤害直接丢弃、不带到下一轮阈值里；
+  //  ④ 归零那支用的是 **`setMove`**（前移历史），而不是分裂那种裸的 `moveHistory[0] = X`
+  //     ——同一个 switch 里两种写法并存，别统一。紧跟着的
+  //     `addToBot(Actions::MonsterGainBlock(idx, 20))` 是**入队**：那 20 点挡要等动作出队
+  //     才落地，而意图当场就变了。
+  // ⚠ 下一轮的阈值不在这里涨，在双重猛击的收尾里（`miscInfo += 10` 然后重新
+  //   `buff<MODE_SHIFT>(miscInfo)`），见 `MOVE_TURN_END["the_guardian/twin_slam"]`。
+  the_guardian: (bc, m, amount) => {
+    const modeShift = getPower(m.powers, "mode_shift");
+    if (modeShift === 0) {
+      return;
+    }
+    const next = modeShift - amount;
+    if (next <= 0) {
+      removePower(m.powers, "mode_shift");
+      setMove(m, "defensive_mode");
+      addToBot(bc, () => {
+        m.block += 20;
+      });
+    } else {
+      setPower(m.powers, "mode_shift", next);
+    }
+  },
 };
 
 function monsterOnHpLost(bc: BattleContext, m: CombatMonster, amount: number): void {
@@ -1321,6 +1378,60 @@ const MOVE_TURN_END: Record<string, MoveTurnEnd> = {
       c.rng.aiRng.random(99); // ★ 消耗一次 aiRng（NoOpRollMove，入队）
     });
   },
+
+  // —— 第一幕两个 Boss（第十九批）：**十一条 case 一次 aiRng 都不掷** ——
+  //
+  // 守卫者七条、史莱姆王三条全是**同步 setMove**（第三形态），分裂那条是 `"none"`。
+  // 于是两只 Boss 的 `rng.ai` 一整场只有开局那一次 rollMove 的 +1（史莱姆王分裂时
+  // 再 +2，那是分裂出来的两只各自 rollMove，见 `slimeBossSplit`）。
+
+  // 守卫者的进攻链：蓄能 → 重砸 → 泄气 → 旋风 → 蓄能 …
+  // （MonsterSpecific.cpp:1348 / :1358 / :1377 / :1382）
+  "the_guardian/charging_up": { setMove: "fierce_bash" },
+  "the_guardian/fierce_bash": { setMove: "vent_steam" },
+  "the_guardian/vent_steam": { setMove: "whirlwind" },
+  "the_guardian/whirlwind": { setMove: "charging_up" },
+  // 防御链：防御形态 → 滚压 → 双重猛击 →（回进攻链的旋风）
+  // （MonsterSpecific.cpp:1353 / :1363 / :1370）
+  // ⚠ 进入防御形态那一步**不在这里**——它由掉血触发写进意图（`MONSTER_ON_HP_LOST`），
+  //   所以防御链是从任意一条进攻招式中途插进来的，进攻链的进度直接被丢弃。
+  "the_guardian/defensive_mode": { setMove: "roll_attack" },
+  "the_guardian/roll_attack": { setMove: "twin_slam" },
+
+  // 双重猛击的收尾（MonsterSpecific.cpp:1367-1372）：case 里效果之后还有**四句**，
+  // 逐句照抄，顺序即参考的书写顺序：
+  //   ① `removeStatus<MS::SHARP_HIDE>()` —— **同步**摘掉尖锐外壳。所以「打出攻击牌吃反伤」
+  //      在双重猛击这一回合的怪物阶段就停了，不用等到下一个玩家回合。
+  //   ② `miscInfo += 10` —— 下一次形态切换的阈值。⚠ 它是**累加**：30 → 40 → 50 …
+  //      每进一次防御形态就更难触发一次，这就是守卫者后期不再切换的原因。
+  //      ⚠ 起点由 `PRE_BATTLE_ACTION.the_guardian` 写进 miscInfo（asc0 是 30），
+  //      三处协同（preBattle 置起点 / 这里 +10 / onHpLost 递减 MODE_SHIFT 层数）。
+  //   ③ `setMove(WHIRLWIND)` —— 同步，不掷 aiRng。
+  //   ④ `addToBot(Actions::BuffEnemy<MS::MODE_SHIFT>(idx, miscInfo))` —— **入队**，
+  //      而且 `miscInfo` 是 C++ 的**实参**、在建动作那一刻就求值。所以 MODE_SHIFT 那一层
+  //      要等动作出队才出现在快照里，且值是「此刻」的 miscInfo。
+  //      ⚠ 它是 `buff`（累加到 0 上），不是 setStatus——上一轮已被 `removeStatus` 摘掉。
+  "the_guardian/twin_slam": (bc, m) => {
+    removePower(m.powers, "sharp_hide");
+    m.miscInfo += 10;
+    setMove(m, "whirlwind");
+    const amount = m.miscInfo; // ★ 实参在此刻求值（C++ 按值捕获）
+    addToBot(bc, () => {
+      addPower(m.powers, "mode_shift", amount);
+    });
+  },
+
+  // 史莱姆王：黏液喷射 → 蓄力 → 猛砸 → 黏液喷射 …（MonsterSpecific.cpp:1113 / :1117 / :1122）
+  // ⚠ 参考在猛砸那行注了 `// the attack is executed after, which is critical`：
+  //   `setMove` 是同步的、伤害是入队的，所以意图先变、伤害后落。
+  "slime_boss/goop_spray": { setMove: "preparing" },
+  "slime_boss/preparing": { setMove: "slam" },
+  "slime_boss/slam": { setMove: "goop_spray" },
+  // 分裂：case 里只有一句 `slimeBossSplit(bc, curHp)` 然后 break（MonsterSpecific.cpp:1125-1127），
+  // **没有任何收尾语句**——与两只大史莱姆的分裂同为 `"none"` 形态。
+  // ⚠ 但两者的 aiRng 消耗完全不同：大史莱姆那条在函数内部掷 2 次 noOpRollMove，
+  //   史莱姆王这条**一次都不掷**，见 `slimeBossSplit`。
+  "slime_boss/split": "none",
 };
 
 /**
@@ -1416,28 +1527,86 @@ function createMonster(bc: BattleContext, defId: string): CombatMonster {
 }
 
 // ============================================================================
-// 分裂（对齐 `Monster::largeSlimeSplit`，MonsterSpecific.cpp:3342）
+// 分裂（对齐 `Monster::largeSlimeSplit`，MonsterSpecific.cpp:3364）
 //
 // 大史莱姆掉到半血时**不是加两只小弟**，而是被两只中史莱姆**顶替**：母体所在的下标
 // 直接被覆盖，第二只落在它右边一格。逐条照抄的点（每条都有可观测面）：
 //
-//  ① **不掷 monsterHpRng**。`initSpawnedMonster`（:3325）只有 `curHp = maxHp = hp`，
+//  ① **不掷 monsterHpRng**。`initSpawnedMonster`（:3347）只有 `curHp = maxHp = hp`，
 //     没有 `initHp`。而且 `maxHp` 也被压成分裂瞬间的**当前**血量，不是母体的上限
 //     ——trace 里那两只中史莱姆是满血的 26/26，母体是 26/65。
 //  ② **不继承任何状态**：参考写的是 `arr[idx] = Monster()` 再 init，母体身上的易伤 /
 //     虚弱 / 格挡全部清零（trace 逐帧可见）。
-//  ③ 两只各自 `rollMove`（:3329），所以 aiRng 消耗是 2 次**起步**——中号酸液的
+//  ③ 两只各自 `rollMove`（:3352），所以 aiRng 消耗是 2 次**起步**——中号酸液的
 //     `getMoveForRoll` 还可能追加一次 randomBoolean。
 //  ④ 之后还有**两次** `noOpRollMove`（各掷一次 `aiRng.random(99)` 丢掉）：
-//     一次在 largeSlimeSplit 尾部（:3364），另一次是它 `extraRollMoveOnTurn.set(idx2)`
+//     一次在 largeSlimeSplit 尾部（:3386），另一次是它 `extraRollMoveOnTurn.set(idx2)`
 //     之后、回到 `MonsterGroup::doMonsterTurn`（MonsterGroup.cpp:583）立刻被读掉的那次。
 //     ⚠ 那个 bitset **只由本函数写、当场就被读掉**（中间没有任何入队动作），
 //     所以这里直接连着掷两次是等价的，不需要把它做成持久状态。
-//  ⑤ **游标推进两格**：largeSlimeSplit 自己 `++bc.monsterTurnIdx`（:3366），
+//  ⑤ **游标推进两格**：largeSlimeSplit 自己 `++bc.monsterTurnIdx`（:3388），
 //     `doMonsterTurn` 末尾还会再 `++` 一次。于是新生的第二只**本回合不行动**。
 //     我们的主循环把第二次 `+= 1` 放在调用方（对齐参考把它放在 doMonsterTurn 末尾），
 //     所以这里只做第一次。
 // ============================================================================
+
+/**
+ * 参考的 `MonsterGroup::arr` 是**定长 5 的数组**，`monsterCount` 只是「dump / 遍历到第几格」。
+ * 于是「场上的怪数」与「数组里被用掉几格」并不是一回事：史莱姆王分裂后 `monsterCount = 3`
+ * 而 1 号格从没被写过，harness 照样把它 dump 出来（`"id":"INVALID = 0"`、血量 0、`alive:false`、
+ * 意图 `"INVALID"`）。
+ *
+ * 我们用 `bc.monsters.length` 当 `monsterCount`，所以那种空格必须有个实体占位。
+ * 它满足 `!alive`，因此所有循环（伤害、随机选敌、怪物回合、回合末结算）都会跳过它，
+ * 与参考里那只 `curHp = 0` 的默认 `Monster` 表现一致。
+ *
+ * ⚠ `defId` 故意取一个**没有数据表条目**的名字：谁要是真去 `getEnemyDef` 它，当场抛错
+ * 比静默拿到一只假怪好。唯一需要放行的读点是 `isMonsterAttacking`（参考对它是
+ * `isMoveAttack(INVALID)` = false），那里显式判掉。
+ */
+const EMPTY_MONSTER_SLOT = "__empty";
+
+function emptyMonsterSlot(): CombatMonster {
+  return {
+    defId: EMPTY_MONSTER_SLOT,
+    hp: 0,
+    maxHp: 0,
+    block: 0,
+    currentMove: "",
+    moveHistory: [],
+    powers: [],
+    alive: false,
+    miscInfo: 0,
+  };
+}
+
+/**
+ * 新生的分裂体落位（对齐 `arr[idx] = Monster(); arr[idx].initSpawnedMonster(...)`，
+ * MonsterSpecific.cpp:3372-3376）。两个分裂函数共用。
+ *
+ * ⚠ `initSpawnedMonster`（:3345-3352）只有 `curHp = maxHp = hp; rollMove(bc);`——
+ * **不掷 monsterHpRng**，而且 `maxHp` 被压成分裂瞬间的**当前**血量。
+ * ⚠ `arr[idx] = Monster()` 是整只重建，母体的易伤 / 虚弱 / 格挡 / 意图历史全清零。
+ */
+function spawnSplitMonster(bc: BattleContext, defId: string, at: number, hp: number): void {
+  const nm: CombatMonster = {
+    defId,
+    hp,
+    maxHp: hp,
+    block: 0,
+    currentMove: "",
+    moveHistory: [],
+    powers: [],
+    alive: true,
+    miscInfo: 0,
+  };
+  // 先落位再 rollMove，对齐 `arr[idx] = Monster(); arr[idx].initSpawnedMonster(...)`。
+  bc.monsters[at] = nm;
+  rollMove(bc, nm); // ★ 消耗 aiRng（1 次；中号酸液的分支可能追加 1 次）
+  // TODO(后续PR): 贤者之石（PHILOSOPHERS_STONE）会给分裂出来的两只各 +1 力量
+  //   （MonsterSpecific.cpp:3378 / :3406）。harness 的遗物轮换里没有它
+  //   （trace_dump.cpp:218 那八个），写了也没有预言机走到。
+}
 
 function splitMonster(bc: BattleContext, m: CombatMonster): void {
   const idx1 = bc.monsters.indexOf(m);
@@ -1446,45 +1615,68 @@ function splitMonster(bc: BattleContext, m: CombatMonster): void {
   if (into === undefined || into.length !== 2) {
     throw new Error(`sts-combat 暂未登记分裂去向: ${m.defId}`);
   }
-  // 参考是往定长数组 `arr[idx2]` 里**写**，右边已经有怪时会把它顶掉，而 monsterCount
-  // 照样 `min(count+1, 4)`。那种形态只有史莱姆王那条链（第十九批）才可能出现，
-  // 当前唯一的用户 `large_slime` 恒是「场上只剩它自己」。与其猜，不如当场炸。
-  if (idx2 !== bc.monsters.length) {
-    throw new Error(
-      `sts-combat 暂未登记「分裂目标格已有怪」的分裂（idx2=${idx2}, 怪数=${bc.monsters.length}）`,
-    );
-  }
+  const countBefore = bc.monsters.length;
   const hp = m.hp; // ★ 继承分裂瞬间的当前生命，同时成为新怪的生命上限
-  const spawn = (defId: string, at: number): void => {
-    const nm: CombatMonster = {
-      defId,
-      hp,
-      maxHp: hp,
-      block: 0,
-      currentMove: "",
-      moveHistory: [],
-      powers: [],
-      alive: true,
-      miscInfo: 0,
-    };
-    // 先落位再 rollMove，对齐 `arr[idx] = Monster(); arr[idx].initSpawnedMonster(...)`。
-    bc.monsters[at] = nm;
-    rollMove(bc, nm); // ★ 消耗 aiRng（1 次；中号酸液的分支可能追加 1 次）
-  };
-  spawn(into[0], idx1);
-  spawn(into[1], idx2);
-
-  // TODO(后续PR): 贤者之石（PHILOSOPHERS_STONE）会给分裂出来的两只各 +1 力量
-  //   （MonsterSpecific.cpp:3356）。harness 的遗物轮换里没有它（trace_dump.cpp:218 那八个），
-  //   写了也没有预言机走到。
+  spawnSplitMonster(bc, into[0], idx1, hp);
+  // ⚠ 参考是往定长数组 `arr[idx2]` 里**写**，右边已经有东西就顶掉。这在史莱姆王那条链上
+  //   真的会发生：王分裂出的尖刺大在 0 号格，它再分裂时 idx2 = 1 —— 而 1 号格正是王
+  //   留下的那个空位（第十九批实测走到了这一支；第十四批当时写的是一道显式抛错）。
+  spawnSplitMonster(bc, into[1], idx2, hp);
 
   bc.monstersAlive += 1;
-  // `monsterCount = min(monsterCount+1, 4)` 由上面 idx2 落位时数组自然增长表达
-  //（我们用 `bc.monsters.length` 当 monsterCount）。
+  // `monsterCount = std::min(monsterCount+1, 4)`（MonsterSpecific.cpp:3384）。
+  // ⚠ 这条**不等于**「数组长了一格」：顶掉右边那种情形里数组长度没变，monsterCount 照涨，
+  //   于是尾部多出一个从没被写过的空格（史莱姆王链上 3 → 4，快照里真的多出一个
+  //   `INVALID = 0`）。所以这里按参考的公式算，再补占位到那个长度。
+  const newCount = Math.min(countBefore + 1, 4);
+  while (bc.monsters.length < newCount) {
+    bc.monsters.push(emptyMonsterSlot());
+  }
 
-  bc.rng.aiRng.random(99); // ★ largeSlimeSplit 尾部的 noOpRollMove（MonsterSpecific.cpp:3364）
-  bc.monsterTurnIdx += 1; // 对齐 :3366 的 ++bc.monsterTurnIdx
+  bc.rng.aiRng.random(99); // ★ largeSlimeSplit 尾部的 noOpRollMove（MonsterSpecific.cpp:3386）
+  bc.monsterTurnIdx += 1; // 对齐 :3388 的 ++bc.monsterTurnIdx
   bc.rng.aiRng.random(99); // ★ doMonsterTurn 里 extraRollMoveOnTurn 命中的那次 noOpRollMove
+}
+
+// ============================================================================
+// 史莱姆王的分裂（对齐 `Monster::slimeBossSplit`，MonsterSpecific.cpp:3391）
+//
+// ⚠⚠ **这不是 `largeSlimeSplit` 的一个特例，是另一个函数。** 五处形状差别，逐条照抄：
+//
+//  ① **落位下标写死 0 / 2**（`const auto idx1 = 0; const auto idx2 = 2;`），不是
+//     「母体所在格 + 右边一格」。史莱姆王恒在 0 号格，所以 1 号格被**跳过**——
+//     那正是快照里那个 `INVALID = 0` 的来历。
+//  ② **`monsterCount = 3` 是直接赋值**，不是 `min(count+1, 4)`。所以从 1 只变成
+//     「3 格、其中 1 格是空的」。
+//  ③ **`monstersAlive = 2` 也是直接赋值**，不是 `++`。数值上与「1 只 → +1」相同，
+//     但语义不同（母体不算进去，是被顶替掉的）。
+//  ④ **`monsterTurnIdx = 3` 直接赋值**，不是 `++`。3 == monsterCount，于是回到
+//     `doMonsterTurn` 时 `extraRollMoveOnTurn.test(3)` 恒假、`++` 之后循环也结束
+//     ——两只新怪本回合都不行动。
+//  ⑤ **一次 `noOpRollMove` 都不掷**，也不设 `extraRollMoveOnTurn`。所以整个分裂只消耗
+//     两次 aiRng（两只新怪各自 rollMove），而大史莱姆那条是 2 + 2 = 4 次起步。
+//
+// 两者相同的只有中间那一段：`arr[idx] = Monster()` + `initSpawnedMonster(…, curHp)`
+//（不掷血量、maxHp 压成当前血量、不继承状态、各自 rollMove）与贤者之石那个 TODO。
+// ============================================================================
+
+function slimeBossSplit(bc: BattleContext, m: CombatMonster): void {
+  const into = getEnemyDef(m.defId).splitInto;
+  if (into === undefined || into.length !== 2) {
+    throw new Error(`sts-combat 暂未登记分裂去向: ${m.defId}`);
+  }
+  const hp = m.hp; // ★ 同 largeSlimeSplit：当前血量既是新怪的血也是它们的上限
+  // ① 下标写死 0 / 2。1 号格从头到尾没被碰过 → 空占位。
+  while (bc.monsters.length < 3) {
+    bc.monsters.push(emptyMonsterSlot());
+  }
+  spawnSplitMonster(bc, into[0], 0, hp); // ★ 消耗一次 aiRng（尖刺大）
+  spawnSplitMonster(bc, into[1], 2, hp); // ★ 消耗一次 aiRng（酸液大）
+
+  // ②③④ 三个都是**赋值**。`monsterCount` 由数组长度表达，上面已经补到 3。
+  bc.monstersAlive = 2;
+  bc.monsterTurnIdx = 3;
+  // ⑤ 没有 noOpRollMove、没有 extraRollMoveOnTurn——这里**故意什么都不掷**。
 }
 
 // ============================================================================
@@ -1731,6 +1923,20 @@ const PRE_BATTLE_ACTION: Record<string, PreBattleAction> = {
   sentry: (_bc, m) => {
     addPower(m.powers, "artifact", 1);
   },
+  // 守卫者的形态切换阈值（对齐 MonsterSpecific.cpp:316-330）。**不消耗 RNG**。
+  // ⚠ 参考把同一个数写进**两个**地方，两个都要：
+  //   ① `miscInfo = d` —— 「下一次切换的阈值」，双重猛击的收尾 `+= 10` 改的就是它；
+  //   ② `buff<MS::MODE_SHIFT>(d)` —— 真正的倒计时层数，每次掉血在 `onHpLost` 里递减。
+  //  少了①，第二次切换的阈值会从 10 起算（`0 + 10`）而不是 40；
+  //  少了②，`onHpLost` 的入口条件恒假，这只 Boss 永远进不了防御形态。
+  // ⚠ 分档是 asc19 / asc9（不是常见的 asc17 / asc7），asc0 取 30。
+  // ⚠ MODE_SHIFT 会进 trace 的怪物 powers 快照（`MODE_SHIFT: 30`），漏了当场抛
+  //   「未映射的 power」；而 `miscInfo` **不进快照**，它只能靠第二次切换的阈值被间接看到。
+  the_guardian: (bc, m) => {
+    const d = bc.ascension >= 19 ? 40 : bc.ascension >= 9 ? 35 : 30;
+    m.miscInfo = d;
+    addPower(m.powers, "mode_shift", d);
+  },
 };
 
 type EncounterSetup = (bc: BattleContext) => void;
@@ -1839,12 +2045,27 @@ function overwriteMove(m: CombatMonster, move: string): void {
  *     `SENTRY_BOLT`，与我们的 `buff` / `unknown` / `debuff` / `debuff` 一致。
  *     ⚠ `SENTRY_BOLT` 值得单记：它**一点伤害都不带**（只塞两张恍惚），照样不在白名单里
  *     ——与护盾地精的保护同族，再次说明「按带不带伤害推 intent」只是碰巧对。
+ *   * 第一幕两个 Boss（第十九批）：白名单里有 `SLIME_BOSS_SLAM`(`:494`)、
+ *     `THE_GUARDIAN_FIERCE_BASH` / `_WHIRLWIND` / `_ROLL_ATTACK` / `_TWIN_SLAM`(`:518-521`)。
+ *     **不在**的六条是 `SLIME_BOSS_GOOP_SPRAY` / `_PREPARING` / `_SPLIT`、
+ *     `THE_GUARDIAN_CHARGING_UP` / `_DEFENSIVE_MODE` / `_VENT_STEAM`，
+ *     与我们的 `debuff` / `unknown` / `unknown` / `defend` / `buff` / `debuff` 一致。
+ *     ⚠ 守卫者这三条正是 WORKFLOW 点名要盯的地方：`_VENT_STEAM` 一点伤害都不带却是
+ *     整只怪最危险的一招，`_CHARGING_UP` 只加格挡，`_DEFENSIVE_MODE` 只上 Power——
+ *     三条都不在白名单，与直觉一致；而**真正的反例就在紧邻的几行**
+ *     （`SPHERIC_GUARDIAN_HARDEN`，`:500`：加格挡 + 打人，被算作攻击。球状守卫是第二幕的怪，
+ *     等它那一批时数据表的 intent 会与白名单**真的分岔**，那时就得改成读白名单）。
  * 新登记怪种时**必须**回白名单复核，因为白名单里存在「带伤害却不算攻击」与反向的例外
  *（如球状守卫的 HARDEN 被算作攻击）。
  */
 function isMonsterAttacking(bc: BattleContext, idx: number): boolean {
   const m = bc.monsters[idx];
   if (m === undefined) {
+    return false;
+  }
+  // 分裂留下的空格（见 `EMPTY_MONSTER_SLOT`）：参考那一格是默认构造的 `Monster`，
+  // `moveHistory[0] == INVALID` → `isMoveAttack(INVALID)` 走 `default: return false`。
+  if (m.defId === EMPTY_MONSTER_SLOT) {
     return false;
   }
   const move = getEnemyDef(m.defId).moves.find((mv) => mv.id === m.currentMove);
@@ -5752,6 +5973,35 @@ function onUseAttackCard(bc: BattleContext, item: CardQueueItem, card: CombatCar
   if (rage > 0) {
     addToBot(bc, (c) => gainBlock(c, rage), false);
   }
+  // —— 尖锐外壳（SHARP_HIDE，守卫者的防御形态）——
+  //
+  // 对齐 `BattleContext::onUseAttackCard` 的**最末**那三行（BattleContext.cpp:1756-1759）。
+  // 这是本项目第二条「玩家出牌 → 怪物反应」的钩子（第一条是第十八批的激怒），四处照抄：
+  //
+  //  ① **挂在攻击牌上**，不是技能牌。激怒在 `onUseSkillCard` 的最末（:1847-1849），
+  //     两条写法一模一样、位置却在两个不同的函数里——真实游戏的措辞也是「每当你打出
+  //     一张**攻击**牌，受到 X 点伤害」。数据上可分辨：守卫者带外壳时打防御牌不掉血。
+  //  ② 走 `Actions::DamagePlayer(层数)` —— **非攻击伤害**（`Player::damage`），
+  //     所以**过格挡**、且 `selfDamage` 取默认的 false（不触发破裂）。
+  //  ③ **入队**（`addToBot`），排在卡效果**之后**——卡把伤害排在前面，反伤落在后面。
+  //     `clearOnCombatVictory` 是 false（Actions.cpp:91-95），所以这一击打死守卫者时
+  //     反伤照样落在玩家身上。
+  //  ④ ⚠ **参考只看 `monsters.arr[0]`**，写死下标 0、也不判死活——与激怒同一个写法。
+  //     守卫者是单怪 Boss，当前与「遍历全体」完全等价。TODOS 已就激怒那条裁定过
+  //     「不打补丁」（判据：① 在已登记内容里真的产生分歧 ② 补丁有预言机，两条都要成立），
+  //     尖锐外壳两条同样不成立，故**照抄不改**。
+  //     ⚠ 而且它比激怒更彻底：全参考项目 buff `SHARP_HIDE` 的**只有守卫者**
+  //     （`MonsterSpecific.cpp:1352` 是唯一的写入点），而守卫者只出现在单怪编队里，
+  //     所以这个 `arr[0]` 在参考的整个内容集合里**永远不可能产生分歧**——
+  //     连「哪一批能关掉它」都没有，与激怒那条（`COLOSSEUM_EVENT_NOBS` 能关）不同。
+  const m = bc.monsters[0];
+  if (m === undefined) {
+    return;
+  }
+  const sharpHide = getPower(m.powers, "sharp_hide");
+  if (sharpHide > 0) {
+    addToBot(bc, (c) => damagePlayerNonAttack(c, sharpHide, false), false);
+  }
 }
 
 /**
@@ -6745,13 +6995,26 @@ function takeTurn(bc: BattleContext, m: CombatMonster): string | null {
           ritual.justApplied = true;
         }
       }
-    } else if (eff.kind === "deal_damage" || eff.kind === "deal_damage_rolled") {
+    } else if (
+      eff.kind === "deal_damage" ||
+      eff.kind === "deal_damage_rolled" ||
+      eff.kind === "deal_damage_multi"
+    ) {
       // 伤害在**入队时**按当下状态算好（attackPlayerHelper 先 calculateDamageToPlayer
       // 再 addToBot(AttackPlayer)）；deal_damage_rolled 取出生时掷定的固定值。
+      // ⚠ 多段（`attackPlayerHelper(bc, dmg, times)`，Monster.cpp:601-607）：伤害**只算一次**，
+      //   然后循环 `addToBot` 同一个值——所以四段旋风吃的是同一个易伤/虚弱快照，
+      //   中途被打掉易伤也不会让后面几段变弱。
+      // ⚠ `Actions::AttackPlayer` 的 `clearOnCombatVictory` 是 **false**（Actions.cpp:85-88
+      //   那行的第二个参数）。多段攻击才让这一位可观察：第一段触发荆棘 / 火焰屏障、
+      //   反伤打死了怪 → `checkCombat` 清扫队列，剩下几段**照样落在玩家身上**。
       const base = eff.kind === "deal_damage_rolled" ? m.miscInfo : eff.amount;
+      const times = eff.kind === "deal_damage_multi" ? eff.times : 1;
       const dmg = calculateDamageToPlayer(bc, m, base);
       const idx = bc.monsters.indexOf(m);
-      addToBot(bc, (c) => dealDamageToPlayer(c, dmg, idx));
+      for (let i = 0; i < times; i += 1) {
+        addToBot(bc, (c) => dealDamageToPlayer(c, dmg, idx), false);
+      }
     } else if (eff.kind === "apply_power" && eff.on === "target") {
       // 怪物给玩家上减益：isSourceMonster=true，故虚弱/易伤**跳过**首次递减。
       // ⚠ 与加格挡同族，参考里两种写法并存（见 Effect 的 sync 注释）：
@@ -6797,16 +7060,26 @@ function takeTurn(bc: BattleContext, m: CombatMonster): string | null {
       //（MonsterSpecific.cpp:375 / :1180），**排在攻击那条 addToBot 之后**，故顺序就是
       // effects 的书写顺序——数据表里黏液跟在 deal_damage 后面，与参考一致。
       // ⚠ 只有弃牌堆这一路不消耗 RNG；洗入抽牌堆那一路要掷 cardRandomRng，当前没有怪用到。
+      // ⚠ 史莱姆王的黏液喷射写的却是 `.actFunc(bc)`（MonsterSpecific.cpp:1112）——**同步**，
+      //   与加格挡 / 上减益那两族同形，用 `sync` 区分。
       if (eff.pile !== "discard") {
         throw new Error(`sts-combat 暂未登记怪物塞牌去向: ${eff.pile}`);
       }
       const { cardId, count } = eff;
-      addToBot(bc, (c) => makeTempCardInDiscard(c, cardId, count));
+      if (eff.sync === true) {
+        makeTempCardInDiscard(bc, cardId, count);
+      } else {
+        addToBot(bc, (c) => makeTempCardInDiscard(c, cardId, count));
+      }
     } else if (eff.kind === "split") {
       // 分裂：**同步**执行，不入队——参考的那条 case 就是一句裸的
-      // `largeSlimeSplit(bc, ...)`（MonsterSpecific.cpp:364 / :1198），
+      // `largeSlimeSplit(bc, ...)`（MonsterSpecific.cpp:365 / :1221），
       // 不是 addToBot。差别可观察：分裂当场就完成，母体这一回合不会再排出任何动作。
       splitMonster(bc, m);
+    } else if (eff.kind === "split_boss") {
+      // 史莱姆王的分裂：同样是一句裸调用（MonsterSpecific.cpp:1126），但函数不同——
+      // 五处形状差别见 `slimeBossSplit`，**别复用 `splitMonster`**。
+      slimeBossSplit(bc, m);
     }
     // 其余效果留后续 PR。
   }
@@ -7010,6 +7283,23 @@ function removePower(powers: PowerInstance[], id: string): void {
   if (idx >= 0) {
     powers.splice(idx, 1);
   }
+}
+
+/**
+ * **覆盖**一个 Power 的层数（对齐 `Monster::setStatus`，Monster.h:196）。
+ *
+ * ⚠ 与 `addPower`（= 参考的 `buff`）的差别是承重的：`setStatus` **只写数值、不碰
+ * statusBits**，所以它只能用在「这个 Power 已经在身上」的地方——守卫者的形态切换
+ * （`setStatus<MODE_SHIFT>(newAmount)`，Monster.cpp:527）就是唯一的用户，
+ * 而那一支的前置条件正是 `hasStatus<MODE_SHIFT>()`。
+ * 参考在层数归零时走的是另一支（`removeStatus`），所以这里不会被传 0。
+ */
+function setPower(powers: PowerInstance[], id: string, amount: number): void {
+  const existing = powers.find((p) => p.id === id);
+  if (existing === undefined) {
+    throw new Error(`sts-combat setPower: ${id} 不在身上（参考的 setStatus 不写 statusBits）`);
+  }
+  existing.amount = amount;
 }
 
 /**
@@ -7384,6 +7674,9 @@ export const SUPPORTED_ENCOUNTERS: readonly string[] = [
   "gremlin_nob",
   "lagavulin",
   "three_sentries",
+  // —— 第十九批：第一幕两个 Boss ——
+  "the_guardian",
+  "slime_boss",
 ];
 
 export function isEncounterSupported(encounterId: string): boolean {

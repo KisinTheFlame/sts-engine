@@ -203,7 +203,23 @@ export type Effect =
   // 分裂出来的怪继承分裂瞬间的当前生命（同时也是它们的生命上限），不重掷 monsterHpRng。
   // 它不带参数：分裂成什么写在 `EnemyDef.splitInto` 上，时点与 RNG 消耗写在 sts-combat.ts。
   | { kind: "split" }
-  | { kind: "add_card"; cardId: string; pile: "draw" | "discard" | "hand"; count: number }
+  // 敌人用：**史莱姆王的分裂**（对齐 `Monster::slimeBossSplit`，MonsterSpecific.cpp:3391）。
+  // ⚠ 与上面那条 `split` 是**两个不同的函数**，形状差五处（落位下标写死 0/2、
+  // `monsterCount` 直接赋 3 因而留出一个空格、`monstersAlive` 与 `monsterTurnIdx` 都是赋值
+  // 而不是自增、一次 `noOpRollMove` 都不掷）。复用 `split` 那条路径必错，故单开一个 kind。
+  // 分裂成什么同样读 `EnemyDef.splitInto`（下标 0 落在 0 号位、下标 1 落在 2 号位）。
+  | { kind: "split_boss" }
+  // sync：敌人专用。参考塞状态牌同样**两种写法并存**——史莱姆们是
+  // `addToBot(Actions::MakeTempCardInDiscard(...))`，而史莱姆王的黏液喷射写的是
+  // `Actions::MakeTempCardInDiscard({SLIMED}, 3).actFunc(bc)`（MonsterSpecific.cpp:1112）
+  // ——**当场执行**。省略 = 入队。与 `gain_block` / `apply_power` 的 sync 同族。
+  | {
+      kind: "add_card";
+      cardId: string;
+      pile: "draw" | "discard" | "hand";
+      count: number;
+      sync?: boolean;
+    }
   // —— X 费牌：xValue = 打出时的能量，以下效果按 X 次 / X 倍结算 ——
   | { kind: "deal_damage_all_x"; amount: number } // 对所有敌人造成 amount 伤害，X 次（旋风斩）
   | { kind: "deal_damage_x"; amount: number } // 对目标造成 amount 伤害，X 次（穿刺）
@@ -463,10 +479,12 @@ export type EnemyDef = {
   hpMax: number;
   moves: EnemyMove[];
   intentRule: IntentRule;
-  /** 守卫者专用：模式切换阈值。省略表示无模式切换。 */
-  modeShiftThreshold?: number;
-  /** 守卫者专用：防御姿态下的出招表 id 与进攻姿态出招表 id。 */
-  stanceMoves?: { offensive: string[]; defensive: string[] };
+  // ⚠ 第十九批删掉了 `modeShiftThreshold` / `stanceMoves` 两个「守卫者专用」字段。
+  //   它们是旧近似战斗的遗留：模式切换的阈值真相在 `PRE_BATTLE_ACTION.the_guardian`
+  //   （`miscInfo = asc19?40:asc9?35:30` + `buff<MODE_SHIFT>`）与
+  //   `MONSTER_ON_HP_LOST.the_guardian` 里，姿态链的真相在 `MOVE_TURN_END` 的七条同步
+  //   `setMove` 里。留着就是第二份真相，与第十五批 `steal_gold` 去掉 `amount`、
+  //   第十六批删掉真菌兽 `deathEffects` 同一条理由。
   /** 半血分裂：降到 ≤maxHp/2 时分裂成这些敌人（各自 HP = 分裂瞬间当前 HP）。 */
   splitInto?: string[];
   /** 亡语：此敌人死亡时结算的效果（真菌兽孢子云给玩家易伤）。 */

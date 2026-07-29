@@ -298,6 +298,9 @@ const ENCOUNTER: Record<string, string> = {
   GREMLIN_NOB: "gremlin_nob",
   LAGAVULIN: "lagavulin",
   THREE_SENTRIES: "three_sentries",
+  // —— 第十九批：第一幕两个 Boss ——
+  THE_GUARDIAN: "the_guardian",
+  SLIME_BOSS: "slime_boss",
 };
 const MONSTER: Record<string, string> = {
   CULTIST: "cultist",
@@ -333,6 +336,17 @@ const MONSTER: Record<string, string> = {
   GREMLIN_NOB: "gremlin_nob",
   LAGAVULIN: "lagavulin",
   SENTRY: "sentry",
+  // —— 第十九批：第一幕两个 Boss。⚠ 史莱姆王分裂出的是两只**大**史莱姆，它们再各自
+  // 分裂成中号——所以 `slime_boss.jsonl` 里会出现 L 与 M 两代，那四行前面都有了。
+  THE_GUARDIAN: "the_guardian",
+  SLIME_BOSS: "slime_boss",
+  // ⚠ **分裂留下的空格**。参考的 `MonsterGroup::arr` 是定长 5 的数组，`monsterCount` 只是
+  // 「dump 到第几格」；史莱姆王分裂时 `arr[0]` 与 `arr[2]` 被写、`monsterCount = 3`，
+  // 于是 1 号格那只**从没被构造过**的默认 `Monster` 也被 dump 出来
+  // （`monsterIdStrings[MonsterId::INVALID]` 字面量就是 `"INVALID = 0"`，MonsterIds.h:82）。
+  // 我们这边用 `EMPTY_MONSTER_SLOT` 占位，字段全对齐：hp/maxHp/block 0、alive false、
+  // move ""（见下面 MOVE 表里的 `INVALID`）、powers 空。
+  "INVALID = 0": "__empty",
 };
 const MOVE: Record<string, string> = {
   CULTIST_INCANTATION: "incantation",
@@ -395,6 +409,24 @@ const MOVE: Record<string, string> = {
   LAGAVULIN_SLEEP: "sleep",
   SENTRY_BEAM: "beam",
   SENTRY_BOLT: "bolt",
+  // —— 第十九批：第一幕两个 Boss ——
+  THE_GUARDIAN_CHARGING_UP: "charging_up",
+  THE_GUARDIAN_DEFENSIVE_MODE: "defensive_mode",
+  THE_GUARDIAN_FIERCE_BASH: "fierce_bash",
+  THE_GUARDIAN_ROLL_ATTACK: "roll_attack",
+  THE_GUARDIAN_TWIN_SLAM: "twin_slam",
+  THE_GUARDIAN_VENT_STEAM: "vent_steam",
+  THE_GUARDIAN_WHIRLWIND: "whirlwind",
+  SLIME_BOSS_GOOP_SPRAY: "goop_spray",
+  SLIME_BOSS_PREPARING: "preparing",
+  SLIME_BOSS_SLAM: "slam",
+  // 与两只大史莱姆的分裂同名（各自怪的命名空间里都叫 `split`），比对逐怪进行，重名不要紧。
+  SLIME_BOSS_SPLIT: "split",
+  // 分裂留下的空格：那只默认 `Monster` 的 `moveHistory[0]` 是 `MMID::INVALID`
+  // （`monsterMoveStrings[0] == "INVALID"`，MonsterMoves.h:215）。我们的空占位
+  // `currentMove` 是空串。⚠ 这一条只有那个空格用得到——所有真怪在 `MonsterGroup::init`
+  // 里都 rollMove 过，意图不可能是 INVALID。
+  INVALID: "",
 };
 // 药水在 trace 里是显示名。含熵酿填回来的未登记药水——它们只占槽位、不会被喝。
 const POTION: Record<string, string | null> = {
@@ -511,6 +543,14 @@ const POWER: Record<string, string> = {
   // ⚠ ARTIFACT / METALLICIZE 早就在表里（玩家侧的古代药水 / 金属化能力牌），
   // 本批是它们第一次出现在**怪物**身上：哨卫开局 `ARTIFACT: 1`、
   // 睡着的拉加维林 `METALLICIZE: 8`。同一个映射直接复用。
+  // —— 第十九批 ——
+  // 形态切换倒计时：**怪物身上**，守卫者开局自带（asc0 是 30 层）。每次掉血按未被格挡的
+  // 伤害递减，归零时摘掉自己、把意图改成防御形态。双重猛击之后按新阈值（+10）重新挂上，
+  // 所以它在快照里会**消失又出现**，值一路 30 → 40 → 50。
+  MODE_SHIFT: "mode_shift",
+  // 尖锐外壳：**怪物身上**，守卫者进防御形态时上 3 层、双重猛击打完摘掉。
+  // 玩家每打出一张**攻击牌**就吃 3 点过格挡的伤害。
+  SHARP_HIDE: "sharp_hide",
 };
 
 const mapPotion = (p: string): string | null => (p in POTION ? POTION[p]! : p);
