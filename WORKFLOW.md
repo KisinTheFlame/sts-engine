@@ -58,12 +58,34 @@
   怪物这边不是：文件头自己写着「精确权重 / 连续限制 / 守卫者阈值待真机 ground truth 校准」。
   所以一只怪的工作量是**三份**：`enemies.ts` 的血量区间与招式数值、`MOVE_RULES` 的
   `getMoveForRoll`、以及 `takeTurn` 走得通的 `effects`。三份都要逐位对参考。
-- **`isMonsterAttacking` 现在读数据表的 `intent`，参考读的是招式 id 白名单**
-  （`MonsterMoves.h:414` 的大 switch）。当前四只怪两边判定一致纯属巧合——白名单里
-  **存在反例**（球状守卫的 HARDEN 带伤害却被算作攻击）。**每登记一只怪都必须回白名单逐条复核**，
-  不一致就改成白名单。
+- ✅ **`isMonsterAttacking` 已改成招式 id 白名单**（第二十三批兑现，`MONSTER_ATTACK_MOVES`
+  逐条转写 `MonsterMoves.h:414-535`）。此前它读数据表的 `intent`，前 25 只怪两边碰巧一致；
+  预告的那个反例在第二十三批到场：`SPHERIC_GUARDIAN_HARDEN`「加 15 格挡再打 10 点」，
+  真实游戏显示的是**攻击 + 防御双意图**，而我们的 `EnemyIntentKind` 五个值互斥——
+  无论选哪个都在表达一件与「参考怎么判」无关的事。
+  **现在两者彻底分开**：`intent` 只管渲染，`isAttacking` 谓词只认白名单。
+  ⚠ **每登记一只怪仍然必须回 `MonsterMoves.h` 逐条抄那张表**（漏一条 = 那个意图被判成
+  「不是攻击」），只是判据从「核对 intent 对不对得上」变成了「有没有抄全」。
+  ⚠ 这条规则本身**当前没有预言机**：`isMonsterAttacking` 的唯一读者是觅敌之弱与瞄准眼睛，
+  两张牌都在卡牌批次的聚焦 variant 里，从没与怪物编队同场。第二十三批实测两个方向
+  （去掉硬化 / 多加汲取 / 整表退回读 intent）**各 0 例**——见 TODOS 的盲区表。
 - **`construct` 里的怪种特例会消耗 `monsterHpRng`**（虱子的咬击伤害就是这么定的）。
   漏掉不会静默——`rng.hp` 计数器当场对不上。
+- ⚠⚠ **`Monster::initHp` 有三种形态，第三种一次 RNG 都不掷。** 除了「掷一次」与
+  「先掷一次废的再掷一次」（惧兽 / 蜥蜴法师 / 青铜球 / 工头），还有
+  `curHp = monsterHpRange[id][0][0];`——球状守卫者 / 大嘴 / 复形怪走这一支
+  （`MonsterSpecific.cpp:119-124`），**连 `setRandomHp` 都不调**。
+  ⚠ 它与「上下界相同」**不是一回事**：守卫者的 `{240,240}` 照样掷一次
+  （`Random::random(int,int)` 无条件 `++counter`）。抄错不是「血量差一点」，
+  而是此后每一次 `monsterHpRng` 取值整体错位。数据表里的开关是 `EnemyDef.hpNoRoll`。
+- ⚠ **一个 Power 可能由三处协同维护，只抄到一处不会报错、只会逐回合越偏越多。**
+  易塑（第二十三批）：`preBattleAction` 置 3 / `attackedUnblockedHelper` 里入队加格挡并 **+1** /
+  `applyEndOfTurnTriggers` 每回合末**复位回 3**。三处的常数是**三个独立的字面量**，
+  改数据表不会让另外两处跟着变。同族的是地精巫师的 `miscInfo`（也是三处）。
+- ⚠ **怪物侧的开局 Power 会改写共享时点的形状，不只是加个字段。** 壁垒（第二十三批的
+  球状守卫者）让 `applyPreTurnLogic` 那句「逐怪清空格挡」**整句跳过**这只怪
+  （`Monster.cpp:19-22` 是 `if (!hasStatus<BARRICADE>()) block = 0;`，不是「先清再补」）。
+  登记这类怪时先 grep 一遍参考里读这个 Power 的所有地方，别只看 `preBattleAction`。
 - ⚠ **「构造全部再选一个」**：`createWeakWildlife` / `createStrongHumanoid` /
   `createStrongWildlife` 把**候选全部 construct 一遍**（每只都掷血量、掷怪种特例），
   然后才 `miscRng.random(n)` 选一个，其余**直接丢弃**。所以一场 `EXORDIUM_THUGS`
@@ -283,12 +305,36 @@ tools/regen-traces.sh --check
 ### 把本批的编队加进保留策略（怪物批次专用）
 
 **harness 一直就在跑第一幕全部 20 个编队**——`encounters` 那个列表从第一个 commit 起
-一个字没变过，我们过去只安装了其中五个，另外十五个每次生成完就丢掉。所以铺量怪物
-**完全不需要改 `trace_dump.cpp`**。
+一个字没变过，我们过去只安装了其中五个，另外十五个每次生成完就丢掉。所以铺量**第一幕**的
+怪物**完全不需要改 `trace_dump.cpp`**。
 
 > ⚠ 反过来说：**绝对不要动那个 `encounters` 列表**。增删任何一项都会平移其后所有 trace 的
-> `traceIdx`，把遗物/药水轮换整体错位，已提交数据全线作废。真要加第二幕的编队，
-> 得在**现有双重循环跑完之后**再追加一遍循环，让老的 `traceIdx` 原样保留。
+> `traceIdx`，把遗物/药水轮换整体错位，已提交数据全线作废。
+
+#### 第二幕起：两个「乘积」，追加而不是扩张（第二十三批）
+
+`trace_dump.cpp` 现在把「一个 `variants × encounters` 乘积」提成了 lambda `emitProduct`，
+主函数末尾**调用两次**：
+
+```cpp
+emitProduct(variants, encounters);          // 第一幕，20 个编队，冻结
+emitProduct(act2Variants, act2Encounters);  // 第二幕，必须排在最后
+```
+
+`traceIdx` / `firstTrace` 按引用捕获，所以第二幕的下标接在第一幕之后，第一幕的遗物/药水
+轮换一位都没动。第三幕照此再追加第三个乘积。
+
+- `act2Encounters` **一次列全了 19 个**第二幕编队。这样是安全的，因为 filter 不命中的编队
+  在 seed 循环之前 `continue`、**不消耗 traceIdx**——所以往这个列表里加编队是免费的，
+  而往某个 **variant 的 `encounters` 里**加不是（那会平移其后一切，规矩同 variant 21→22）。
+- **每批只追加一个新 variant**、filter 到本批的编队。第二十三批是 variant 23
+  （BATCH_1 牌组 / 125 种子 / asc 0，三个单怪编队）。
+- ⚠⚠ **两步验证，第一步不能跳**：先只加循环骨架、`act2Variants` 留空，跑 `--check`，
+  **已提交的文件必须逐字节复现**；不过就停下来查。之后才填 variant。
+  这与「加爬升度轴」「加 `isReplayableCard` 那道门」是同一个套路。
+- ⚠ 楼层仍是 `{1,3,7}`、`gc.act` 仍是 1。`floorNum` 在这里只喂
+  `Random(seed + floorNum)` 那次重播种；`act` 只被 `MonsterGroup` 的「第三幕颚虫 +力量」读，
+  当前第二幕编队没有一个会走到。将来登记到那种编队时要回来重新审这条。
 
 要做的只是把编队名加进 `tools/regen-traces.sh` 的 `ENC_V0`：
 
@@ -298,6 +344,10 @@ ENC_V0="small_slimes lots_of_slimes large_slime blue_slaver red_slaver looter ex
 
 `ENC_V0` 的语义是**只保留 variant 0 那 375 行，装完即永久冻结**（此后每批都必须逐字节复现
 整份文件）。与卡牌那五个编队的 `ENC_ALL`（整份保留、每批随全牌组重生成）是两套策略。
+
+⚠ **第二幕的编队也走 `ENC_V0`，但「variant 0 那一段」在它们身上等于整份文件**——
+第二幕的乘积里只有一个 variant，`variant0-rows.mjs` 因此返回整份长度。与 `@asc19` 那批
+同构（脚本不需要为此改任何逻辑，加名字即可）。
 
 为什么怪物走 variant 0：
 
