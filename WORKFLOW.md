@@ -327,6 +327,77 @@ ENC_V0="small_slimes lots_of_slimes large_slime blue_slaver red_slaver looter ex
 ——`MOVE_TURN_END` 那一格因此零背书，而且在**任何**第一幕编队上都救不回来。
 判据：一条分支要被看到，光有「够长的仗」不够，还得有**能让它在中途发生的场上局面**。
 
+### 爬升度这条轴（第二十一批起）
+
+爬升度**不是**第三套保留策略，而是编队那一维上的一个后缀：`cultist@asc19.jsonl`。
+机制全在四处，加起来不到 30 行：
+
+1. harness 的 `DeckVariant` 有个默认 0 的 `ascension`，传给 `GameContext` 的第三个参数；
+   trace 头部**只在非 0 时**输出 `"ascension":N`（与 `deckUpgraded` / `goldGained` 同一招）。
+2. `split-traces.mjs` 的分组键是 `encounter + (ascension ? "@asc"+ascension : "")`。
+3. `regen-traces.sh` 的 `ENC_V0` 里加 `<编队>@ascN`——一份文件里只有一个 variant，
+   于是 `variant0-rows.mjs` 返回整份长度 = 整份冻结。
+4. 重放侧从 trace 读 `ascension`。
+
+⚠⚠ **必须分两步走，第一步不能跳。**
+
+- **第一步：只改管线，不加任何新 variant**，然后跑 `tools/regen-traces.sh --check`。
+  已提交的文件必须**逐字节复现**。这就证明了这条新轴对既有语料是空操作——
+  与附录里「加 `isReplayableCard` 那道门时先只加门跑一次 `--check`」是同一个套路。
+  不过就停下来查，不要往下走。
+- **第二步**：再加 variant、跑 `--install`。
+
+#### 档位怎么选：一个档位点亮所有分支的两侧
+
+参考的爬升度条件**全部**是 `asc >= N` 形式。所以只要选一个**高于所有 N** 的档位，
+它就取到每条分支的「高」侧，而既有的 asc0 语料本来就钉着「低」侧——**两侧都有背书，
+只花一个档位的体积**。第二十一批选 19（那批编队涉及的 N ∈ {2,3,4,7,17,19}）。
+
+⚠ 单一档位**证不了「阈值恰好是 N 而不是 N±1」**，那要成对档位（16/17、6/7…）。
+这是已知盲区，别在报告里说成「阈值已验证」。
+
+⚠⚠ **三档以上的效果，中间那档在 {0, 高档} 下必然是 0 例。**
+`{3,4,5}[getTriIdx(asc,2,17)]` 这种：asc0 取 3、asc19 取 5，**4 那一档永远走不到**。
+第二十一批实测「颚虫军团力量的 asc2 档」「虱子蜷缩的 asc7 档」「护盾地精保护的 asc7 档」
+各 0 例。要关掉它得再加一个中间档位（如 asc7 或 asc16）。**照抄那一档，但如实记成盲区。**
+
+#### 爬升度不只改怪物，玩家侧也变
+
+`GameContext` 的构造函数里（不是 `BattleContext`，所以这条轴只能加在 variant 上）：
+
+| 阈值     | 变化                                            | 出处                  |
+| -------- | ----------------------------------------------- | --------------------- |
+| asc ≥ 6  | `curHp = round(maxHp * 0.9f)`——**不再满血入场** | `GameContext.cpp:522` |
+| asc ≥ 10 | 起始牌组多一张 `ASCENDERS_BANE`，**排在最前面** | `GameContext.cpp:479` |
+| asc ≥ 11 | 药水槽 3 → 2                                    | `GameContext.cpp:66`  |
+| asc ≥ 14 | 铁甲 `maxHp` 80 → 75                            | `GameContext.cpp:485` |
+
+⚠⚠ **「不再满血入场」会掀开一类此前被上限掩盖的 bug。** 第二十一批当场撞上：
+trace 的 `initial` 快照取在 `BattleContext::init` **之后**，而 `init` 里已经跑过
+`initRelics`（`BattleContext.cpp:73`），血瓶的 `heal(2)` 就在里面。重放侧一直拿
+`initial.player.hp` 当**入场**血量——asc<6 满血时那 2 点被上限吃掉、前后相等，
+所以七批都没出事；asc19 是 68/75，热修之前**红 420 例**（14 编队 × 30 条，
+血瓶在 8 个遗物的轮换里占 1/4）。
+修法是给 harness 加一个 `playerHp` 头部字段（**只在 `curHp != maxHp` 时输出**，
+故 asc0 逐字节不变），重放侧 `t.playerHp ?? t.initial.player.hp`。
+**教训：凡是「快照取在 init 之后、却被当成 init 的输入」的字段，都要问一句
+「有没有东西在 init 里改过它」。** 同族的还有 `maxHp`、`block`、开局 Power。
+
+#### 数据表要装得下两组数值
+
+- **血量**：`EnemyDef.hpHigh = { atLeast, hpMin, hpMax }`。⚠ **阈值逐怪不同**
+  （普通 7 / 精英 8 / Boss 9，`MonsterSpecific.cpp:26-128`），必须跟着区间一起写在数据表里，
+  别在引擎里按「是不是精英」猜。
+- **招式数值**：`Effect.ascAmount: {atLeast, amount}[]`，覆盖那条效果的 `amount`。
+  挂在**效果**上而不是「整条招式换一份效果表」——参考写的就是
+  `attackPlayerHelper(bc, asc2 ? 12 : 11)`，分档挂在那个数上。
+- **多出来的一整条效果**：`apply_power.minAscension`（肥胖地精 asc17 多一层脆弱）。
+  与「换个数」是两回事，别硬塞进 `ascAmount`。
+- ⚠ **没校准的怪必须显式抛错，不能静默用 asc0 的值。** `EnemyDef.ascCalibrated` +
+  `constructMonster` 里的 throw + 编队级的 `ASC_SUPPORTED_ENCOUNTERS`。
+  这与「未登记的编队/卡牌显式抛错」是同一条总纲：静默产出「看着合理、其实不是原版」的数值
+  比开不了战危险得多。
+
 ### 生成并安装
 
 ```bash
