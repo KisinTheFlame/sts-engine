@@ -2311,67 +2311,144 @@ const ENEMY_LIST: EnemyDef[] = [
 
   // —— 补全敌人：填平各幕遭遇缺口（HP/伤害对齐 sts_lightspeed asc0；飞行/反应/复生等异形机制近似为加权出招）——
   {
+    // —— 第二十四批：拜鸟（第二幕，`THREE_BYRDS` / `CHOSEN_AND_BYRDS`）——
+    //
+    // ⚠ **飞行（FLIGHT）整条不写在这张表里**，写在 sts-combat.ts 的三处：
+    //   `PRE_BATTLE_ACTION.byrd`（开局 3 层）、`monsterDamageUnblocked` 的 else-if 链
+    //   （受击 -1，减到 0 就摔下来改出 `stunned`）、`applyPreTurnLogic`（回合开始复位回 3）。
+    //   减半伤害那一处在 `calculateCardDamage`。数据表只描述招式。
+    // ⚠ **爬升度分档本批不写**（与第二十三批那三只同理）：`ascCalibrated` 没置，
+    //   `constructMonster` 在 `ascension > 0` 时直接抛错，写了也没有预言机。
+    //   参考的四处分档记在各招式的注释里，留给「第二幕爬升度」那一批一次性转写。
     id: "byrd",
     name: "拜鸟",
+    // MonsterIds.h:160 `{{25,31},{26,33}}`；普通怪阈值 `setRandomHp(hpRng, asc >= 7)`
+    // （MonsterSpecific.cpp:42）。高档那一组本批不写，理由同上。
     hpMin: 25,
     hpMax: 31,
     moves: [
       {
-        id: "byrd_peck",
+        // MonsterSpecific.cpp:547-549 `attackPlayerHelper(bc, 1, asc2 ? 6 : 5)`。
+        // ⚠⚠ **每击 1 点、打 5 下**，不是「1 点 × 5 = 5 点的单击」——旧近似表把段数写对了
+        //   却把它当成 `deal_damage_multi(1, 5)` 的巧合；这里逐位对齐的关键是**每一击都
+        //   单独走一次玩家格挡与荆棘/火焰屏障**。
+        // ⚠⚠ **爬升度挂在第三个实参（段数）上，不是伤害上**——这是本项目第一次遇到
+        //   `asc` 覆盖 `times`。`Effect.ascAmount` 覆盖的是 `amount`，表达不了它；
+        //   第二幕铺爬升度那一批要么加 `ascTimes`、要么另想办法。本批不写（不可达）。
+        id: "peck",
         name: "啄击",
         effects: [{ kind: "deal_damage_multi", amount: 1, times: 5 }],
         intent: "attack",
       },
       {
-        id: "byrd_swoop",
+        // MonsterSpecific.cpp:557-560 `attackPlayerHelper(bc, asc2 ? 14 : 12)`。
+        id: "swoop",
         name: "俯冲",
         effects: [{ kind: "deal_damage", amount: 12 }],
         intent: "attack",
       },
       {
-        id: "byrd_caw",
+        // MonsterSpecific.cpp:532-535 `buff<MS::STRENGTH>(1)`——**没有 asc 分档**，
+        // 而且是同步 buff（`on: "self"` 恒同步）。
+        id: "caw",
         name: "啼鸣",
         effects: [{ kind: "apply_power", power: "strength", amount: 1, on: "self" }],
         intent: "buff",
       },
+      {
+        // MonsterSpecific.cpp:537-540 `buff<MS::FLIGHT>(asc17 ? 4 : 3)`——重新起飞。
+        // ⚠ 是 `buff`（**累加**）而不是 setStatus：这一回合开头 `applyPreTurnLogic` 刚把
+        //   飞行复位成 3，所以飞完实际是 **6**。照抄，别按「回到 3」的直觉写。
+        id: "fly",
+        name: "起飞",
+        effects: [{ kind: "apply_power", power: "flight", amount: 3, on: "self" }],
+        intent: "buff",
+      },
+      {
+        // MonsterSpecific.cpp:542-545 `attackPlayerHelper(bc, 3)` + 同步 `setMove(BYRD_FLY)`。
+        // ⚠ **没有 asc 分档**（3 点是常数），与俯冲/啄击不同。收尾见 `MOVE_TURN_END`。
+        id: "headbutt",
+        name: "头槌",
+        effects: [{ kind: "deal_damage", amount: 3 }],
+        intent: "attack",
+      },
+      {
+        // MonsterSpecific.cpp:552-555：整条 case 只有 `bc.noOpRollMove(); setMove(HEADBUTT);`
+        // ——**一个效果都没有**（摔在地上的那一回合什么也不做）。两句都在 `MOVE_TURN_END`。
+        // ⚠ 这个意图不是 `getMoveForRoll` 掷出来的，而是**受击时**由
+        //   `attackedUnblockedHelper` 直接 `setMove` 写进去的（飞行层数归零那一刻）。
+        id: "stunned",
+        name: "眩晕",
+        effects: [],
+        intent: "unknown",
+      },
     ],
-    intentRule: {
-      scripted: [],
-      weighted: [
-        { move: "byrd_peck", weight: 50, maxInARow: 2 },
-        { move: "byrd_swoop", weight: 30, maxInARow: 1 },
-        { move: "byrd_caw", weight: 20, maxInARow: 1 },
-      ],
-    },
+    // 出招规则见 sts-combat.ts 的 `MOVE_RULES.byrd`（首回合 37.5% 啼鸣、否则啄击；
+    // 之后三段 roll，每段都可能**追加**一次 aiRng）。
+    // ⚠ 攻击白名单里是 `BYRD_PECK` / `BYRD_SWOOP` / `BYRD_HEADBUTT`（`MonsterMoves.h:436-438`），
+    //   `BYRD_CAW` / `BYRD_FLY` / `BYRD_STUNNED` **不在**——与这里的 attack ×3 / buff ×2 /
+    //   unknown 一致。
+    intentRule: { scripted: [], weighted: [] },
   },
   {
+    // —— 第二十四批：劫匪（第二幕，`TWO_THIEVES` 里与抢劫者同场）——
+    //
+    // ⚠ 与抢劫者**同族但不同数**，四处差别逐条对着 `MonsterSpecific.cpp` 抄，别照搬邻居：
+    //   ① 抢劫 10（asc2 11）与抢劫者相同，但**猛扑 16**（asc2 18）而抢劫者是 12（14）；
+    //   ② 烟雾弹 **11**（asc17 17）而抢劫者是恒定的 6；
+    //   ③ 抢劫者的对白 RNG 在**第 1 个**怪物回合，劫匪在**第 2 个**；
+    //   ④ 劫匪的抢劫与猛扑各**额外**白掷一次 `aiRng.random(2)`（抢劫者一次都没有）。
+    //   ③④ 都是纯计数器差异，写在 sts-combat.ts 的 `MOVE_TURN_BEGIN` / `MOVE_TURN_END`。
+    // ⚠ 偷金额度来自 `thievery` Power（`preBattleAction` 与抢劫者**共用同一条 case**，
+    //   MonsterSpecific.cpp:233-235：`buff<MS::THIEVERY>(asc17 ? 20 : 15)`），不是招式常数。
+    // ⚠ 爬升度分档本批不写，理由同拜鸟。
     id: "mugger",
     name: "劫匪",
+    // MonsterIds.h:183 `{{48,52},{50,54}}`；普通怪阈值 asc>=7（MonsterSpecific.cpp:55）。
     hpMin: 48,
     hpMax: 52,
     moves: [
-      // ⚠ 劫匪尚未登记进 sts-combat.ts（第二幕的怪）。偷金额度同样来自 `thievery`
-      // Power（`preBattleAction` 与拾荒者共用同一条 case，MonsterSpecific.cpp:233）。
       {
-        id: "mugger_mug",
+        // MonsterSpecific.cpp:964-982：`stealGoldFromPlayer(...)` + `attackPlayerHelper(asc2 ? 11 : 10)`。
+        // ⚠ **偷金在攻击之前**（偷是同步、攻击是入队），照抄书写顺序。
+        id: "mug",
         name: "抢劫",
         effects: [{ kind: "steal_gold" }, { kind: "deal_damage", amount: 10 }],
         intent: "attack",
       },
       {
-        id: "mugger_lunge",
-        name: "扑击逃窜",
-        effects: [{ kind: "steal_gold" }, { kind: "deal_damage", amount: 16 }, { kind: "escape" }],
+        // MonsterSpecific.cpp:956-962：`stealGoldFromPlayer(...)` + `attackPlayerHelper(asc2 ? 18 : 16)`。
+        // ⚠ **不带逃跑**——旧近似表把「扑击逃窜」写成一招里又打又跑，参考里逃跑是
+        //   烟雾弹之后单独的一个意图。
+        id: "lunge",
+        name: "猛扑",
+        effects: [{ kind: "steal_gold" }, { kind: "deal_damage", amount: 16 }],
         intent: "attack",
       },
+      {
+        // MonsterSpecific.cpp:984-988 `addBlock(asc17 ? 17 : 11)`——**同步**加格挡
+        // （与抢劫者的烟雾弹同形，数值不同），故 `sync: true`。
+        id: "smoke_bomb",
+        name: "烟雾弹",
+        effects: [{ kind: "gain_block", amount: 11, sync: true }],
+        intent: "defend",
+      },
+      {
+        // MonsterSpecific.cpp:944-954：与 `LOOTER_ESCAPE` **逐字相同**
+        // （`isEscapingB = true; --monstersAlive;` 并在归零时判胜）。
+        id: "flee",
+        name: "逃跑",
+        effects: [{ kind: "escape" }],
+        intent: "unknown",
+      },
     ],
-    intentRule: {
-      scripted: ["mugger_mug"],
-      weighted: [
-        { move: "mugger_mug", weight: 60, maxInARow: 2 },
-        { move: "mugger_lunge", weight: 40, maxInARow: 1 },
-      ],
-    },
+    // 出招全部由 takeTurn 的同步 setMove 锁定（抢劫 → 抢劫 → 猛扑/烟雾弹 → … → 逃跑），
+    // `getMoveForRoll` 只在开局被调用一次且恒返回抢劫（MonsterSpecific.cpp:2550-2551
+    // 那行也注着 `// called first turn only`）。
+    // ⚠ 攻击白名单里是 `MUGGER_MUG` / `MUGGER_LUNGE`（`MonsterMoves.h:473-474`），
+    //   `MUGGER_SMOKE_BOMB` / `MUGGER_ESCAPE` **不在**——与这里的 attack / attack /
+    //   defend / unknown 一致。
+    intentRule: { scripted: [], weighted: [] },
   },
   {
     id: "darkling",
@@ -2694,13 +2771,24 @@ const ENCOUNTERS: Record<string, EncounterDef> = {
     isBoss: false,
   },
   // —— 新敌人遭遇 ——
+  // 三拜鸟：对齐 MonsterGroup.cpp:406-410（三次 `createMonster(BYRD)`，无 RNG 特例）。
   three_byrds: { id: "three_byrds", enemies: ["byrd", "byrd", "byrd"], isBoss: false },
+  // 选民与拜鸟：⚠⚠ **参考只造一只拜鸟**，而且**拜鸟在前**
+  //（MonsterGroup.cpp:221-224：`createMonster(BYRD); createMonster(CHOSEN);`）。
+  // 第二十四批把这里从旧近似表的 `["chosen","byrd","byrd"]` 改成参考的形状——顺序错了
+  // 建怪的 monsterHpRng 取值就整体错位，只数一数怪的种类是发现不了的。
+  // ⚠ 编队名是复数（Byrd**s**），真实游戏那一场大概率是三只鸟 + 选民，所以这**可能**是
+  //   参考的笔误。但「到底几只」在参考里读不出来（判据③「修法唯一」不成立），
+  //   **本批不打补丁、照抄参考**，并记进 TODOS 的「已确认但尚未打补丁」。
   chosen_and_byrds: {
     id: "chosen_and_byrds",
-    enemies: ["chosen", "byrd", "byrd"],
+    enemies: ["byrd", "chosen"],
     isBoss: false,
   },
-  two_thieves: { id: "two_thieves", enemies: ["mugger", "mugger"], isBoss: false },
+  // 二盗贼：⚠ 是**抢劫者 + 劫匪**，不是两只劫匪
+  //（MonsterGroup.cpp:460-463：`createMonster(LOOTER); createMonster(MUGGER);`）。
+  // 旧近似表写的 `["mugger","mugger"]` 与参考不符，第二十四批改正。
+  two_thieves: { id: "two_thieves", enemies: ["looter", "mugger"], isBoss: false },
   three_darklings: {
     id: "three_darklings",
     enemies: ["darkling", "darkling", "darkling"],

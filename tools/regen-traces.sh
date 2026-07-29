@@ -81,7 +81,12 @@ ENC_ALL="cultist jaw_worm jaw_worm_horde three_louse two_louse"
 #   所以第一幕那 40 个文件逐字节不变（加空循环时单独跑过一次 `--check` 证明了这一点）。
 #   本批只装三个**单怪、无召唤、无塞牌**的编队，把第二幕的管线跑通而不叠机制。
 #   ⚠ 全是 asc0：第二 / 三幕 40 只怪一只都没校准爬升度，`ascCalibrated` 闸门照旧抛错。
-ENC_V0_ACT2="spheric_guardian chosen snake_plant"
+# 第二十四批：飞行（拜鸟）+ 劫匪。三个编队走的是**新追加的 variant 24**（variant 23 的
+#   encounters 一个字没动，所以它那三个文件逐字节不变）。
+#   ⚠ variant 24 的牌组是 `BATCH_1 + SPOT_WEAKNESS`——多的那一张是故意的：`isMonsterAttacking`
+#     的唯一读者就是觅敌之弱，而 `ENC_V0` 只留 variant 0 那副 21 张牌组，里面没有它，
+#     于是第十三批之后登记的怪的「攻击分类」一直没有预言机。从本批起，第二幕的新怪自带背书。
+ENC_V0_ACT2="spheric_guardian chosen snake_plant three_byrds two_thieves chosen_and_byrds"
 ENC_V0_ASC0="small_slimes lots_of_slimes large_slime blue_slaver red_slaver looter exordium_thugs exordium_wildlife gremlin_gang gremlin_nob lagavulin three_sentries the_guardian slime_boss hexaghost $ENC_V0_ACT2"
 ENC_V0_ASC19="cultist@asc19 jaw_worm@asc19 jaw_worm_horde@asc19 two_louse@asc19 three_louse@asc19 small_slimes@asc19 lots_of_slimes@asc19 large_slime@asc19 blue_slaver@asc19 red_slaver@asc19 looter@asc19 exordium_thugs@asc19 exordium_wildlife@asc19 gremlin_gang@asc19 gremlin_nob@asc19 lagavulin@asc19 three_sentries@asc19 the_guardian@asc19 slime_boss@asc19 hexaghost@asc19"
 # ⚠ 必须拼成**单行**：policy_of 用 `case " $ENC_V0 " in *" $1 "*` 做匹配，中间夹一个换行会让

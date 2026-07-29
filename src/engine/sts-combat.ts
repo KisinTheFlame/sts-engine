@@ -1296,6 +1296,52 @@ const MOVE_RULES: Record<string, MoveForRoll> = {
     }
     return lastMove(m, "sp_spores") ? "sp_chomp" : "sp_spores";
   },
+
+  // —— 第二十四批 ——
+
+  // 拜鸟：对齐 MonsterSpecific.cpp:2126-2184 BYRD。
+  // ⚠ 五处照抄：
+  //  ① **每一段都可能追加一次 aiRng**（首回合那支必追加），所以单次 rollMove 消耗 1 或 2 次
+  //     ——与颚虫同族，是逐位对齐最易错的地方。四个概率各不相同：
+  //     0.375f（首回合）/ 0.4f（连啄两次之后）/ 0.375f（刚俯冲过）/ **0.2857f**（刚啼鸣过）。
+  //  ② 首回合那支的 true = **啼鸣**、false = 啄击（`randomBoolean(0.375f) ? CAW : PECK`）；
+  //     第三段那支的 true = **啼鸣**、false = 啄击（同向）；
+  //     第二段（连啄两次）的 true = **俯冲**、false = 啼鸣；
+  //     第四段（刚啼鸣过）的 true = **俯冲**、false = 啄击。四支各写各的，别统一。
+  //  ③ 三段的连续限制**不同宽**：啄击看 `lastTwoMoves`（连两次才逼换），
+  //     俯冲与啼鸣都只看 `lastMove`（连一次就逼换）。
+  //  ④ 阈值是 **50 / 70**（不是 50 / 65 之类），最后一段是兜底。
+  //  ⑤ 参考在这条 case 顶部注释掉了一段
+  //     `if (!hasStatusInternal<MS::FLIGHT>()) return BYRD_HEADBUTT;`，旁边写着
+  //     `// handled during turn`——摔下来改出头槌那件事是在 `attackedUnblockedHelper` 里
+  //     做的（见 `monsterDamageUnblocked`），不在这里。**照抄注释掉的形态**，别把它写回来。
+  byrd: (bc, m, roll) => {
+    if (firstTurn(m)) {
+      return bc.rng.aiRng.randomBoolean(Math.fround(0.375)) ? "caw" : "peck"; // ★ 追加一次 aiRng
+    }
+    if (roll < 50) {
+      if (lastTwoMoves(m, "peck")) {
+        return bc.rng.aiRng.randomBoolean(Math.fround(0.4)) ? "swoop" : "caw"; // ★ 追加一次 aiRng
+      }
+      return "peck";
+    }
+    if (roll < 70) {
+      if (lastMove(m, "swoop")) {
+        return bc.rng.aiRng.randomBoolean(Math.fround(0.375)) ? "caw" : "peck"; // ★ 追加一次 aiRng
+      }
+      return "swoop";
+    }
+    if (lastMove(m, "caw")) {
+      return bc.rng.aiRng.randomBoolean(Math.fround(0.2857)) ? "swoop" : "peck"; // ★ 追加一次 aiRng
+    }
+    return "caw";
+  },
+
+  // 劫匪：对齐 MonsterSpecific.cpp:2550-2551 MUGGER——恒返回抢劫，roll 照掷但被丢掉
+  // （与抢劫者 / 邪教徒 / 尖刺史莱姆小同形）。
+  // ⚠ 参考在这行同样注了 `// called first turn only`：劫匪四条 case 的收尾全是**同步
+  //   setMove**（逃跑那条什么都没有），一次 RollMove 都不排，所以整场只调用它一次。
+  mugger: () => "mug",
 };
 
 // ============================================================================
@@ -1730,6 +1776,49 @@ const MOVE_TURN_END: Record<string, MoveTurnEnd> = {
   // 选民五条 case、食蛇草两条 case 的收尾全是 `addToBot(Actions::RollMove(idx))`
   //（MonsterSpecific.cpp:614-639 / :1131-1140），也就是这张表的默认值 `"roll"`。
   // 写进来反而多一份可以抄错的真相，所以留空。
+
+  // —— 拜鸟（第二十四批）：六条 case 里只有两条不是默认的 `roll` ——
+  //
+  // 啄击 / 俯冲 / 啼鸣 / 起飞四条都是 `addToBot(Actions::RollMove(idx))`
+  //（MonsterSpecific.cpp:532-560），即默认值，不写进表里。
+  //
+  // 头槌：同步 `setMove(MMID::BYRD_FLY)`（`:544`）——**不掷 aiRng**。
+  // 于是「摔下来 → 眩晕 → 头槌 → 起飞 → 回到 roll」是一条钉死的四步链。
+  "byrd/headbutt": { setMove: "fly" },
+  // 眩晕：整条 case 是 `bc.noOpRollMove(); setMove(MMID::BYRD_HEADBUTT);`（`:552-555`），
+  // 两句都是**同步**的，所以它是第五形态（任意函数）：
+  // `{setMove}` 表达不了那次 aiRng，`no_op_roll` 表达不了改意图。
+  // ⚠ 顺序照抄：**先 noOpRollMove 再 setMove**（球状守卫者那四条恰好相反，先 setMove
+  //   再 noOpRollMove）。两者都不读对方的状态，所以顺序当前不可观察——但两种写法在参考里
+  //   真的并存，统一它就是在制造第二份真相。
+  "byrd/stunned": (bc, m) => {
+    bc.rng.aiRng.random(99); // ★ 消耗一次 aiRng（noOpRollMove，同步）
+    setMove(m, "headbutt");
+  },
+
+  // —— 劫匪（第二十四批）：与抢劫者同形、数不同 ——
+  //
+  // 抢劫：对齐 MonsterSpecific.cpp:972-981。⚠ **判据是「第 2 个怪物回合」**，
+  // 而抢劫者那条判的是第 1 个（`MOVE_TURN_END["looter/mug"]`）——两只怪的行为序列因此相同
+  // （第 1 回合都锁死「再抢一次」），但**掷 aiRng 的回合不同**，抄错当场落在计数器上。
+  // ⚠ true 那支是**烟雾弹**（与抢劫者一致）。
+  "mugger/mug": (bc, m) => {
+    if (getMonsterTurnNumber(bc) === 2) {
+      setMove(m, bc.rng.aiRng.randomBoolean(Math.fround(0.5)) ? "smoke_bomb" : "lunge"); // ★ 消耗一次 aiRng
+      return;
+    }
+    setMove(m, "mug");
+  },
+  // 猛扑 → 烟雾弹 → 逃跑，两条都是同步 setMove、不消耗 aiRng
+  // （MonsterSpecific.cpp:960 / :986）。
+  "mugger/lunge": { setMove: "smoke_bomb" },
+  "mugger/smoke_bomb": { setMove: "flee" },
+  // 逃跑：case 里只有「置逃跑位 + monstersAlive--（+判胜）」然后 break，**没有任何收尾语句**
+  // （MonsterSpecific.cpp:944-954），与抢劫者逐字相同。
+  // ⚠ 这一格正是第十五批那条盲区的关门点：抢劫者单挑时逃跑当场判胜，`doMonsterTurn` 的
+  //   「结局已定就直接返回」抢在收尾之前，于是 `"none"` 与 `"roll"` 分不开。
+  //   `TWO_THIEVES` 里两只贼互为同伴，先逃的那只不会结束战斗，这一格第一次可观察。
+  "mugger/flee": "none",
 };
 
 /**
@@ -1762,6 +1851,28 @@ const MOVE_TURN_BEGIN: Record<string, (bc: BattleContext, m: CombatMonster) => v
   //   所以开局那轮只蓄两回合；大招之后清零，此后每轮蓄三回合。
   "gremlin_wizard/charging": (_bc, m) => {
     m.miscInfo += 1;
+  },
+
+  // —— 劫匪（第二十四批）：两条 case 各自在效果之前白掷 aiRng ——
+  //
+  // 抢劫：`bc.aiRng.random(2);` **无条件**（每一次抢劫都掷），随后
+  // `if (getMonsterTurnNumber() == 2) bc.aiRng.randomBoolean(0.6f);`
+  // 两句都注着 `// for a dialog message in game`，结果全被丢弃
+  // （MonsterSpecific.cpp:965-970）。
+  // ⚠ 与抢劫者的差别有两处，别照搬邻居：① 抢劫者**没有**那句无条件的 `random(2)`；
+  //   ② 抢劫者的 0.6f 在**第 1 个**怪物回合，劫匪在**第 2 个**。
+  // ⚠ `random(2)` 与 `randomBoolean(0.6f)` 在 aiRng 上各算**一次**，
+  //   所以劫匪第 2 个怪物回合的抢劫一共白掷 2 次。
+  "mugger/mug": (bc) => {
+    bc.rng.aiRng.random(2); // ★ 消耗一次 aiRng，结果丢弃（游戏里的对白）
+    if (getMonsterTurnNumber(bc) === 2) {
+      bc.rng.aiRng.randomBoolean(Math.fround(0.6)); // ★ 消耗一次 aiRng，结果丢弃（对白）
+    }
+  },
+  // 猛扑：同样在效果之前 `bc.aiRng.random(2);`（MonsterSpecific.cpp:957）。
+  // ⚠ 抢劫者的猛扑**没有**这一句（MonsterSpecific.cpp:910-914）。
+  "mugger/lunge": (bc) => {
+    bc.rng.aiRng.random(2); // ★ 消耗一次 aiRng，结果丢弃（游戏里的对白）
   },
 };
 
@@ -2305,6 +2416,28 @@ const PRE_BATTLE_ACTION: Record<string, PreBattleAction> = {
     addPower(m.powers, "barricade", 1);
     m.block += 40;
   },
+
+  // —— 第二十四批 ——
+
+  // 拜鸟的飞行（对齐 MonsterSpecific.cpp:228-231 `buff<MS::FLIGHT>(asc17 ? 4 : 3)`）。
+  // **不消耗 RNG**。它是本项目**第一只带飞行的怪**（全项目也只有它），四处协同：
+  //   ① 这里的初值 3；
+  //   ② `calculateCardDamage` 末段把牌造成的伤害**减半**；
+  //   ③ `monsterDamageUnblocked` 的 else-if 链里受击 -1，减到 0 那一击改出 `stunned`；
+  //   ④ `applyPreTurnLogic` 每个怪物回合开始**复位回 3**（于是它又飞起来）。
+  // ⚠ FLIGHT 会进 trace 的怪物 powers 快照（`FLIGHT: 3`），漏了当场抛「未映射的 power」。
+  // ⚠ asc17 那一档（4 层）当前不可达（`ascCalibrated` 没置），照抄但没有预言机。
+  byrd: (bc, m) => {
+    addPower(m.powers, "flight", bc.ascension >= 17 ? 4 : 3);
+  },
+  // 劫匪的偷窃额度：与抢劫者**共用参考里的同一条 case**
+  // （MonsterSpecific.cpp:233-235 `case LOOTER: case MUGGER: buff<MS::THIEVERY>(asc17 ? 20 : 15)`），
+  // 所以数值与 `PRE_BATTLE_ACTION.looter` 逐字相同。**不消耗 RNG**。
+  // ⚠ `TWO_THIEVES` 里两只贼各带 15，合起来能把玩家偷穷——这正是第十五批那条
+  //   「`min(玩家金币, 额度)` 钳制没有背书」的关门条件。
+  mugger: (bc, m) => {
+    addPower(m.powers, "thievery", bc.ascension >= 17 ? 20 : 15);
+  },
 };
 
 type EncounterSetup = (bc: BattleContext) => void;
@@ -2431,6 +2564,26 @@ function overwriteMove(m: CombatMonster, move: string): void {
  *     | `CHOSEN_HEX`                       | 否         | —                                   | debuff        |
  *     | `SNAKE_PLANT_CHOMP` (`:495`)       | **是**     | `snake_plant/sp_chomp`              | attack        |
  *     | `SNAKE_PLANT_ENFEEBLING_SPORES`    | 否         | —                                   | debuff        |
+ *   * **第二十四批的两只**（逐条核对 `MonsterMoves.h:436-438` / `:473-474`）：
+ *     | 参考招式                       | 在白名单？ | 我们的键             | 数据表 intent |
+ *     | ------------------------------ | ---------- | -------------------- | ------------- |
+ *     | `BYRD_PECK` (`:436`)           | **是**     | `byrd/peck`          | attack        |
+ *     | `BYRD_SWOOP` (`:437`)          | **是**     | `byrd/swoop`         | attack        |
+ *     | `BYRD_HEADBUTT` (`:438`)       | **是**     | `byrd/headbutt`      | attack        |
+ *     | `BYRD_CAW`                     | 否         | —                    | buff          |
+ *     | `BYRD_FLY`                     | 否         | —                    | buff          |
+ *     | `BYRD_STUNNED`                 | 否         | —                    | unknown       |
+ *     | `MUGGER_MUG` (`:473`)          | **是**     | `mugger/mug`         | attack        |
+ *     | `MUGGER_LUNGE` (`:474`)        | **是**     | `mugger/lunge`       | attack        |
+ *     | `MUGGER_SMOKE_BOMB`            | 否         | —                    | defend        |
+ *     | `MUGGER_ESCAPE`                | 否         | —                    | unknown       |
+ *     ⚠ 三条鸟的顺序在参考里是 PECK / SWOOP / **HEADBUTT**（不按枚举序），照抄时按名字找、
+ *     别按位置数。
+ *
+ * ⚠⚠ **第二十四批起这张表第一次有预言机**：`isMonsterAttacking` 的唯一读者是觅敌之弱，
+ * 而第十三批之后的编队都走 `ENC_V0`（只有 variant 0 那副 21 张牌组，里面没有它）。
+ * 本批给 act-2 的新 variant 加了一张 `SPOT_WEAKNESS`，于是本批三个编队里这条谓词
+ * **真的被读**。此前登记的 21 只怪仍然没有背书，见 TODOS 盲区表。
  *
  * ⚠ **登记新怪时必须回 `MonsterMoves.h` 逐条抄这张表**，不要从「带不带伤害」或数据表的
  * intent 推——硬化就是反例的存在证明。漏一条不会静默：这只怪的那个意图会被判成「不是攻击」。
@@ -2449,6 +2602,10 @@ const MONSTER_ATTACK_MOVES: ReadonlySet<string> = new Set([
   "spike_slime_l/flame_tackle_l",
   "spike_slime_m/flame_tackle",
   "spike_slime_s/tackle_s",
+  // 拜鸟（`:436-438`，第二十四批）。⚠ 起飞 / 啼鸣 / 眩晕都不在。
+  "byrd/peck",
+  "byrd/swoop",
+  "byrd/headbutt",
   // 蓝 / 红奴隶主（`:428-429` / `:484-485`）
   "blue_slaver/stab",
   "blue_slaver/rake",
@@ -2487,6 +2644,9 @@ const MONSTER_ATTACK_MOVES: ReadonlySet<string> = new Set([
   // 抢劫者（`:470-471`）
   "looter/mug",
   "looter/lunge",
+  // 劫匪（`:473-474`，第二十四批）。⚠ 烟雾弹与逃跑不在，与抢劫者同形。
+  "mugger/mug",
+  "mugger/lunge",
   // 哨卫（`:489`）
   "sentry/beam",
   // 史莱姆王（`:494`）
@@ -3864,6 +4024,21 @@ function getPower(powers: PowerInstance[], id: string): number {
   return powers.find((p) => p.id === id)?.amount ?? 0;
 }
 
+/**
+ * 「身上有没有这条 Power」——对齐参考的 `hasStatus<s>()`，它读的是 **statusBits**
+ * （Monster.h:407-409），与层数无关。
+ *
+ * ⚠ 绝大多数地方用 `getPower(...) > 0` 与它等价，因为参考清层数时走的是
+ * `removeStatus`（先 setStatus(0) 再清 bit）。**飞行是唯一的例外**：
+ * `attackedUnblockedHelper` 那一格写的是裸的 `setStatus<FLIGHT>(flight-1)`，
+ * **只写数值、不清 bit**，所以拜鸟摔下来（层数 0）之后 `hasStatus<FLIGHT>()` 仍然为真
+ * ——伤害照样减半、回合开始照样复位、再挨打还会减成负数。
+ * 我们这边把这件事建模成「条目一旦加上就永不摘除」，于是这个谓词就是「条目在不在」。
+ */
+function hasPower(powers: PowerInstance[], id: string): boolean {
+  return powers.some((p) => p.id === id);
+}
+
 export function calculateCardDamage(
   bc: BattleContext,
   targetIdx: number,
@@ -3887,7 +4062,21 @@ export function calculateCardDamage(
   if (target !== undefined && getPower(target.powers, "vulnerable") > 0) {
     damage = Math.fround(damage * 1.5);
   }
-  // TODO(后续PR): 缓慢、飞行、虚无。
+  // TODO(后续PR): 缓慢（在易伤**之前**）。
+
+  // —— 怪物 Power AtDamageReceiveFinal ——
+  // 飞行（拜鸟，第二十四批）：`if (monster.hasStatus<MS::FLIGHT>()) damage *= .5;`
+  // （BattleContext.cpp:2764-2766）。三处照抄：
+  //  ① 位置在**易伤之后、虚无缥缈之前**，也就是所有加法与其它倍率都算完之后；
+  //  ② 判据是 `hasStatus`（statusBits）而**不是层数 > 0**——拜鸟摔下来（层数 0）之后
+  //     伤害**照样减半**，见 `hasPower` 的注释。这是本条最容易抄错的地方：
+  //     写成 `getPower(...) > 0` 会让眩晕那一回合的伤害翻倍。
+  //  ③ 只挡**牌**造成的伤害：这个函数只有 `CARD_RULES` / 药水那条路会调，
+  //     怪物之间的伤害与荆棘走别的路。
+  if (target !== undefined && hasPower(target.powers, "flight")) {
+    damage = Math.fround(damage * 0.5);
+  }
+  // TODO(后续PR): 虚无缥缈（怪物侧，`max(damage, 1.0f)`，在飞行之后）。
 
   return Math.max(0, Math.trunc(damage));
 }
@@ -3959,6 +4148,7 @@ function monsterDamageUnblocked(bc: BattleContext, m: CombatMonster, damage: num
   //   怪（虱子只有蜷缩、拉加维林只有沉睡），但形状照抄——写成两个独立 if 会在将来静默出错。
   // 蜷缩把加格挡 addToBot 排在扣血之后，故这里先记下、扣完血再加。
   const curl = m.powers.find((p) => p.id === "curl_up");
+  const flight = m.powers.find((p) => p.id === "flight");
   const malleable = m.powers.find((p) => p.id === "malleable");
   if (curl !== undefined && curl.amount > 0) {
     const amount = curl.amount;
@@ -3970,6 +4160,33 @@ function monsterDamageUnblocked(bc: BattleContext, m: CombatMonster, damage: num
     addToBot(bc, () => {
       m.block += amount;
     });
+  } else if (flight !== undefined && damage > 0) {
+    // 飞行（FLIGHT，拜鸟）：对齐 Monster.cpp:362-368 那一格。
+    //
+    //     } else if (hasStatus<MS::FLIGHT>() && damage > 0) {
+    //         auto flight = getStatus<MS::FLIGHT>();
+    //         if (flight == 1) { setMove(MMID::BYRD_STUNNED); }
+    //         setStatus<MS::FLIGHT>(flight-1);
+    //     }
+    //
+    // ⚠ 五处照抄：
+    //  ① **位置**：在这条 else-if 链里排第四，**蜷缩之后、易塑之前**。链上的位置就是它
+    //     全部的可观察面（同第十七批把狂怒挪到蜷缩那一格的教训），挪了会静默改行为。
+    //  ② 入口是 `hasStatus`（条目在不在），**不是层数 > 0**——摔下来之后再挨打会把层数
+    //     减成 **-1、-2…**，而且照样占着这一格（后面的易塑/荆棘/沉睡都轮不到）。
+    //  ③ `&& damage > 0` 是参考写着的，尽管调用方已经有 `if (damage > 0)` 的门
+    //     ——整条链里只有这一格带它，照抄。
+    //  ④ 判据是「**减之前恰好是 1**」而不是「减之后 <= 0」：所以只有 1 → 0 那一击摔下来，
+    //     0 → -1、-1 → -2 都不会再触发一次眩晕。
+    //  ⑤ 改意图用的是 **`setMove`（前移历史）**，不是 `onHpLost` 里那种裸的
+    //     `moveHistory[0] =`——同一件事在参考里两种写法并存，别统一。
+    // ⚠ 它**只挂在 attacked 这条路上**：非攻击伤害（燃烧 / 主宰 / 火焰药水走 `damage`
+    //   → `damageUnblockedHelper`）里根本没有飞行这一格，所以那种伤害不消耗飞行层数。
+    const amount = flight.amount;
+    if (amount === 1) {
+      setMove(m, "stunned");
+    }
+    flight.amount = amount - 1;
   } else if (malleable !== undefined && malleable.amount > 0) {
     // 易塑（MALLEABLE，食蛇草）：对齐 Monster.cpp:369-374 那一格。
     // ⚠ 参考写的是 `else if (hasStatus<MALLEABLE>() || hasStatus<REACTIVE>())`，进去之后
@@ -3990,7 +4207,7 @@ function monsterDamageUnblocked(bc: BattleContext, m: CombatMonster, damage: num
     // 沉睡被打断（Monster.cpp:388-391）。⚠ 它排在这条 else-if 链的**倒数第二**格。
     wakeUpLagavulin(m);
   }
-  // TODO(后续PR): 无敌 / 镀甲 / 飞行 / 反应 / 荆棘 / 变换等其余 onAttacked 分支。
+  // TODO(后续PR): 无敌 / 镀甲 / 反应 / 荆棘 / 变换等其余 onAttacked 分支。
 
   m.hp -= damage;
   if (m.hp <= 0) {
@@ -7454,18 +7671,38 @@ function onTurnEnding(bc: BattleContext): void {
  * `if (!hasStatus<MS::BARRICADE>()) { block = 0; }`——不是「先清再补」，而是整句跳过。
  * 球状守卫者只有 20 血、开局 40 点格挡，格挡才是它真正的血条：这一位漏了它几回合就死。
  * ⚠ 它是**纯 bool**（`isBooleanPower` 为真），所以只判有无、不看层数。
+ *
+ * ⚠⚠ **壁垒那一支必须写成 `if`，不能写成 `continue`**（第二十四批修）：参考的
+ * `applyStartOfTurnPowers` 是**并列的五段**（清格挡 / 窒息 / 飞行 / 无敌 / 中毒），
+ * 壁垒只挡第一段。写成 `continue` 会连带跳过后面几段——在只有壁垒、没有飞行的第二十三批
+ * 下两者等价，本批加了飞行之后就不再等价了（一只同时带壁垒与飞行的怪会不复位飞行）。
+ * 当前没有这种怪，所以这是**预防性**的形状对齐，不是修 bug。
  */
 function applyPreTurnLogic(bc: BattleContext): void {
   for (const m of bc.monsters) {
     if (!m.alive) {
       continue;
     }
-    if (getPower(m.powers, "barricade") > 0) {
-      continue;
+    // ① 清空格挡，壁垒除外（`if (!hasStatus<MS::BARRICADE>()) block = 0;`）。
+    if (getPower(m.powers, "barricade") === 0) {
+      m.block = 0;
     }
-    m.block = 0;
+    // ③ 飞行复位（第二十四批，Monster.cpp:28-30）：
+    //      `if (hasStatus<MS::FLIGHT>()) setStatus<MS::FLIGHT>(bc.ascension >= 17 ? 4 : 3);`
+    // ⚠ 三处照抄：
+    //  ① 入口判的是 `hasStatus`（statusBits），**不是层数 > 0**——摔下来（层数 0）的拜鸟
+    //     照样在自己回合开始复位，这正是它「重新起飞」的机制；写成 `> 0` 它就再也飞不起来。
+    //  ② 是 **setStatus（覆盖）**，不是 `buff`（累加）——与 `BYRD_FLY` 那条 case 相反。
+    //  ③ 时点是**怪物阶段开始**（整个 `applyPreTurnLogic` 循环），所以「玩家回合里把飞行
+    //     打光」与「怪物回合开始又满了」之间只隔一个玩家回合末。
+    // ⚠ asc17 那一档当前不可达（拜鸟的 `ascCalibrated` 没置，`constructMonster` 在
+    //   `ascension > 0` 时抛错），照抄但**没有预言机**，见 TODOS 盲区表。
+    const flight = m.powers.find((p) => p.id === "flight");
+    if (flight !== undefined) {
+      flight.amount = bc.ascension >= 17 ? 4 : 3;
+    }
   }
-  // TODO(后续PR): 窒息、飞行复位、无敌复位、中毒扣血等其余 applyStartOfTurnPowers 分支。
+  // TODO(后续PR): 窒息（②）、无敌复位（④）、中毒扣血（⑤）。
 }
 
 function doMonsterTurn(bc: BattleContext, idx: number): void {
@@ -8313,6 +8550,12 @@ export const SUPPORTED_ENCOUNTERS: readonly string[] = [
   "spheric_guardian",
   "chosen",
   "snake_plant",
+  // —— 第二十四批：飞行（拜鸟）+ 劫匪。三个编队走 harness 新追加的 variant 24，
+  //   牌组是 `BATCH_1 + SPOT_WEAKNESS`——多的那一张让 `isMonsterAttacking` 第一次有预言机。
+  //   ⚠ 同样**只有 asc0 的背书**（两只新怪的 `ascCalibrated` 都没置）。
+  "three_byrds",
+  "two_thieves",
+  "chosen_and_byrds",
 ];
 
 export function isEncounterSupported(encounterId: string): boolean {

@@ -74,6 +74,21 @@ export type PowerId =
   // （Monster.cpp:369-374）、`applyEndOfTurnTriggers` 复位成 3（Monster.cpp:47-49）。
   // ⚠ 加的那层格挡是 `addToBot(MonsterGainBlock)`——**入队**，所以触发它的那一击不被减免。
   | "malleable"
+  // 飞行（拜鸟，全项目只有它带）：三处协同，任何一处漏了都不会报错、只会越打越偏。
+  //  ① **减半来卡牌伤害**：`calculateCardDamage` 末段 `if (hasStatus<FLIGHT>()) damage *= .5;`
+  //     （BattleContext.cpp:2764），位置在易伤之后、虚无缥缈之前。
+  //  ② **受到未被格挡的攻击伤害时层数 -1**（`attackedUnblockedHelper` 的 else-if 链里
+  //     自成一格，排在蜷缩之后、易塑之前，Monster.cpp:362-368）；**减到 0 的那一击**
+  //     （判的是「减之前恰好是 1」）把意图改成 `BYRD_STUNNED`，也就是「摔下来」。
+  //  ③ **每个怪物回合开始复位回 3**（asc17 是 4，Monster.cpp:28-30），于是它又飞起来。
+  // ⚠⚠ **层数归零不等于这条 Power 没了**：参考的 `setStatus` 只写数值、**不碰 statusBits**
+  //   （Monster.h:194-241），而上面三处读的全是 `hasStatus`（读 bit）。所以摔下来之后
+  //   ① 伤害**照样减半**、③ 回合开始**照样复位**，而 ② 还会把层数一路减成负数。
+  //   我们这边因此把它建模成「条目一旦加上就永不摘除」，`amount` 可以是 0 甚至负数
+  //   ——快照两侧都按「层数为 0 就不输出」折叠，所以负数是真的会出现在 trace 里的。
+  // ⚠ 起飞（`BYRD_FLY`）用的是 `buff`（**累加** 3），不是 setStatus——而那一回合开头刚被
+  //   复位成 3，于是飞完是 6。照抄，别写成「置 3」。
+  | "flight"
   | "mode_shift" // 模式切换累计（守卫者，内部计数用）
   // —— 玩家能力牌触发型 power（在对应触发点由 combat 结算，玩家专属）——
   | "combust" // 燃烧：每个玩家回合结束，失 1 生命并对所有敌人造成 = 层数的伤害

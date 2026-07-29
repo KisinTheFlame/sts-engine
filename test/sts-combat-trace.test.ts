@@ -344,6 +344,11 @@ const ENCOUNTER: Record<string, string> = {
   SPHERIC_GUARDIAN: "spheric_guardian",
   CHOSEN: "chosen",
   SNAKE_PLANT: "snake_plant",
+  // —— 第二十四批：飞行（拜鸟）+ 劫匪。三个编队走 harness 新追加的 variant 24
+  //   （牌组 = `BATCH_1` + 一张 `SPOT_WEAKNESS`，见那边的注释）。
+  THREE_BYRDS: "three_byrds",
+  TWO_THIEVES: "two_thieves",
+  CHOSEN_AND_BYRDS: "chosen_and_byrds",
 };
 const MONSTER: Record<string, string> = {
   CULTIST: "cultist",
@@ -389,6 +394,10 @@ const MONSTER: Record<string, string> = {
   SPHERIC_GUARDIAN: "spheric_guardian",
   CHOSEN: "chosen",
   SNAKE_PLANT: "snake_plant",
+  // —— 第二十四批。⚠ `TWO_THIEVES` 是**抢劫者 + 劫匪**（LOOTER 前面已有映射），
+  //   `CHOSEN_AND_BYRDS` 是**一只**拜鸟 + 选民（参考就是这么建的，见 enemies.ts 的注释）。
+  BYRD: "byrd",
+  MUGGER: "mugger",
   // ⚠ **分裂留下的空格**。参考的 `MonsterGroup::arr` 是定长 5 的数组，`monsterCount` 只是
   // 「dump 到第几格」；史莱姆王分裂时 `arr[0]` 与 `arr[2]` 被写、`monsterCount = 3`，
   // 于是 1 号格那只**从没被构造过**的默认 `Monster` 也被 dump 出来
@@ -493,6 +502,20 @@ const MOVE: Record<string, string> = {
   CHOSEN_HEX: "hex",
   SNAKE_PLANT_CHOMP: "sp_chomp",
   SNAKE_PLANT_ENFEEBLING_SPORES: "sp_spores",
+  // —— 第二十四批：拜鸟六条 + 劫匪四条 ——
+  // ⚠ 劫匪四条与抢劫者**同名**（各自怪的命名空间里都叫 mug / lunge / smoke_bomb / flee）：
+  //   比对逐怪进行，重名不要紧，而两只贼的招式一一对应、同名反而更好读。
+  //   ⚠ 但它们的**数值与 RNG 消耗都不同**，见 enemies.ts / MOVE_TURN_BEGIN 的注释。
+  BYRD_PECK: "peck",
+  BYRD_SWOOP: "swoop",
+  BYRD_CAW: "caw",
+  BYRD_FLY: "fly",
+  BYRD_HEADBUTT: "headbutt",
+  BYRD_STUNNED: "stunned",
+  MUGGER_MUG: "mug",
+  MUGGER_LUNGE: "lunge",
+  MUGGER_SMOKE_BOMB: "smoke_bomb",
+  MUGGER_ESCAPE: "flee",
   // 分裂留下的空格：那只默认 `Monster` 的 `moveHistory[0]` 是 `MMID::INVALID`
   // （`monsterMoveStrings[0] == "INVALID"`，MonsterMoves.h:215）。我们的空占位
   // `currentMove` 是空串。⚠ 这一条只有那个空格用得到——所有真怪在 `MonsterGroup::init`
@@ -633,6 +656,14 @@ const POWER: Record<string, string> = {
   // ⚠ BARRICADE 早就在表里（玩家侧的壁垒能力牌），本批是它第一次出现在**怪物**身上：
   //   球状守卫者开局 `BARRICADE: 1`（格挡从此不在怪物回合开始清空）。
   //   ARTIFACT 同理，第十八批哨卫是 1 层，本批球状守卫者是 3 层。两个映射直接复用。
+  // —— 第二十四批 ——
+  // 飞行：**怪物身上**，拜鸟开局自带 3 层。受到未被格挡的攻击伤害就 -1，
+  // 归零那一击摔下来（意图改成 `BYRD_STUNNED`），自己回合开始复位回 3，起飞再 **+3**。
+  // ⚠ **层数会变成负数**：参考清层数走的是裸的 `setStatus(flight-1)`，不清 statusBits，
+  //   所以摔下来之后继续挨打会一路减成 -1、-2……而 harness 的 `getStatusInternal` 照样
+  //   输出（只有恰好 0 那一刻会因 `v == 0` 被折叠掉）。快照里因此能看到
+  //   `FLIGHT: 3 → 2 → 1 →（消失）→ -1`。
+  FLIGHT: "flight",
 };
 
 const mapPotion = (p: string): string | null => (p in POTION ? POTION[p]! : p);
