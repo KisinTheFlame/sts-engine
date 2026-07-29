@@ -1721,8 +1721,9 @@ const ENEMY_LIST: EnemyDef[] = [
     id: "hexaghost",
     name: "六火幽魂",
     // MonsterIds.h:178 `{{250,250},{264,264}}`（Boss 走 `setRandomHp(hpRng, asc>=9)`，
-    // MonsterSpecific.cpp:2465-2473）。⚠ 上下界相同**照样掷一次** monsterHpRng。
-    // ⚠ 它**没有** `Monster::construct` 的怪种特例（Monster.cpp:113 的 switch 只有虱子与
+    // MonsterSpecific.cpp:81-89）。⚠ 上下界相同**照样掷一次** monsterHpRng
+    //（`Random::random(int,int)` 无条件 `++counter`，Random.h:159）。
+    // ⚠ 它**没有** `Monster::construct` 的怪种特例（Monster.cpp:109 的 switch 只有虱子与
     //   暗黑爬虫），也**没有** `preBattleAction`（MonsterSpecific.cpp:140 的 switch 里没有它），
     //   所以建怪只掷一次 monsterHpRng、开局身上一个 Power 都没有。
     hpMin: 250,
