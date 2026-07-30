@@ -228,6 +228,37 @@ monsterCount = 4;`，**0 号位从没被构造过**（`MonsterGroup.cpp:248-259`
   ⚠ 「开局就留空位」意味着 `monstersAlive` **不能再写成「数组长度」**（`monsterCount`
   才是数组长度）。同一个坑还牵着 `MonsterGroup::init` 的两个循环：它们的门是
   `if (arr[i].idx != -1)`，从没构造过的那一格既不 rollMove 也不 preBattleAction。
+- ⚠⚠ **「召唤」这一族里，「怎么预留空位」与「怎么往里填」各有两种写法，两两都不同源。**
+  第二十八批装上第二个宿主（青铜自动机）之后可以并排看了，**照抄邻居必错**：
+  | 维度                                                                                      | 地精首领（第二十七批）                                                                                         | 青铜自动机（第二十八批）                                                                            |
+  | ----------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+  | 预留                                                                                      | 建 1/2/3 三格，**手动赋值** `monstersAlive=3; monsterCount=4`（`MonsterGroup.cpp:248-259`）                    | `monsterCount = 1; createMonster(...); ++monsterCount;`（`:173-177`）——**先推游标、建怪、再空一格** |
+  | 空格在哪                                                                                  | 只有 0 号位                                                                                                    | **0 号位与 2 号位都空**，宿主在**中间的 1 号位**                                                    |
+  | 填空位的东西                                                                              | `Actions::SummonGremlins`（一个 **Action**）                                                                   | `Monster::spawnBronzeOrbs`（一个**成员函数**）                                                      |
+  | 同步 / 入队                                                                               | `addToBot(Actions::SummonGremlins())`                                                                          | **裸的同步调用**（`MonsterSpecific.cpp:503`，没有 addToBot）                                        |
+  | 找空位                                                                                    | 按 **1, 2, 0** 搜索 + `isDying()` 判空                                                                         | **下标写死 0 与 2**，不搜索、不判空                                                                 |
+  | 挑种类                                                                                    | `getGremlin(bc.aiRng)`，两只各消耗一次 **aiRng**                                                               | 种类**固定**，为此**一次 aiRng 都不掷**                                                             |
+  | `= Monster()`                                                                             | **有**（整只重建）                                                                                             | **没有**（那两格从没被构造过，故当前等价）                                                          |
+  | 游标                                                                                      | 不动                                                                                                           | 末尾 **`++bc.monsterTurnIdx`**，于是 2 号位那只**本回合不行动**                                     |
+  | 共同点                                                                                    | `buff<MS::MINION>()`、各自 `rollMove`、`monstersAlive += 2`、`monsterCount` 不动、**不重跑 `preBattleAction`** |                                                                                                     |
+  | ⚠ 第三族在第二十九批（收藏家的 `SpawnTorchHeads`）：它按 `3 - monstersAlive` 决定召几只、 |
+  | **额外单独调 `initHp`**、用 `setMove` 而不是 `rollMove`、末尾按只数补 `noOpRollMove`。    |
+  | 三族一个都不能复用另一个。                                                                |
+- ⚠ **多段攻击的「段数」可以是状态，不只是字面量。** 突刺之书的乱刺是
+  `attackPlayerHelper(bc, asc3 ? 7 : 6, miscInfo)`（`MonsterSpecific.cpp:458`）——段数从 1 起步
+  （`preBattleAction` 里 `++miscInfo`，**跑在开局那次 rollMove 之后**），出招规则每发一次乱刺
+  再 `++`，整场单调递增。数据表里用 `times: "miscInfo"` 表达。
+  ⚠ 别与 `deal_damage_rolled` 搞混：那一条读的是**同一个字段当每击伤害**（虱子的咬击）。
+  ⚠ 同时这是 `miscInfo` 的第 6~8 种含义一次到齐（乱刺段数 / 青铜球「已用过停滞」/
+  自动机「上次增益之后出的是连枷吗」）。**不要按用途拆字段**，第十六批已经改回来过一次。
+- ⚠⚠ **「参考的某张表能不能从我们的数据表派生」这个问题，答案第二次是「不能」。**
+  第二十三批那次是 `isMoveAttack` ↔ `EnemyDef.intent`；第二十八批是
+  `Cards.h` 的 `cardRarities` ↔ `CardDef.rarity`——停滞挑牌按稀有度加权，而我们的 `rarity`
+  表达的是「进哪个**奖励池**」（run 层语义），**118 张已映射的牌里有 15 张不一致**：
+  状态牌（伤口/灼伤/恍惚/黏液）参考是 **COMMON**、我们是 `special`，另外 11 张我们低一档。
+  同族的还有 `cardSortedIdx`（按**游戏内部卡 id 字符串**字典序，与枚举名序不一致——
+  `RUSHDOWN` 的内部 id 是 "Adaptation"、`APPARITION` 是 "Ghostly"），只能照抄数值。
+  **判据：凡是参考用来做决策的静态表，都单开一张、逐条抄，别从我们自己的数据表推。**
 - ⚠ **`MINION_LEADER` 给 `Monster::die` 加了第二条判胜路径，不只是个字段。**
   `if (monstersAlive == 0 || hasStatus<MS::MINION_LEADER>()) { outcome = 胜利; return; }`
   （`Monster.cpp:293-297`）——首领一死**当场判胜**，随从还站着也算赢。
@@ -302,6 +333,20 @@ monsterCount = 4;`，**0 号位从没被构造过**（`MonsterGroup.cpp:248-259`
 `clearPostCombatActions` 压缩动作环形缓冲时不修 `back`，胜利之后再 `addToBot` 就会丢动作；
 第十六批那个是另一种典型：**变量声明了、读了，就是从没被赋值**（红奴隶主的 `usedEntangle`），
 整段语义静默失效、另一段沦为死代码。grep 一下「这个字段谁写过」是发现它的唯一办法。
+
+「死代码」到目前为止有**四种**形状，前三种是笔误、第四种不是：
+
+1. **字段从没被赋值** —— `usedEntangle`（已补丁）、`escapeNext`（裁定不补丁）。
+2. **取值被短路吃掉** —— 带壳寄生虫的 `roll2`（已补丁，`roll < 20` 蕴含 `roll < 60`）。
+3. **语句排在 `return` 之后** —— 第二十八批新撞上：突刺之书的 `getMoveForRoll` 里有两处
+   `return (SINGLE_STAB); if (asc18) { ++stabCount; }`（`MonsterSpecific.cpp:2304-2307` /
+   `:2310-2313`）。⚠ 这一种最容易被眼睛跳过，因为它**编译得过**（clang 只在开了
+   `-Wunreachable-code` 时才提示，而构建命令带的是 `-w`）。
+   **判据仍是那三条**，这一条三条都不过（asc>0 开不了战 → 无分歧、无预言机；
+   真实游戏 `BookOfStabbing.getMove` 里**没有**任何 ascension 相关的 `stabCount` 自增，
+   所以「补上」与「删掉」是两种不同行为，参考自己答不了）。**照抄参考的实际行为（不加）**。
+4. **被同一条 case 里另一句的时序挤死** —— 地精首领的两个 `lastMove(RALLY)` 分支
+   （第二十七批）。形状本身没有矛盾，**不是笔误、不报补丁**，如实记成盲区。
 
 判据：
 
@@ -774,6 +819,10 @@ git checkout -- src/engine/sts-combat.ts
   真正会被 64 卡住的是 `ViolenceAction` 的 `attackIdxList`（`Actions.cpp:616`），按
   **抽牌堆里的攻击牌数**算。第十二批登记 `violence` 时数过了：最大的牌组（93 张）里攻击牌
   40 出头，远够不到 64。以后新加牌组按「攻击牌数」而不是牌组张数来数。
+  ⚠ **第二十八批多了第二个 64 上限点**：`stasisHelper` 的 `idxList`
+  （`MonsterSpecific.cpp:3498`，`fixed_list<StasisPair, CardManager::MAX_GROUP_SIZE=64>`），
+  按**「一个牌堆里同一稀有度的牌数」**算。variant 28 的牌组只有 22 张，够不到；
+  以后要是把青铜自动机配上全牌组，先数一遍「同一稀有度最多能有几张同时在抽牌堆里」。
   `UpgradeRandomCardAction` 的 `upgradeableHandIdxs`（`:942`）是 `fixed_list<int,10>`，
   手牌上限本就是 10，安全。
 - **harness 的策略可以比 `enumerateCardSelectActions` 更聪明**。那个枚举器对多选屏
