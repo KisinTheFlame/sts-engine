@@ -520,7 +520,13 @@ describe("敌人与编队表", () => {
   // ⚠ 第二十二批把值从「一律 7」改成**逐怪的期望阈值**：`Monster::initHp`
   //（MonsterSpecific.cpp:26-128）里普通怪是 `asc>=7`、精英 `asc>=8`、Boss `asc>=9`，
   //   三档在同一个 switch 里并排写着。写死 7 的话，精英/Boss 抄错阈值不会被任何东西发现。
-  const ASC_CALIBRATED: Record<string, number> = {
+  //
+  // ⚠⚠ 第三十批加了 `null` 这个值：**校准了、但按参考压根没有第二组区间**。
+  //   唯一的宿主是球状守卫者——它走 `initHp` 里那条 `hpNoRoll` 的 case
+  //（MonsterSpecific.cpp:119-124），一次 RNG 都不掷、也不看 ascension（两组都是 `{20,20}`）。
+  //   在此之前这张表隐含「校准 ⇒ 有 hpHigh」，而那条对 `hpNoRoll` 的怪是假的：
+  //   下面那个 `hpNoRoll` 用例明确要求它**不许**带 `hpHigh`，两条会互相打架。
+  const ASC_CALIBRATED: Record<string, number | null> = {
     cultist: 7,
     jaw_worm: 7,
     louse: 7,
@@ -548,6 +554,30 @@ describe("敌人与编队表", () => {
     the_guardian: 9,
     slime_boss: 9,
     hexaghost: 9,
+    // —— 第三十批：第二幕 17 只怪。三族阈值逐只对着 `Monster::initHp` 抄，**不是一律 7**——
+    //   普通怪 :37-74（asc>=7）、精英 :91-102（asc>=8）、Boss :76-89（asc>=9）。
+    //   ⚠ 火炬头是 **9**（Boss 档），尽管它是随从：`MonsterSpecific.cpp:76-89` 那组 case 里
+    //     真的有 `TORCH_HEAD`。别按「随从 = 普通怪」猜。
+    //   ⚠ 青铜球也是 **9**，而它同时带 `hpDiscardRoll`（白掷用低档、正式用高档，asc19 下
+    //     两组真的不同）——那两位必须一起看。
+    chosen: 7,
+    snake_plant: 7,
+    byrd: 7,
+    mugger: 7,
+    shelled_parasite: 7,
+    snecko: 7,
+    centurion: 7,
+    mystic: 7,
+    gremlin_leader: 8,
+    taskmaster: 8,
+    book_of_stabbing: 8,
+    bronze_automaton: 9,
+    bronze_orb: 9,
+    the_collector: 9,
+    torch_head: 9,
+    champ: 9,
+    // ⚠ 球状守卫者：校准了，但 `hpNoRoll` ⇒ **没有** `hpHigh`（见上方注释）。
+    spheric_guardian: null,
   };
 
   it("已校准爬升度的敌人都带第二组血量区间，且区间合法", () => {
@@ -555,6 +585,12 @@ describe("敌人与编队表", () => {
       const def = getEnemyDef(id);
       expect(def.ascCalibrated, `${id} 没有标 ascCalibrated`).toBe(true);
       const high = def.hpHigh;
+      if (atLeast === null) {
+        // `hpNoRoll` 的怪：参考那条 case 不看 ascension，所以**不许**有第二组。
+        expect(def.hpNoRoll, `${id} 记成 null 却不是 hpNoRoll`).toBe(true);
+        expect(high, `${id} 是 hpNoRoll，不该有 hpHigh`).toBeUndefined();
+        continue;
+      }
       expect(high, `${id} 标了 ascCalibrated 却没有 hpHigh`).toBeDefined();
       if (high === undefined) continue;
       // 阈值只可能是 7 / 8 / 9（Monster::initHp 的三档），逐怪对表。
@@ -568,17 +604,12 @@ describe("敌人与编队表", () => {
   });
 
   it("没标 ascCalibrated 的敌人不许带 hpHigh（半填会静默放行）", () => {
-    // 抽查几只**第一幕之外**、按 WORKFLOW 短期内不会被校准的：harness 的 20 个编队跑满了
-    // 第一幕，第二 / 三幕的怪要等 harness 追加一遍循环才有预言机。
-    // ⚠ 别再拿三精英 / 三 Boss 当样本——第二十二批把它们全校准了。
-    for (const id of [
-      "centurion",
-      "book_of_stabbing",
-      "byrd",
-      "snecko",
-      "champ",
-      "the_collector",
-    ]) {
+    // 抽查几只**第三幕及以后**、按 WORKFLOW 短期内不会被校准的：harness 的两个乘积跑满了
+    // 第一 / 二幕，第三幕的怪要等追加第三遍循环才有预言机。
+    // ⚠ 别再拿第一幕的三精英 / 三 Boss 当样本（第二十二批全校准了），
+    //   也别再拿第二幕的怪（**第三十批把 17 只全校准了**：原先这里放的是
+    //   centurion / book_of_stabbing / byrd / snecko / champ / the_collector）。
+    for (const id of ["exploder", "spiker", "orb_walker", "reptomancer", "giant_head", "nemesis"]) {
       expect(ASC_CALIBRATED[id], `${id} 不该在已校准名单里`).toBeUndefined();
       const def = getEnemyDef(id);
       expect(def.ascCalibrated ?? false, `${id} 不该标 ascCalibrated`).toBe(false);
