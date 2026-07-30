@@ -10330,8 +10330,10 @@ function onAfterUseCard(
     if (m0 !== undefined && hasPower(m0.powers, "slow")) {
       addPower(m0.powers, "slow", 1);
     }
-    // TODO(后续PR): 时间扭曲（TIME_WARP，时间吞噬者）与死亡节拍（BEAT_OF_DEATH，腐化之心）
-    //   ——两者都还没有对应的怪登记。顺序照参考：时间扭曲 → 缓慢 → 死亡节拍。
+    // TODO(后续PR): 死亡节拍（BEAT_OF_DEATH，**第四幕**的腐化之心）——
+    //   `if (m.hasStatus<MS::BEAT_OF_DEATH>()) addToBot(Actions::DamagePlayer(层数));`
+    //   （BattleContext.cpp:1988-1990）。它是这道门里的**第三条**，顺序照参考：
+    //   时间扭曲 → 缓慢 → 死亡节拍。腐化之心连 `enemies.ts` 的条目都还没有。
   }
   if (purgeOnUse) {
     return;
