@@ -92,8 +92,10 @@ ENC_ALL="cultist jaw_worm jaw_worm_horde three_louse two_louse"
 #   ⚠ 文件名 `shell_parasite` **没有 ED**——它来自参考枚举 `MonsterEncounter::SHELL_PARASITE`，
 #     而它建的**怪**才叫 `SHELLED_PARASITE`。本批把我们侧的编队 id 也改成了这个名字
 #     （wiring 测试要求 `SUPPORTED_ENCOUNTERS` 与文件名一一对应）。
-#   ⚠ `shelled_parasite_and_fungi` 顺带关掉第十六批孢子云那条盲区：真菌兽在这里有同伴，
-#     `Monster::die` 那句「最后一只就直接 return」不会抢在亡语之前。
+#   ⚠ `shelled_parasite_and_fungi` 顺带关掉第十六批**真菌兽出招阈值下方向**那条盲区
+#     （此前只有 2 例，本批实测 137 例——这个编队的仗比 `exordium_wildlife` 长得多）。
+#     ⚠ 同一批记着的「孢子云 addToTop ↔ addToBot」**没**关掉，仍是 0 例：亡语确实跑了
+#     （易伤层数、isSourceMonster 各有新背书），只是那一刻队列里没有别的动作能插在中间。
 ENC_V0_ACT2="spheric_guardian chosen snake_plant three_byrds two_thieves chosen_and_byrds shell_parasite shelled_parasite_and_fungi snecko"
 ENC_V0_ASC0="small_slimes lots_of_slimes large_slime blue_slaver red_slaver looter exordium_thugs exordium_wildlife gremlin_gang gremlin_nob lagavulin three_sentries the_guardian slime_boss hexaghost $ENC_V0_ACT2"
 ENC_V0_ASC19="cultist@asc19 jaw_worm@asc19 jaw_worm_horde@asc19 two_louse@asc19 three_louse@asc19 small_slimes@asc19 lots_of_slimes@asc19 large_slime@asc19 blue_slaver@asc19 red_slaver@asc19 looter@asc19 exordium_thugs@asc19 exordium_wildlife@asc19 gremlin_gang@asc19 gremlin_nob@asc19 lagavulin@asc19 three_sentries@asc19 the_guardian@asc19 slime_boss@asc19 hexaghost@asc19"
