@@ -130,6 +130,10 @@ function migrateMonsterMiscInfo(combat: Record<string, unknown>): void {
     // 回填 0 是**无损**的：唯一的使用者是六火幽魂的六焰计数，而它本批才登记
     // ——在此之前任何老档里都不可能有一只怪用到它。
     backfill(m, "uniquePower0", 0);
+    // 半死位（第三十四批新增，对齐 `Monster::halfDead`）。
+    // 回填 false 是**无损**的：能置起它的只有 `Monster::die` 的 REGROW 分支（暗影客）
+    // 与觉醒者的假死，两者在本批之前都没登记——老档里任何一只怪都不可能是半死态。
+    backfill(m, "halfDead", false);
   }
 }
 

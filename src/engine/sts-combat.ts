@@ -447,6 +447,32 @@ export type PowerInstance = {
    * 效果靠它在回合末判定是否生效：邪教徒咏唱当回合不涨力量，下回合起才涨。
    */
   justApplied?: boolean;
+  /**
+   * **数值还在、`statusBits` 那一位已清**（第三十四批）。
+   *
+   * ⚠⚠ 参考把「有没有」与「几层」存在**两个地方**：`statusBits` 一个位、外加一个具名 int
+   * 字段（`weak` / `vulnerable` / `artifact` / …，Monster.h:225-282）。绝大多数清除点走
+   * `removeStatus`——它**先 `setStatus(0)` 再清 bit**（Monster.h:495-501），两者一起归零，
+   * 所以「整条摘掉」与参考等价，这也是 `removePower` 的做法。
+   *
+   * **唯一的例外是 `Monster::resetAllStatusEffects()`**（Monster.cpp:554-558）：
+   * ```cpp
+   * statusBits = 0;              // ← 只清 bit
+   * setStatus<MS::STRENGTH>(0);  // ← 力量单独归零（它没有 bit）
+   * block = 0;
+   * ```
+   * 那些 int 字段**原样留着**。于是下一次 `buff` / `addDebuff`（都是 `field += n` 再置 bit）
+   * 会**从残留值上继续加**。
+   *
+   * ⚠ 这是**可观察的**，第三十四批当场撞上：暗影客死→重生（走 `resetAllStatusEffects`）之前
+   * 挨过 1 层虚弱，复活之后再吃一张衣领（+2 层）——参考显示 **3** 层而不是 2。
+   * 全参考项目只有这一个调用点（`Monster::die` 的 REGROW 分支），所以只有走过重生的怪
+   * 身上会出现 `cleared` 条目。
+   *
+   * ⚠ **纯 bool 的 Power 没有这种残留**（它们压根没有数值字段，`buff` 只置 bit），
+   * 所以 `resetAllMonsterStatusEffects` 把它们**整条丢掉**而不是标 cleared。
+   */
+  cleared?: boolean;
 };
 
 export type CombatMonster = {
@@ -464,6 +490,30 @@ export type CombatMonster = {
   moveHistory: string[];
   powers: PowerInstance[];
   alive: boolean;
+  /**
+   * **半死**（对齐 `Monster::halfDead`，Monster.h:46；第三十四批）。
+   *
+   * ⚠⚠ `isDeadOrEscaped()` 有**三位**（Monster.cpp:253）：
+   *     `isDying()`（血 ≤ 0） || `isHalfDead()`（这一位） || `isEscaping()`（逃跑）
+   * 我们的 `alive` 建模的是 `!isDeadOrEscaped()`（harness 的快照字段就是这么算的），
+   * 所以半死的怪 `alive === false`。这一位是**额外**的，不能靠 `alive` 推出来。
+   *
+   * 它唯一的差别在**怪物回合的那道门**（`MonsterGroup::doMonsterTurn`，MonsterGroup.cpp:572）：
+   *     `if ((!m.isDeadOrEscaped() || m.isHalfDead()) && !skipTurn[...])`
+   * ——半死的怪**照样行动**（这正是暗影客能在下一个怪物回合滚出「重生」的原因），
+   * 而其余所有读 `isDeadOrEscaped` 的地方（能不能被指向、随机选敌、群伤、
+   * `Monster::attacked` / `damage` 的入口）都把它当死的。
+   *
+   * ⚠ 另外两个循环（`applyPreTurnLogic` / `BattleContext::applyEndOfRoundPowers`）
+   *   的门是 `isDying() || isEscaping()`，**没有** halfDead 这一位——但它们照样跳过
+   *   半死的怪，因为**半死必然伴随 `curHp == 0`**（`die` 只可能从「扣血扣到 ≤ 0」进来），
+   *   `isDying()` 已经为真。所以这两处不需要改门，写 `!alive` 与参考同解。
+   *
+   * ⚠ 两个写入点：`Monster::die` 的 REGROW 分支置 true（暗影客）、
+   *   `DARKLING_REINCARNATE` 那条 case 置 false。参考里还有第三处（觉醒者的假死，
+   *   `Monster::die` 的**第一个**分支）尚未登记。
+   */
+  halfDead: boolean;
   /**
    * 怪物侧的通用整数字段（对齐 `Monster::miscInfo`，Monster.h:83）。
    *
@@ -1927,6 +1977,65 @@ const MOVE_RULES: Record<string, MoveForRoll> = {
     }
     return "maw_drool";
   },
+
+  // 暗影客：对齐 MonsterSpecific.cpp:3052-3093。
+  //     auto myRoll = roll;
+  //     if (firstTurn()) { if (myRoll < 50) return HARDEN; else return NIP; }
+  //     if (halfDead) return REINCARNATE;
+  //     if (myRoll < 40) {
+  //         if (!lastMove(CHOMP) && idx != 1) return CHOMP;
+  //         else myRoll = bc.aiRng.random(40, 99);              // ★ 追加一次 aiRng
+  //     }
+  //     if (myRoll < 70) { if (!lastMove(HARDEN)) return HARDEN; else return NIP; }
+  //     if (!lastTwoMoves(NIP)) return NIP;
+  //     else return getMoveForRoll(bc, monsterData, bc.aiRng.random(0, 99));  // ★ 递归 + aiRng
+  // ⚠ 六处照抄，一处都不能省：
+  //  ①⚠⚠ **`idx != 1`**：**1 号位（中间那只）永远不啃食**。这是全参考项目唯一一条
+  //     「出招规则读自己在队列里的下标」的门——它让三只暗影客的行为**不对称**。
+  //     写成「三只一样」不会报错，只会让中间那只多出啃食、少出别的。
+  //  ②⚠⚠ **`myRoll = aiRng.random(40, 99)` 是一次真的重掷**（40 + nextInt(60)），
+  //     不是「把 roll 钳到 40」。它只在「roll < 40 但啃食被封住」时发生，
+  //     所以单次 rollMove 的 aiRng 消耗是 **1 或 2**（还可能因为下面那条递归更多）。
+  //  ③⚠⚠ **最后那一支是递归**：`getMoveForRoll(bc, monsterData, aiRng.random(0, 99))`
+  //     ——重新从头跑一遍（含 `firstTurn` / `halfDead` 两道门，此刻都为假），
+  //     每递归一层再掷一次 aiRng。`random(0, 99)` 与顶层的 `random(99)` 逐位等价
+  //     （`0 + nextInt(100)` vs `nextInt(100)`）。⚠ 它必然终止：连出两次撕咬时
+  //     `lastMove(HARDEN)` 必假，所以只要重掷到 < 70 就落进硬化那一支。
+  //  ④ 首回合那道门用的是 **`myRoll < 50`**（不是 40），且**没有** halfDead 判断
+  //     ——顺序是「先首回合、再半死」，反过来会让首回合的半死怪（不可能出现）走错。
+  //  ⑤ 三道连续限制**两种谓词并存**：啃食与硬化是 `lastMove`（连一次就封），
+  //     撕咬是 `lastTwoMoves`（连两次才封）。照搬邻居必错。
+  //  ⑥ **半死那道门排在首回合之后、一切 roll 分支之前**，所以半死的暗影客下一招恒是复活。
+  darkling: (bc, m, roll) => {
+    let myRoll = roll;
+    if (firstTurn(m)) {
+      return myRoll < 50 ? "darkling_harden" : "darkling_nip";
+    }
+    if (m.halfDead) {
+      return "darkling_reincarnate";
+    }
+    if (myRoll < 40) {
+      if (!lastMove(m, "darkling_chomp") && bc.monsters.indexOf(m) !== 1) {
+        return "darkling_chomp";
+      }
+      myRoll = bc.rng.aiRng.random(40, 99); // ★ 追加一次 aiRng（重掷，不是钳制）
+    }
+    if (myRoll < 70) {
+      return lastMove(m, "darkling_harden") ? "darkling_nip" : "darkling_harden";
+    }
+    if (!lastTwoMoves(m, "darkling_nip")) {
+      return "darkling_nip";
+    }
+    // ★ 追加一次 aiRng，然后**整条规则重跑**（对齐参考的递归调用）
+    return MOVE_RULES["darkling"](bc, m, bc.rng.aiRng.random(99));
+  },
+
+  // 复形怪：对齐 MonsterSpecific.cpp:3115-3117 —— `return (MMID::TRANSIENT_ATTACK);`。
+  // 只有一招，`roll` 照掷（`rollMove` 顶部那一次）但**一眼都不看**。
+  // ⚠ 这条规则**只在开局那次 `MonsterGroup::init` 的 rollMove 里被调到一次**：此后每个
+  //   怪物回合的收尾是**同步**的 `bc.noOpRollMove()`（掷一次 aiRng 就丢，意图与
+  //   moveHistory 都不动），从不再走 `rollMove`。见 `MOVE_TURN_END`。
+  transient: () => "transient_slam",
 };
 
 // ============================================================================
@@ -2692,6 +2801,60 @@ const MOVE_TURN_END: Record<string, MoveTurnEnd> = {
     setMove(m, "maw_drool");
     bc.rng.aiRng.random(99); // ★ 消耗一次 aiRng（noOpRollMove，**同步**，意图不变）
   },
+
+  // —— 第三十四批：暗影客与复形怪 ——
+  //
+  // 暗影客五条 case 里**三条**不是默认值（MonsterSpecific.cpp:1461-1499）：
+  //   啃食 / 撕咬  `addToBot(Actions::RollMove(idx));` —— 默认值 `"roll"`，不写进来
+  //   硬化         `rollMove(bc);`                     —— 第六形态：**同步的真 rollMove**
+  //   重生         `rollMove(bc);`                     —— 同上
+  //   复活         `rollMove(bc);`                     —— 同上
+  //
+  // ⚠⚠ 后三条**必须是同步**的，而且**顺序真的可观察**：
+  //   * 硬化那条：`addBlock(12)` 与 asc17 的力量都是同步的，rollMove 在它们之后；
+  //   * 复活那条：`curHp = maxHp/2; halfDead = false; ++monstersAlive; buff<REGROW>()`
+  //     全部同步，**紧接着**的 `getMoveForRoll` 读的正是 `halfDead`——
+  //     写成入队的 `"roll"`，出队时 `halfDead` 已经是 false，本来也一样；
+  //     但写成 `{setMove: …}` 会少掷一次 aiRng，`rng.ai` 计数器当场对不上。
+  //   * 重生那条：case 体是空的（参考写着 `// do nothing`），收尾就是它的全部。
+  //     此刻 `halfDead` 仍为真，所以这次 rollMove 必然滚出「复活」。
+  "darkling/darkling_harden": (bc, m) => {
+    rollMove(bc, m); // ★ 消耗一次 aiRng（同步的真 rollMove；暗影客的规则内还可能追加）
+  },
+  "darkling/darkling_regrow": (bc, m) => {
+    rollMove(bc, m); // ★ 同上——此刻 halfDead 仍为真，必然滚出「复活」
+  },
+  "darkling/darkling_reincarnate": (bc, m) => {
+    rollMove(bc, m); // ★ 同上——此刻 halfDead 已被效果置回 false，走正常 roll 分支
+  },
+
+  // 复形怪的重殴（MonsterSpecific.cpp:1520-1530）：效果之后还有**两句同步语句**，
+  // 静态形态一个都表达不了，所以走第五形态（任意函数）。
+  //     bc.noOpRollMove();               // ← 掷一次 aiRng 丢掉，意图不动
+  //     decrementStatus<MS::FADING>();   // ← **排在 noOpRollMove 之后**
+  // ⚠ 四处照抄：
+  //  ①⚠⚠ **「效果入队 + 收尾同步」这个组合真的可观察**（工头 / 爆破怪 / 大嘴那一族）：
+  //     攻击与自杀都是 `addToBot`，而这两句已经跑完。这一击若打死玩家，主循环跳出、
+  //     入队的自杀永远轮不到，但 aiRng 已经掷过、消逝也已经减过。
+  //     ⚠ 复形怪的伤害 30/40/50/60/70 一路涨，**玩家阵亡是常态**，所以这一位分母很厚。
+  //  ② `noOpRollMove` 是**裸调用**（不是 `addToBot(Actions::NoOpRollMove())`），
+  //     所以不能写成 `"no_op_roll"`（那是入队版）。
+  //  ③ 递减用的是 `decrementStatus<MS::FADING>()`：FADING 的枚举值落在
+  //     `WEAK < s <= TIME_WARP` 这一段（`uniquePower0` 后端），语义是
+  //     `uniquePower0 -= 1; if (uniquePower0 == 0) setHasStatus(false);`
+  //     ——归零时**连条目一起摘掉**（与镀甲同族、与飞行那种裸 `setStatus` 正相反）。
+  //     所以最后一次出手之后快照里就没有 FADING 了。
+  //  ④ **两句的顺序**照抄：先掷后减。当前不可观察（noOp 不读消逝），但形状照抄。
+  "transient/transient_slam": (bc, m) => {
+    bc.rng.aiRng.random(99); // ★ 消耗一次 aiRng（noOpRollMove，**同步**，意图不变）
+    const fading = findPower(m.powers, "fading");
+    if (fading !== undefined) {
+      fading.amount -= 1;
+      if (fading.amount === 0) {
+        m.powers.splice(m.powers.indexOf(fading), 1);
+      }
+    }
+  },
 };
 
 /**
@@ -2875,6 +3038,7 @@ function constructMonster(bc: BattleContext, defId: string): CombatMonster {
     moveHistory: [],
     powers: [],
     alive: true,
+    halfDead: false,
     miscInfo: 0,
     uniquePower0: 0,
   };
@@ -2882,6 +3046,14 @@ function constructMonster(bc: BattleContext, defId: string): CombatMonster {
   if (defId === "louse" || defId === "green_louse") {
     m.miscInfo =
       bc.ascension >= 2 ? bc.rng.monsterHpRng.random(6, 8) : bc.rng.monsterHpRng.random(5, 7); // ★ 再消耗一次 monsterHpRng
+  }
+  // 暗影客的撕咬伤害同样出生时掷定（对齐 Monster.cpp:124-130，第三十四批）。
+  // ⚠ **区间与虱子不同**（虱子 5~7 / 6~8，暗影客 7~11 / 9~13），照抄邻居必错。
+  // ⚠ 它与虱子是 `Monster::construct` 那个 switch 里仅有的两格；顺序照抄（虱子在前）
+  //   ——两格互斥，当前顺序不可观察，但形状对齐。
+  if (defId === "darkling") {
+    m.miscInfo =
+      bc.ascension >= 2 ? bc.rng.monsterHpRng.random(9, 13) : bc.rng.monsterHpRng.random(7, 11); // ★ 再消耗一次 monsterHpRng
   }
   return m;
 }
@@ -2942,6 +3114,7 @@ function emptyMonsterSlot(): CombatMonster {
     moveHistory: [],
     powers: [],
     alive: false,
+    halfDead: false,
     miscInfo: 0,
     uniquePower0: 0,
   };
@@ -2965,6 +3138,7 @@ function spawnSplitMonster(bc: BattleContext, defId: string, at: number, hp: num
     moveHistory: [],
     powers: [],
     alive: true,
+    halfDead: false,
     miscInfo: 0,
     uniquePower0: 0,
   };
@@ -4167,6 +4341,36 @@ const PRE_BATTLE_ACTION: Record<string, PreBattleAction> = {
   orb_walker: (bc, m) => {
     addPower(m.powers, "generic_strength_up", bc.ascension >= 17 ? 5 : 3);
   },
+
+  // —— 第三十四批 ——
+
+  // 暗影客的重生（对齐 MonsterSpecific.cpp:152-154）：
+  //     case MonsterId::DARKLING:       // game adds regrow power
+  //         buff<MS::REGROW>();
+  //         break;
+  // **纯 bool**（`isBooleanPower(MS::REGROW)` 为真），不消耗 RNG，快照里是 `REGROW: 1`。
+  // ⚠ 它是「怪物死亡时不真死」的唯一开关，读点在 `Monster::die` 的 else-if 链第二格，
+  //   见 `monsterDie`。⚠ 那条链会 `resetAllStatusEffects()` 把它自己也清掉，
+  //   所以复活那条 case 必须**再上一次**（见 `reincarnate`）。
+  darkling: (_bc, m) => {
+    addPower(m.powers, "regrow", 1);
+  },
+
+  // 复形怪的变换 + 消逝（对齐 MonsterSpecific.cpp:171-175）：
+  //     case MonsterId::TRANSIENT:      // game adds ShiftingPower
+  //         buff<MS::SHIFTING>();
+  //         buff<MS::FADING>(asc17 ? 6 : 5);
+  //         break;
+  // ⚠ 三处照抄：
+  //  ① **一次上两个**（参考只给第一个写了注释，别以为只有一个）；
+  //  ② 变换是**纯 bool**（快照 `SHIFTING: 1`），消逝是**层数**（快照 `FADING: 5`）；
+  //  ③ 分档是**两档**（asc17），不是走廊小怪那种三档 `getTriIdx`。
+  // ⚠ 消逝的层数就是「还能出手几次」——它没有任何回合末的自动递减，唯一的递减点
+  //   在重殴那条 case 的最后一句，见 `MOVE_TURN_END`。
+  transient: (bc, m) => {
+    addPower(m.powers, "shifting", 1);
+    addPower(m.powers, "fading", bc.ascension >= 17 ? 6 : 5);
+  },
 };
 
 type EncounterSetup = (bc: BattleContext) => void;
@@ -4538,6 +4742,14 @@ const MONSTER_ATTACK_MOVES: ReadonlySet<string> = new Set([
   //     「爆破怪自爆 30 点却不在」正好是同一条判据的两个方向。
   "the_maw/maw_slam",
   "the_maw/maw_nom",
+  // 暗影客（`:449-450`，第三十四批）。⚠ **五招里只有两条在**：撕咬 / 啃食 → 在；
+  //   硬化（裸 `addBlock`）/ 重生（空 case）/ 复活（纯状态机）→ **都不在**。
+  //   ⚠ 撕咬的伤害是出生时掷定的 `miscInfo`，可它照样走 `attackPlayerHelper`
+  //     ——判据永远是**函数**，不是伤害从哪来。
+  "darkling/darkling_nip",
+  "darkling/darkling_chomp",
+  // 复形怪（`:526`，第三十四批）。它只有这一招，在列。
+  "transient/transient_slam",
 ]);
 
 /**
@@ -5618,14 +5830,20 @@ export function executeActions(bc: BattleContext): void {
     // ⚠ 炸弹的三格计时器算「不靠牌的伤害来源」（对齐 BattleContext.cpp:786-788 那三行
     // `player.bomb1 || player.bomb2 || player.bomb3`）：手牌打空但还有炸弹在倒计时时
     // 不能判负，得等它炸完。
-    // TODO(后续PR): 欧米茄、短暂（TRANSIENT，那只怪自己会跑）也算「不靠牌」。
+    // ⚠⚠ **复形怪是这道门上一条怪种专属的例外**（第三十四批，BattleContext.cpp:790）：
+    //   `if (!hasDamageWithoutCards && monsters.arr[0].id != MonsterId::TRANSIENT)`
+    //   ——它读的是 **0 号位那一只**（不是「场上有没有」），理由是复形怪的消逝层数一到
+    //   就自己退场，所以「打不出牌」并不等于「赢不了」，干等就行。
+    //   ⚠ 它与 `hasDamageWithoutCards` 是**并列的两个条件**，不是把复形怪塞进那个 bool 里
+    //   ——形状照抄（谓词的语义不同：一个是「玩家有没有伤害来源」，一个是「怪会不会自己走」）。
+    // TODO(后续PR): 欧米茄（`player.hasStatus<PS::OMEGA>()`）也算「不靠牌」。
     if (bc.hand.length + bc.discardPile.length + bc.drawPile.length === 0) {
       const hasDamageWithoutCards =
         getPower(bc.player.powers, "thorns") > 0 ||
         bc.player.bomb1 !== 0 ||
         bc.player.bomb2 !== 0 ||
         bc.player.bomb3 !== 0;
-      if (!hasDamageWithoutCards) {
+      if (!hasDamageWithoutCards && bc.monsters[0]?.defId !== "transient") {
         bc.outcome = "player_loss";
         break;
       }
@@ -5958,8 +6176,20 @@ function getRandomMonsterIdx(bc: BattleContext): number {
 // 用 Math.fround 逐步收窄模拟 C++ float。
 // ============================================================================
 
+/**
+ * 取出一条**可见的** Power 条目（`statusBits` 那一位为真的那些）。
+ *
+ * ⚠⚠ 它不是 `powers.find(...)` 的同义词：`cleared` 的条目在参考里是「数值还在、bit 已清」，
+ * 一切读点（`hasStatus` / `getStatus` / 各处的 `find`）都必须当它不存在。
+ * 详见 `PowerInstance.cleared`。**新增读点一律走这个函数，不要裸 `find`。**
+ */
+function findPower(powers: PowerInstance[], id: string): PowerInstance | undefined {
+  const p = powers.find((x) => x.id === id);
+  return p === undefined || p.cleared === true ? undefined : p;
+}
+
 function getPower(powers: PowerInstance[], id: string): number {
-  return powers.find((p) => p.id === id)?.amount ?? 0;
+  return findPower(powers, id)?.amount ?? 0;
 }
 
 /**
@@ -5974,7 +6204,7 @@ function getPower(powers: PowerInstance[], id: string): number {
  * 我们这边把这件事建模成「条目一旦加上就永不摘除」，于是这个谓词就是「条目在不在」。
  */
 function hasPower(powers: PowerInstance[], id: string): boolean {
-  return powers.some((p) => p.id === id);
+  return findPower(powers, id) !== undefined;
 }
 
 export function calculateCardDamage(
@@ -6085,11 +6315,11 @@ function monsterDamageUnblocked(bc: BattleContext, m: CombatMonster, damage: num
   // ⚠ 它是一条 **else-if 链**：同时带蜷缩与沉睡的怪只会触发排在前面的那一条。当前没有这种
   //   怪（虱子只有蜷缩、拉加维林只有沉睡），但形状照抄——写成两个独立 if 会在将来静默出错。
   // 蜷缩把加格挡 addToBot 排在扣血之后，故这里先记下、扣完血再加。
-  const platedArmor = m.powers.find((p) => p.id === "plated_armor");
-  const curl = m.powers.find((p) => p.id === "curl_up");
-  const flight = m.powers.find((p) => p.id === "flight");
-  const malleable = m.powers.find((p) => p.id === "malleable");
-  const thorns = m.powers.find((p) => p.id === "thorns");
+  const platedArmor = findPower(m.powers, "plated_armor");
+  const curl = findPower(m.powers, "curl_up");
+  const flight = findPower(m.powers, "flight");
+  const malleable = findPower(m.powers, "malleable");
+  const thorns = findPower(m.powers, "thorns");
   if (platedArmor !== undefined) {
     // 镀甲（PLATED_ARMOR，带壳寄生虫）：对齐 Monster.cpp:352-355 那一格。
     //
@@ -6207,11 +6437,39 @@ function monsterDamageUnblocked(bc: BattleContext, m: CombatMonster, damage: num
     // ⚠ 与守卫者的尖锐外壳（`onUseAttackCard` 的最末）时点完全不同，见 `PRE_BATTLE_ACTION.spiker`。
     const amount = thorns.amount;
     addToTop(bc, (c) => damagePlayerNonAttack(c, amount, false), false);
-  } else {
-    // 沉睡被打断（Monster.cpp:388-391）。⚠ 它排在这条 else-if 链的**倒数第二**格。
+  } else if (getPower(m.powers, "asleep") > 0) {
+    // 沉睡被打断（Monster.cpp:388-391）。⚠ 它排在这条 else-if 链的**第七格**——
+    // 荆棘之后、变换之前。⚠ 第三十四批把它从「兜底的 else」改成了显式的 `else if`：
+    // 变换必须接在它**后面**，而兜底写法占着最后一格、变换就没地方放了。
+    // 两种写法在「没有怪同时带沉睡与变换」的前提下同解，但形状必须对齐。
     wakeUpLagavulin(m);
+  } else if (getPower(m.powers, "shifting") > 0) {
+    // 变换（SHIFTING，复形怪，第三十四批）：对齐 Monster.cpp:393-396 那一格。
+    //
+    //     } else if (hasStatus<MS::SHIFTING>()) {
+    //         addDebuff<MS::STRENGTH>(-damage);
+    //         buff<MS::SHACKLED>(damage);
+    //     }
+    //
+    // ⚠ 六处照抄：
+    //  ①⚠⚠ **位置**：这条 else-if 链的**最后一格**（第八格），排在沉睡之后。链上的位置
+    //     就是它全部的可观察面——挪到前面去会在「同时带变换与前七位之一」的怪身上分岔。
+    //     当前没有这种怪，形状照抄。
+    //  ② `damage` 是**扣掉怪物格挡之后**的值（调用方已经减过），而且调用方有
+    //     `if (damage > 0)` 的门——所以被完全挡住的攻击**不触发变换**。
+    //  ③ 力量走 `addDebuff<STRENGTH>(-damage)` = **累减**（`strength += amount`，
+    //     Monster.h:353-356），不是覆盖：同一回合挨两下就减两次。
+    //  ④ 枷锁走 `buff<SHACKLED>(damage)` = **累加**。两个数恒等大小、方向相反。
+    //  ⑤ **归还在回合末**：`applyEndOfTurnTriggers` 的最后一句
+    //     `buff<STRENGTH>(shackled); removeStatus<SHACKLED>();`（Monster.cpp:62-65）。
+    //     所以复形怪在**它自己的怪物回合里**力量是负的（本回合被打了多少就减多少），
+    //     回合末才归零——它的重殴因此真的会被打软，这是这只怪全部的可玩性。
+    //  ⑥ 它挂在**两条**伤害路径上：这里（`attacked`，else-if 链的一格）与
+    //     `monsterDamage`（`damage`，一个**独立的 if**）。两处形状不同，别合并。
+    addPower(m.powers, "strength", -damage);
+    addPower(m.powers, "shackled", damage);
   }
-  // TODO(后续PR): 无敌 / 反应 / 变换等其余 onAttacked 分支。
+  // TODO(后续PR): 无敌 / 反应等其余 onAttacked 分支。
 
   m.hp -= damage;
   if (m.hp <= 0) {
@@ -6246,7 +6504,7 @@ function monsterDamageUnblocked(bc: BattleContext, m: CombatMonster, damage: num
 function wakeUpLagavulin(m: CombatMonster): void {
   if (getPower(m.powers, "asleep") > 0) {
     removePower(m.powers, "asleep");
-    const metallicize = m.powers.find((p) => p.id === "metallicize");
+    const metallicize = findPower(m.powers, "metallicize");
     if (metallicize !== undefined) {
       metallicize.amount -= 8;
       if (metallicize.amount === 0) {
@@ -6296,18 +6554,46 @@ function monsterDie(bc: BattleContext, m: CombatMonster): void {
   if (getPower(m.powers, "spore_cloud") > 0) {
     const isSourceMonster = bc.turnHasEnded;
     addToTop(bc, (c) => debuffPlayer(c, "vulnerable", 2, isSourceMonster));
+  } else if (getPower(m.powers, "regrow") > 0) {
+    // 重生（暗影客，第三十四批）：对齐 Monster.cpp:303-306 这条链的**第二格**——
+    //     } else if (hasStatus<MS::REGROW>()) {
+    //         resetAllStatusEffects();
+    //         setMove(MMID::DARKLING_REGROW);
+    //         halfDead = true;
+    //     }
+    // ⚠⚠ 第二十八批装停滞时特意在注释里留出的就是这一格：链是
+    //   `孢子云 → 重生 → 停滞`，插在中间而不是接在末尾。
+    // ⚠ 五处照抄：
+    //  ①⚠⚠ `resetAllStatusEffects()` = `statusBits = 0; setStatus<STRENGTH>(0); block = 0;`
+    //     （Monster.cpp:554-558）——**只清 bit、不清数值**，与「逐个 removeStatus」不是
+    //     一回事。残留的层数会被下一次 `buff` / `addDebuff` 继续加上去（实测：重生前挨的
+    //     1 层虚弱让复活后那张衣领上出 3 层而不是 2 层）。逐条见
+    //     `resetAllMonsterStatusEffects` 与 `PowerInstance.cleared`。
+    //     ⚠ 它**不碰 `miscInfo`**，所以暗影客复活后撕咬伤害还是出生时掷定的那个数。
+    //  ② 改意图用的是 **`setMove`（前移历史）**，不是 `onHpLost` 里那种裸的 `moveHistory[0] =`。
+    //     可观察面：被顶掉的意图退到 `moveHistory[1]`，而暗影客的出招规则读 `lastTwoMoves(NIP)`。
+    //  ③ `halfDead = true`——它是 `isDeadOrEscaped` 的第三位，`alive` 已经在函数开头置 false。
+    //     半死的怪**照样轮到自己的怪物回合**（`doMonsterTurn` 那道门），这正是它能复活的原因。
+    //  ④ ⚠ **血量已经是 0**（调用方在进 `die` 之前就 `curHp = 0` 了），这条分支不动它；
+    //     血量是复活那条 case 才写回 `maxHp / 2` 的。
+    //  ⑤ ⚠⚠ **它排在判胜 `return` 之后**：最后一只暗影客倒下时 `monstersAlive == 0`，
+    //     函数当场返回，这一格根本不跑——所以「三只一起打死」就是赢，不会有人重生。
+    //     这与孢子云那条「亡语只在同伴还活着时才跑」是同一条总纲。
+    resetAllMonsterStatusEffects(m);
+    setMove(m, "darkling_regrow");
+    m.halfDead = true;
   } else if (getPower(m.powers, "stasis") > 0) {
     // 停滞（青铜球，第二十八批）：把它扣住的那张牌还回手牌。
-    // ⚠⚠ 它与孢子云在**同一条 else-if 链**上（Monster.cpp:299-310），中间还夹着一格
-    //   **重生**（REGROW，暗黑之种，尚未登记）：
+    // ⚠⚠ 它与孢子云在**同一条 else-if 链**上（Monster.cpp:299-310），中间那一格
+    //   **重生**（REGROW，暗影客）第三十四批装上了，链的三格现在齐了：
     //       if (SPORE_CLOUD) … else if (REGROW) … else if (STASIS) …
     //   所以这里必须是 `else if`（一只怪不可能同时带两位，但链的形状照抄）。
-    //   登记暗黑之种那一批要把 REGROW 插在**中间**，不是接在末尾。
     // ⚠ 还牌是**同步**的（参考那一句是裸调用 `returnStasisCard(bc);`），不是入队——
     //   于是这一击若还排着别的动作，牌在它们执行**之前**就已经回到手里了。
     returnStasisCard(bc, m);
   }
-  // TODO(后续PR): 重生（暗黑之种）/ 尸爆 / 地精角 / 活体样本，以及觉醒者的假死。
+  // TODO(后续PR): 尸爆 / 地精角 / 活体样本，以及觉醒者的假死（`Monster::die` 的
+  //   **第一个**分支，与重生并列的另一处 `halfDead = true`）。
 }
 
 /**
@@ -6334,6 +6620,41 @@ function monsterDie(bc: BattleContext, m: CombatMonster): void {
 function monsterEscape(bc: BattleContext, m: CombatMonster): void {
   m.alive = false;
   bc.monstersAlive -= 1;
+  if (bc.monstersAlive === 0) {
+    bc.outcome = "player_victory";
+  }
+}
+
+/**
+ * 「不触发任何东西」的自杀（对齐 `Monster::suicideAction`，Monster.cpp:327-337；第三十四批）。
+ *
+ * ```cpp
+ * void Monster::suicideAction(BattleContext &bc) {
+ *     if (!isAlive()) return;                 // 调用方已判过，这里再判一次（照抄）
+ *     --bc.monsters.monstersAlive;
+ *     curHp = 0;
+ *     if (bc.monsters.monstersAlive == 0) bc.outcome = Outcome::PLAYER_VICTORY;
+ * }
+ * ```
+ *
+ * ⚠⚠ 它是 `Actions::SuicideAction` 的 **`triggerRelics = false`** 那一支，全参考项目
+ * 只有复形怪的消逝归零走到（`SuicideAction(idx, **false**)`，MonsterSpecific.cpp:1525）。
+ * 与另一支（爆破怪 / 匕首的 `m.damage(bc, m.curHp)`）差四处，**别互相顶替**：
+ *   ① **不扣格挡**——直接置 0；
+ *   ② **不进 `Monster::die`**：重生 / 孢子云 / 停滞 / 地精角 / 活体样本一条都不跑；
+ *   ③ **不走 `onHpLost`**（分裂 / 守卫者模式切换那一族）；
+ *   ④ 判胜是**直接写 outcome**，后面同样**没有 `checkCombat`**——队列不被清扫
+ *      （形状与 `monsterEscape` 完全相同，两者是参考里仅有的两条「不走死亡链的退场」）。
+ * ⚠ `--monstersAlive` 在这里是**自己减的**（`Monster::die` 里那句在另一条路上），
+ *   两条路各减一次、不会重复：这条路根本不调 `die`。
+ */
+function monsterSuicideNoTrigger(bc: BattleContext, m: CombatMonster): void {
+  if (m.hp <= 0) {
+    return;
+  }
+  bc.monstersAlive -= 1;
+  m.hp = 0;
+  m.alive = false; // 我们的 alive = `!isDeadOrEscaped()`，血归零后 `isDying()` 为真
   if (bc.monstersAlive === 0) {
     bc.outcome = "player_victory";
   }
@@ -6440,14 +6761,14 @@ function debuffEnemy(
   if (m === undefined) {
     return;
   }
-  const artifact = m.powers.find((p) => p.id === "artifact");
+  const artifact = findPower(m.powers, "artifact");
   if (artifact !== undefined && artifact.amount > 0) {
     artifact.amount -= 1;
     return;
   }
   addPower(m.powers, power, amount);
   if (isSourceMonster && (power === "weak" || power === "vulnerable")) {
-    const p = m.powers.find((x) => x.id === power);
+    const p = findPower(m.powers, power);
     if (p !== undefined) {
       p.justApplied = true;
     }
@@ -6489,7 +6810,7 @@ function debuffAllEnemies(bc: BattleContext, power: string, amount: number): voi
 
 /** 回合末递减一层减益，减到 0 则移除（对齐 decrementStatus + hasStatus 清零）。 */
 function decrementDebuff(m: CombatMonster, id: string): void {
-  const p = m.powers.find((x) => x.id === id);
+  const p = findPower(m.powers, id);
   if (p === undefined) {
     return;
   }
@@ -9146,6 +9467,17 @@ function monsterDamage(bc: BattleContext, idx: number, rawDamage: number): void 
   // 沉睡被打断（Monster.cpp:448-452）。⚠ 这条路上它是**独立的 if**、不在任何 else-if 链里
   //（那条链只在 attacked 那条路上），所以非攻击伤害叫醒它时不受蜷缩之类的遮挡。
   wakeUpLagavulin(m);
+  // 变换（SHIFTING，复形怪，第三十四批）：对齐 Monster.cpp:453-456。
+  // ⚠⚠ **同一段代码在两条路径上的形状不同，照抄别合并**：
+  //   * `attackedUnblockedHelper` 里它是那条 else-if 链的**最后一格**（前面还有七位）；
+  //   * 这里（`damageUnblockedHelper`）它是一个**独立的 if**，只跟在沉睡后面、
+  //     两者互不遮挡。⚠ 于是**非攻击伤害**（燃烧 / 主宰 / 荆棘 / 火焰药水）**照样**
+  //     触发变换——与蜷缩 / 镀甲 / 荆棘那一族「只挂在 attacked 上」正相反。
+  // ⚠ `damage` 同样是扣掉格挡之后的值，调用方有 `if (damage <= 0) return;` 的门。
+  if (getPower(m.powers, "shifting") > 0) {
+    addPower(m.powers, "strength", -damage);
+    addPower(m.powers, "shackled", damage);
+  }
   m.hp -= damage;
   if (m.hp <= 0) {
     m.hp = 0;
@@ -9739,7 +10071,7 @@ function applyPreTurnLogic(bc: BattleContext): void {
     //     打光」与「怪物回合开始又满了」之间只隔一个玩家回合末。
     // ✅ asc17 那一档第三十批有背书了（这一处改成恒 3 红 **225 例**；`PRE_BATTLE_ACTION`
     //   那一处是 240 例，两处必须分别量——它们是同一个数的两个独立字面量）。
-    const flight = m.powers.find((p) => p.id === "flight");
+    const flight = findPower(m.powers, "flight");
     if (flight !== undefined) {
       flight.amount = bc.ascension >= 17 ? 4 : 3;
     }
@@ -9749,7 +10081,14 @@ function applyPreTurnLogic(bc: BattleContext): void {
 
 function doMonsterTurn(bc: BattleContext, idx: number): void {
   const m = bc.monsters[idx];
-  if (m === undefined || !m.alive) {
+  // ⚠⚠ 参考这道门是 `(!m.isDeadOrEscaped() || m.isHalfDead())`（MonsterGroup.cpp:572），
+  //   **不是** `!isDeadOrEscaped()`——半死的怪（暗影客的重生态、觉醒者的假死）
+  //   照样轮到自己的回合，这正是它们能在下一个怪物回合滚出「复活」的唯一路径。
+  //   我们的 `alive` 建模的是 `!isDeadOrEscaped()`，所以这里要显式把 `halfDead` 放行。
+  // ⚠ 反过来，另外两个循环（`applyPreTurnLogic` / `applyEndOfRoundPowers`）的门是
+  //   `isDying() || isEscaping()`——那里**不**放行半死的怪（它血量为 0，`isDying` 已为真），
+  //   所以那两处写 `!alive` 与参考同解，见 `CombatMonster.halfDead` 的注释。
+  if (m === undefined || (!m.alive && !m.halfDead)) {
     return;
   }
   const move = takeTurn(bc, m);
@@ -9852,7 +10191,7 @@ function takeTurn(bc: BattleContext, m: CombatMonster): string | null {
         addPower(m.powers, power, amount);
         if (power === "ritual") {
           // 仪式当回合不结算（skipFirst），回合末只清标志。
-          const ritual = m.powers.find((p) => p.id === "ritual");
+          const ritual = findPower(m.powers, "ritual");
           if (ritual !== undefined) {
             ritual.justApplied = true;
           }
@@ -9896,8 +10235,22 @@ function takeTurn(bc: BattleContext, m: CombatMonster): string | null {
       //   但含义相反（那条读它当每击伤害），所以两条不能互相顶替。
       //   ⚠ 段数在**排队那一刻**读一次就定了（参考的 `for` 循环在 `attackPlayerHelper` 里、
       //     早于任何一段落地），中途 `miscInfo` 再变也不影响这一轮的段数。
+      // ⚠ `deal_damage_rolled` 的 `ascAdd`（第三十四批）：在掷定值之上**再加**一个分档常数，
+      //   而不是覆盖。唯一的用户是暗影客的撕咬 `miscInfo + (asc2 ? 2 : 0)`
+      //   （MonsterSpecific.cpp:1475）。基础值取 0，故 asc0 下就是纯 `miscInfo`。
+      // ⚠ `deal_damage` 的 `perMonsterTurn`（第三十四批）：伤害**按全局回合线性成长**，
+      //   `amount + perMonsterTurn * (getMonsterTurnNumber() - 1)`，对齐复形怪的
+      //   `(asc2 ? 40 : 30) + 10*(bc.getMonsterTurnNumber()-1)`（MonsterSpecific.cpp:1522）。
+      //   ⚠ `ascAmount` 只覆盖起点那个数，步长是常数——参考把 `asc? :` 写在加号左边。
+      //   ⚠ 它与大嘴吞噬的 `times: "monsterTurnHalf"` 读的是**同一个**全局回合计数，
+      //     但一个改伤害、一个改段数，别互相顶替。
       const base =
-        eff.kind === "deal_damage_rolled" ? m.miscInfo : ascValue(bc, eff.amount, eff.ascAmount);
+        eff.kind === "deal_damage_rolled"
+          ? m.miscInfo + ascValue(bc, 0, eff.ascAdd)
+          : ascValue(bc, eff.amount, eff.ascAmount) +
+            (eff.kind === "deal_damage" && eff.perMonsterTurn !== undefined
+              ? eff.perMonsterTurn * (getMonsterTurnNumber(bc) - 1)
+              : 0);
       // ⚠⚠ `times` 从第三十三批起还可以是 **`"monsterTurnHalf"`**：大嘴的吞噬写的是
       //   `const auto t = (bc.getMonsterTurnNumber() + 1) / 2; attackPlayerHelper(bc, 5, t);`
       //   （MonsterSpecific.cpp:1440-1441）——段数取自**全局回合计数**，与这只怪的状态无关。
@@ -10173,9 +10526,8 @@ function takeTurn(bc: BattleContext, m: CombatMonster): string | null {
       // 而 `triggerRelics = true` 那一支是：
       //     if (m.isAlive()) { m.damage(bc, m.curHp); }        // Actions.cpp:923-933
       // ⚠ 五处照抄：
-      //  ① 它走的是**正常的非攻击伤害路径** `Monster::damage`，不是「把血置 0」
-      //     （那是 `triggerRelics = false` 的 `Monster::suicideAction`，参考里没有调用方
-      //     走到那一支）。于是死亡链正常跑——地精角 / 活体样本 / 亡语都会触发，
+      //  ① 它走的是**正常的非攻击伤害路径** `Monster::damage`，不是「把血置 0」。
+      //     于是死亡链正常跑——地精角 / 活体样本 / 亡语都会触发，
       //     这正是那个参数名 `triggerRelics` 的含义。
       //  ② 伤害量是**执行那一刻**的 `curHp`（不是最大生命）：这一击若先被别的动作打伤过，
       //     自杀伤害也跟着变小——但两者相等，照样归零。
@@ -10187,13 +10539,69 @@ function takeTurn(bc: BattleContext, m: CombatMonster): string | null {
       //     `Monster::die` 写下胜利之后**队列不被清扫**，排在后面的动作照旧留着
       //     （由主循环那道 `outcome != UNDECIDED` 的门拦下）。故这里**不能**调
       //     `damageEnemyNonAttack`（那个带 checkCombat），只调 `monsterDamage`。
-      const selfIdx = bc.monsters.indexOf(m);
-      addToBot(bc, (c) => {
-        const self = c.monsters[selfIdx];
-        if (self !== undefined && self.hp > 0) {
-          monsterDamage(c, selfIdx, self.hp);
-        }
-      });
+      //
+      // ⚠⚠ **`triggerRelics = false` 是完全不同的另一支**（复形怪，第三十四批）：
+      //     bc.monsters.arr[monsterIdx].suicideAction(bc);        // Actions.cpp:930
+      //   而 `Monster::suicideAction`（Monster.cpp:327-337）是
+      //     if (!isAlive()) return;
+      //     --bc.monsters.monstersAlive;
+      //     curHp = 0;
+      //     if (bc.monsters.monstersAlive == 0) bc.outcome = PLAYER_VICTORY;
+      //   ——**不走 `Monster::damage`**：不扣格挡、不进 `Monster::die`（于是重生 / 孢子云 /
+      //   停滞 / 地精角 / 活体样本一条都不触发）、也不走 `onHpLost`；判胜是**直接写
+      //   outcome**（同逃跑那条），后面同样没有 `checkCombat`。
+      //   ⚠ 门是 `isAlive()` = 血 > 0，与另一支相同。
+      //
+      // ⚠ `onlyIfSelfPower`（复形怪）：整条自杀外面还包着
+      //   `if (getStatus<MS::FADING>() == 1)`（MonsterSpecific.cpp:1524）——读的是
+      //   **递减之前**的层数（递减在收尾里，见 `MOVE_TURN_END`）。
+      //   这道门在**排队那一刻**判，不是执行时判，照抄参考的 `if` 位置。
+      if (
+        eff.onlyIfSelfPower === undefined ||
+        getPower(m.powers, eff.onlyIfSelfPower.power) === eff.onlyIfSelfPower.equals
+      ) {
+        const selfIdx = bc.monsters.indexOf(m);
+        const triggerRelics = eff.triggerRelics ?? true;
+        addToBot(bc, (c) => {
+          const self = c.monsters[selfIdx];
+          if (self === undefined || self.hp <= 0) {
+            return;
+          }
+          if (triggerRelics) {
+            monsterDamage(c, selfIdx, self.hp);
+          } else {
+            monsterSuicideNoTrigger(c, self);
+          }
+        });
+      }
+    } else if (eff.kind === "reincarnate") {
+      // 复活（暗影客的重生，第三十四批）。对齐 `MMID::DARKLING_REINCARNATE`
+      // 那条 case 的前五句（MonsterSpecific.cpp:1486-1497）：
+      //     curHp = maxHp / 2;
+      //     halfDead = false;
+      //     ++bc.monsters.monstersAlive;
+      //     buff<MS::REGROW>();
+      //     if (player.hasRelic<PHILOSOPHERS_STONE>()) buff<MS::STRENGTH>(1);
+      // ⚠ 五处照抄：
+      //  ① 血量是 `maxHp / 2` 的 **C++ 整除**（向零截断）：55 血的暗影客回到 27，不是 27.5。
+      //     `maxHp` 是它出生时掷的那个数，一直没变过。
+      //  ② `halfDead = false` 与 `alive` 要一起翻回来——我们的 `alive` 建模的是
+      //     `!isDeadOrEscaped()`，而三位现在全为假（血 > 0、不半死、没逃跑）。
+      //  ③ `++monstersAlive` 与 `Monster::die` 里那句 `--monstersAlive` 配对。
+      //  ④ ⚠⚠ **再 buff 一次 REGROW**：`die` 里那句 `resetAllStatusEffects()` 把它自己
+      //     也清掉了，不补回去的话第二次死亡就变成真死（链上那一格判不中）。
+      //  ⑤ 全部**同步**（这条 case 一个 addToBot 都没有），收尾是同步的真 rollMove
+      //     ——它读的正是刚被置回 false 的 `halfDead`。
+      // ⚠ 参考在这条 case 上自注 `// todo does it heep its buffs and debuffs?`：那是作者的
+      //   **疑问**、不是结论。照抄它实际做的（`die` 已经清空过，这里只补 REGROW）。
+      // TODO(后续PR): 贤者之石（PHILOSOPHERS_STONE）那句 `buff<MS::STRENGTH>(1)`。
+      //   harness 的遗物轮换里没有它（trace_dump.cpp:257-265 那八个），写了也没有预言机
+      //   走到——与 `spawnSplitMonster` 里那条同族，一起等「遗物轮换扩容」那一批。
+      m.hp = Math.trunc(m.maxHp / 2);
+      m.halfDead = false;
+      m.alive = true;
+      bc.monstersAlive += 1;
+      addPower(m.powers, "regrow", 1);
     } else if (eff.kind === "store_hp_scaled_damage") {
       // 按玩家**此刻**的生命算定一个每击伤害，存进 miscInfo（六火幽魂的激活，
       // MonsterSpecific.cpp:794 `miscInfo = bc.player.curHp / 12 + 1;`）。
@@ -10364,7 +10772,7 @@ function applyMonsterEndOfTurnTriggers(m: CombatMonster): void {
   //   写成「减 1」或「不动」都会让食蛇草越往后挡得越多（或越少），差异逐回合累积。
   // ⚠ 常数 3 是**写死在参考里**的，与 `preBattleAction` 那个 `buff<MALLEABLE>(3)` 的 3
   //   是两处独立的字面量（改数据表的初值不会让这里跟着变）。
-  const malleable = m.powers.find((p) => p.id === "malleable");
+  const malleable = findPower(m.powers, "malleable");
   if (malleable !== undefined && malleable.amount > 0) {
     malleable.amount = 3;
   }
@@ -10417,7 +10825,7 @@ function applyEndOfRoundPowers(bc: BattleContext): void {
     if (!m.alive) {
       continue;
     }
-    const ritual = m.powers.find((p) => p.id === "ritual");
+    const ritual = findPower(m.powers, "ritual");
     if (ritual !== undefined && ritual.amount > 0) {
       if (ritual.justApplied === true) {
         ritual.justApplied = false; // 施加当回合跳过
@@ -10448,9 +10856,15 @@ function applyEndOfRoundPowers(bc: BattleContext): void {
 }
 
 function addPower(powers: PowerInstance[], id: string, amount: number): void {
+  // ⚠ 这里**故意**用裸 `find` 而不是 `findPower`：参考的 `buff` / `addDebuff` 是
+  //   `field += amount; setHasStatus(true);`——它读的是**数值字段**、与 bit 无关。
+  //   所以 `cleared`（数值还在、bit 已清，见 `PowerInstance.cleared`）的条目会**从残留值
+  //   继续加**，并且这一次把 bit 重新点亮。第三十四批实测：暗影客重生前的 1 层虚弱
+  //   会让复活后那张衣领上出 3 层而不是 2 层。
   const existing = powers.find((p) => p.id === id);
   if (existing) {
     existing.amount += amount;
+    delete existing.cleared;
   } else {
     powers.push({ id, amount });
   }
@@ -10478,6 +10892,10 @@ function removePower(powers: PowerInstance[], id: string): void {
  * （`setStatus<MODE_SHIFT>(newAmount)`，Monster.cpp:527）就是唯一的用户，
  * 而那一支的前置条件正是 `hasStatus<MODE_SHIFT>()`。
  * 参考在层数归零时走的是另一支（`removeStatus`），所以这里不会被传 0。
+ *
+ * ⚠ 这里也**故意**用裸 `find`（同 `addPower`）：`setStatus` 写的是数值字段、与 bit 无关，
+ * 所以 `cleared` 的条目照样该被写到。当前唯一的用户（守卫者的形态切换）永远不会遇到
+ * cleared 的条目——守卫者没有重生——但形状与参考一致。
  */
 function setPower(powers: PowerInstance[], id: string, amount: number): void {
   const existing = powers.find((p) => p.id === id);
@@ -10485,6 +10903,58 @@ function setPower(powers: PowerInstance[], id: string, amount: number): void {
     throw new Error(`sts-combat setPower: ${id} 不在身上（参考的 setStatus 不写 statusBits）`);
   }
   existing.amount = amount;
+}
+
+/**
+ * 怪物侧的**纯 bool** Power（对齐 `isBooleanPower`，MonsterStatusEffects.h:180-192）。
+ *
+ * 参考给它们**没有任何数值字段**：`buff` 只 `setHasStatus(true)`、`getStatusInternal`
+ * 直接 `return true`（所以 harness 恒输出 1），`decrementStatus` 直接清 bit。
+ * ⚠ 唯一读这张表的地方是 `resetAllMonsterStatusEffects`——它要把「有数值残留的」与
+ * 「没有的」分开处理，见 `PowerInstance.cleared`。
+ * ⚠ 别把孢子云 / 荆棘 / 仪式那些也塞进来：它们是 `uniquePower0` 那一族（有数值）。
+ */
+const MONSTER_BOOL_POWERS: ReadonlySet<string> = new Set([
+  "asleep",
+  "barricade",
+  "minion",
+  "minion_leader",
+  "painful_stabs",
+  "regrow",
+  "shifting",
+  "stasis",
+]);
+
+/**
+ * 清空一只怪的全部状态（对齐 `Monster::resetAllStatusEffects`，Monster.cpp:554-558）。
+ *
+ * ```cpp
+ * statusBits = 0;
+ * setStatus<MS::STRENGTH>(0);
+ * block = 0;
+ * ```
+ *
+ * ⚠⚠ **它与「逐个 removeStatus」不是一回事**，差别当场可观察（第三十四批实测）：
+ * `removeStatus` 先 `setStatus(0)` 再清 bit（数值一起归零），而这里**只清 bit**——
+ * 那些具名 int 字段（`weak` / `vulnerable` / `artifact` / …）原样留着，下一次
+ * `buff` / `addDebuff` 的 `field += n` 会**从残留值继续加**。
+ * 我们用 `PowerInstance.cleared` 表达这个中间态，详见那条注释。
+ *
+ * ⚠ 三处照抄：
+ *  ① **纯 bool 的 Power 整条丢掉**（它们没有数值字段，`buff` 只置 bit）——所以暗影客
+ *     复活时那次 `buff<MS::REGROW>()` 拿到的是干净的一层，不是「残留 + 1」。
+ *  ② **力量单独归零**（`setStatus<STRENGTH>(0)`）：力量在参考里没有 bit，
+ *     `getStatusInternal` 对它特判、恒返回 `strength`。所以它必须是**真的 0**，
+ *     不能留成 cleared 残留——否则复活后第一次 `buff<STRENGTH>` 会把旧力量捡回来。
+ *  ③ `justApplied` 三位（虚弱 / 易伤 / 仪式）住在 `statusBits` 的高位上，
+ *     一起被清掉。
+ * ⚠ 全参考项目**只有一个调用点**：`Monster::die` 的 REGROW 分支。
+ */
+function resetAllMonsterStatusEffects(m: CombatMonster): void {
+  m.powers = m.powers
+    .filter((p) => !MONSTER_BOOL_POWERS.has(p.id) && p.id !== "strength")
+    .map((p) => ({ id: p.id, amount: p.amount, cleared: true }));
+  m.block = 0;
 }
 
 /**
@@ -11051,6 +11521,21 @@ export const SUPPORTED_ENCOUNTERS: readonly string[] = [
   "orb_walker",
   "spire_growth",
   "maw",
+  // —— 第三十四批：第三幕的**两条死亡 / 回合边界机制**（走 harness 新追加的 variant 34，
+  //   variant 33 的 encounters 一个字没动，那三个文件逐字节不变）。牌组沿用
+  //   `BATCH_1 + SPOT_WEAKNESS`、40 种子、asc0、目标策略 0。
+  //   ⚠ `three_darklings` 带来 **REGROW + 半死（`halfDead`）**：`Monster::die` 的
+  //     else-if 链第二格（孢子云与停滞之间），以及 `isDeadOrEscaped` 的第三位——
+  //     它是**第十五批做逃跑时点名跳过**的那一位，本批结清。
+  //     三只暗影客互为同伴，所以「有人还活着时死掉」是常态，重生天然可观察。
+  //   ⚠ `transient` 带来 **SHIFTING**（受击把伤害转成 −力量 + 等量枷锁，
+  //     `attackedUnblockedHelper` 那条 else-if 链的**最后一格**，另有 `damageUnblockedHelper`
+  //     里的独立 if）与 **FADING**（层数 = 还能出手几次，归零那一次自杀）。
+  //     它还是 `hpNoRoll` 的**第三个也是最后一个**宿主（999 血、一次 monsterHpRng 都不掷），
+  //     并且是主循环那道「打不赢了」判负门上唯一的怪种例外。
+  //   ⚠ 两个编队**只有 asc0 的背书**：两只新怪的 `ascCalibrated` 一只都没置。
+  "three_darklings",
+  "transient",
 ];
 
 export function isEncounterSupported(encounterId: string): boolean {

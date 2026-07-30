@@ -83,10 +83,17 @@ const bump = (m, k) => m.set(k, (m.get(k) ?? 0) + 1);
  *    于是它先被打死、RollMove 在尸体上执行）。报成 0 会让下一批以为整招没背书，
  *    甚至误把 `--moves` 的断言当成「这招不可达」。
  *  * 「执行」栏 `aliveOnly = true` —— 死怪不会行动，它的意图不会被 `takeTurn` 跑到。
+ *    ⚠⚠ **但「半死」的怪会行动**（第三十四批）：`MonsterGroup::doMonsterTurn` 的门是
+ *    `(!m.isDeadOrEscaped() || m.isHalfDead())`（MonsterGroup.cpp:572），而 trace 里的
+ *    `alive` 是 `!isDeadOrEscaped()`——三位或在一起，半死的暗影客在快照里与尸体长得一样。
+ *    所以 harness 从第三十四批起额外输出 `halfDead`（**只在为真时**，故既有文件逐字节不变），
+ *    这里的门跟着改成与参考同形。少了它，`DARKLING_REGROW` / `DARKLING_REINCARNATE`
+ *    这两条**只可能出现在半死怪身上**的招式会被报成「执行 0」——那是工具的假阴性，
+ *    不是真的没背书。
  */
 const countMoves = (snap, target, aliveOnly) => {
   for (const m of snap.monsters) {
-    if (aliveOnly && !m.alive) continue;
+    if (aliveOnly && !m.alive && m.halfDead !== true) continue;
     // 参考给某些编队预置的哨兵意图（如颚虫军团借用的 DARKLING_REGROW）不是真招式。
     if (m.move === "INVALID") continue;
     bump(target, m.move);

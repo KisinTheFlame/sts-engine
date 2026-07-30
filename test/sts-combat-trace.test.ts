@@ -48,6 +48,16 @@ type Snapshot = {
     maxHp: number;
     block: number;
     alive: boolean;
+    /**
+     * 半死（对齐 `Monster::halfDead`，第三十四批）。harness **只在为真时输出**，
+     * 所以此前提交的每一行都逐字节不变。
+     *
+     * ⚠ 它不是 `alive` 的冗余：trace 里的 `alive` 是 `!isDeadOrEscaped()`，三位或在一起，
+     * 半死的暗影客（血 0、alive false、意图是重生 / 复活）与一具尸体长得一模一样。
+     * 而 `MonsterGroup::doMonsterTurn` 的门是 `(!isDeadOrEscaped() || isHalfDead())`
+     * ——半死的怪**照样行动**，这是它能复活的唯一路径。
+     */
+    halfDead?: boolean;
     move: string;
     powers: Record<string, number>;
   }[];
@@ -411,6 +421,13 @@ const ENCOUNTER: Record<string, string> = {
   ORB_WALKER: "orb_walker",
   SPIRE_GROWTH: "spire_growth",
   MAW: "maw",
+  // —— 第三十四批：走 harness 新追加的 variant 34（variant 33 的 encounters 一个字没动）。
+  //   ⚠ `THREE_DARKLINGS` 是**唯一**同时挂在第三幕「弱」池与「强」池里的编队
+  //     （MonsterEncounters.h:162 / :174），但那只影响 run 层的抽取，与战斗无关。
+  //   ⚠ 复形怪的编队与怪**同名**（`TRANSIENT` / `MonsterId::TRANSIENT`），
+  //     与 `MAW` / `THE_MAW` 那一对正相反——两张表各查各的，别想当然。
+  THREE_DARKLINGS: "three_darklings",
+  TRANSIENT: "transient",
 };
 const MONSTER: Record<string, string> = {
   CULTIST: "cultist",
@@ -498,6 +515,12 @@ const MONSTER: Record<string, string> = {
   ORB_WALKER: "orb_walker",
   SPIRE_GROWTH: "spire_growth",
   THE_MAW: "the_maw",
+  // —— 第三十四批：暗影客（三只一组，互为同伴）与复形怪（单怪、999 血）。
+  //   ⚠ 暗影客在快照里会出现 `alive: false` 且 `hp: 0` 的**半死态**（重生），
+  //     几个怪物回合后又变回 `alive: true`、`hp: maxHp/2` —— 那不是新怪，
+  //     是同一格被 `DARKLING_REINCARNATE` 复活了。
+  DARKLING: "darkling",
+  TRANSIENT: "transient",
   // ⚠ **分裂留下的空格**。参考的 `MonsterGroup::arr` 是定长 5 的数组，`monsterCount` 只是
   // 「dump 到第几格」；史莱姆王分裂时 `arr[0]` 与 `arr[2]` 被写、`monsterCount = 3`，
   // 于是 1 号格那只**从没被构造过**的默认 `Monster` 也被 dump 出来
@@ -704,6 +727,18 @@ const MOVE: Record<string, string> = {
   THE_MAW_DROOL: "maw_drool",
   THE_MAW_SLAM: "maw_slam",
   THE_MAW_NOM: "maw_nom",
+  // —— 第三十四批：暗影客五条 + 复形怪一条 ——
+  // ⚠ 暗影客的**重生**与**复活**都不是由 roll 掷出来的：重生是 `Monster::die` 的
+  //   `setMove(MMID::DARKLING_REGROW)` 写进去的，复活是出招规则里 `if (halfDead)` 那一支。
+  //   两条都会出现在快照的 `move` 字段里。
+  // ⚠ `DARKLING_REGROW` 还兼任颚虫军团那个「预置意图哨兵」（MonsterGroup.cpp:285），
+  //   但那三只颚虫在开局那次 rollMove 里就把它顶掉了，所以从没进过快照。
+  DARKLING_NIP: "darkling_nip",
+  DARKLING_CHOMP: "darkling_chomp",
+  DARKLING_HARDEN: "darkling_harden",
+  DARKLING_REGROW: "darkling_regrow",
+  DARKLING_REINCARNATE: "darkling_reincarnate",
+  TRANSIENT_ATTACK: "transient_slam",
   // 分裂留下的空格：那只默认 `Monster` 的 `moveHistory[0]` 是 `MMID::INVALID`
   // （`monsterMoveStrings[0] == "INVALID"`，MonsterMoves.h:215）。我们的空占位
   // `currentMove` 是空串。⚠ 这一条只有那个空格用得到——所有真怪在 `MonsterGroup::init`
@@ -891,6 +926,19 @@ const POWER: Record<string, string> = {
   //   受到 = 层数的非攻击伤害（照样被格挡吸收）。
   // ⚠ 它一场仗最多被上一次——出招规则里有一道 `!player.hasStatus<CONSTRICTED>()` 的门。
   CONSTRICTED: "constricted",
+  // —— 第三十四批 ——
+  // 重生：**怪物身上**的纯 bool，暗影客 preBattleAction 里上的。
+  // ⚠ 它在快照里会**消失又出现**：`Monster::die` 的那一格先 `resetAllStatusEffects()`
+  //   （连它自己一起清）再置半死，复活那条 case 又 `buff<MS::REGROW>()` 补回来。
+  REGROW: "regrow",
+  // 变换：**怪物身上**的纯 bool，复形怪 preBattleAction 里上的。
+  // ⚠ 它自己层数无意义，可它的效果在快照里非常显眼：复形怪的 `STRENGTH` 会变成**负数**
+  //   （本回合挨了多少就减多少），旁边同时挂上等量的 `SHACKLED`，回合末两者一起归零。
+  SHIFTING: "shifting",
+  // 消逝：**怪物身上**的层数，开局 5 层（asc17 是 6）= 还能出手几次。
+  // ⚠ **没有任何回合末的自动递减**：唯一的递减点是复形怪那条招式的最后一句，
+  //   所以它在快照里是 5 → 4 → 3 …，归零那一次连条目一起消失、同时它自杀。
+  FADING: "fading",
 };
 
 const mapPotion = (p: string): string | null => (p in POTION ? POTION[p]! : p);
@@ -914,10 +962,14 @@ const mapPowers = (p: Record<string, number>): Record<string, number> => {
 
 /** 把我方 BattleContext 折成与 trace 同构的形状，便于逐字段 diff。 */
 function shape(bc: BattleContext): Record<string, unknown> {
-  const powersOf = (ps: { id: string; amount: number }[]): Record<string, number> => {
+  // ⚠ `cleared` 的条目是「数值还在、statusBits 那一位已清」（见 `PowerInstance.cleared`）：
+  //   参考的 `getStatusInternal` 对它返回 0，harness 因此**不输出**它。跳过。
+  const powersOf = (
+    ps: { id: string; amount: number; cleared?: boolean }[],
+  ): Record<string, number> => {
     const out: Record<string, number> = {};
     for (const p of ps) {
-      if (p.amount !== 0) {
+      if (p.amount !== 0 && p.cleared !== true) {
         out[p.id] = p.amount;
       }
     }
@@ -942,6 +994,7 @@ function shape(bc: BattleContext): Record<string, unknown> {
       maxHp: m.maxHp,
       block: m.block,
       alive: m.alive,
+      halfDead: m.halfDead,
       move: m.currentMove,
       powers: powersOf(m.powers),
     })),
@@ -981,6 +1034,8 @@ function shapeExpected(s: Snapshot): Record<string, unknown> {
       maxHp: m.maxHp,
       block: m.block,
       alive: m.alive,
+      // harness 只在为真时输出（见 Snapshot.monsters.halfDead），缺省即 false。
+      halfDead: m.halfDead ?? false,
       move: MOVE[m.move] ?? m.move,
       powers: mapPowers(m.powers),
     })),

@@ -2097,26 +2097,61 @@ const ENEMY_LIST: EnemyDef[] = [
     // 旧近似表那份加权（60/40）与参考完全不同，本批弃用。
     intentRule: { scripted: [], weighted: [] },
   },
+  // 复形怪（第三十四批按参考逐位校准）。
   {
     id: "transient",
     name: "无常",
-    hpMin: 88,
-    hpMax: 92,
+    // MonsterIds.h:215 `{{999,999},{999,999}}`。
+    // ⚠⚠ 它是 `hpNoRoll` 的**第三个也是最后一个宿主**（`Monster::initHp` 的
+    //   `curHp = monsterHpRange[id][0][0];`，MonsterSpecific.cpp:119-124，与球状守卫者、
+    //   大嘴同一条 case）——**一次 monsterHpRng 都不掷**。
+    //   旧近似表写的 88~92 是凭印象编的，两处都错（数值错、掷法也错）。
+    hpMin: 999,
+    hpMax: 999,
+    hpNoRoll: true,
+    // ⚠ 开局 `preBattleAction` 一次上**两个** Power（MonsterSpecific.cpp:171-175，
+    //   参考只在那行注了 `// game adds ShiftingPower`）：
+    //     buff<MS::SHIFTING>();              // 纯 bool，快照里是 SHIFTING: 1
+    //     buff<MS::FADING>(asc17 ? 6 : 5);   // 层数 = 还能出手几次
+    //   两条都在 `PRE_BATTLE_ACTION.transient` 里，顺序照抄。
     moves: [
       {
+        // 重殴（MonsterSpecific.cpp:1520-1530，整只怪只有这一招）：
+        //     const auto damage = (asc2 ? 40 : 30) + 10*(bc.getMonsterTurnNumber()-1);
+        //     attackPlayerHelper(bc, damage);
+        //     if (getStatus<MS::FADING>() == 1) { addToBot(SuicideAction(idx, false)); }
+        //     bc.noOpRollMove();          // ← 同步
+        //     decrementStatus<MS::FADING>();  // ← 同步，排在 noOpRollMove **之后**
+        // ⚠ 四处照抄：
+        //  ① 伤害**按全局回合线性成长**（30 / 40 / 50 / 60 / 70），`perMonsterTurn: 10`；
+        //     `asc2 ? 40 : 30` 只覆盖起点，步长 10 是常数。
+        //  ② 自杀那条走 `SuicideAction(idx, **false**)` = `Monster::suicideAction`
+        //     ——**不走死亡链**（见 `suicide` 的 `triggerRelics`）。
+        //  ③ 门读的是**递减之前**的层数（`== 1`），所以最后一次出手当场自杀。
+        //  ④ 收尾两句在 `MOVE_TURN_END`：同步 noOpRollMove（掷一次 aiRng 丢掉）
+        //     **然后**才递减消逝。
         id: "transient_slam",
         name: "重殴",
-        effects: [{ kind: "deal_damage", amount: 30 }],
+        effects: [
+          {
+            kind: "deal_damage",
+            amount: 30,
+            ascAmount: [{ atLeast: 2, amount: 40 }],
+            perMonsterTurn: 10,
+          },
+          {
+            kind: "suicide",
+            triggerRelics: false,
+            onlyIfSelfPower: { power: "fading", equals: 1 },
+          },
+        ],
         intent: "attack",
       },
-      {
-        id: "fade",
-        name: "消散",
-        effects: [{ kind: "escape" }],
-        intent: "unknown",
-      },
     ],
-    // 出招由 sts-combat.ts 的 MOVE_RULES 登记 transient（待迁移）（重殴数回合后消散离场）。
+    // 出招规则见 sts-combat.ts 的 `MOVE_RULES.transient`：`return TRANSIENT_ATTACK;`
+    //（MonsterSpecific.cpp:3115-3117）——roll 照掷但一眼都不看。
+    // ⚠ 旧近似表那条「消散离场」的招式是编的：参考里复形怪**不逃跑**，它靠消逝层数归零时
+    //   那条 `SuicideAction` 自己消失，`MMID` 里也只有 `TRANSIENT_ATTACK` 一条。
     intentRule: { scripted: [], weighted: [] },
   },
 
@@ -3038,39 +3073,82 @@ const ENEMY_LIST: EnemyDef[] = [
     //   defend / unknown 一致。
     intentRule: { scripted: [], weighted: [] },
   },
+  // 暗影客（第三十四批按参考逐位校准）。
   {
     id: "darkling",
     name: "暗影客",
+    // MonsterIds.h:167 `{{48,56},{50,59}}`（asc<7 取前者）。⚠ **两组**，不是一个区间。
     hpMin: 48,
     hpMax: 56,
+    // ⚠⚠ 它是**第二个** `Monster::construct` 里带怪种特例的怪（第一个是虱子）：
+    //     case MonsterId::DARKLING:
+    //         if (asc >= 2) miscInfo = monsterHpRng.random(9, 13);
+    //         else          miscInfo = monsterHpRng.random(7, 11);
+    //   （Monster.cpp:124-130）——**建怪时再掷一次 monsterHpRng**，掷出来的数就是
+    //   「撕咬」的每击伤害，整场固定。漏掉这一次不会静默：`rng.hp` 计数器当场对不上。
+    //   实现在 sts-combat.ts 的 `constructMonster`（与虱子并排）。
+    // ⚠ 开局 `preBattleAction` 上 **REGROW**（`buff<MS::REGROW>()`，MonsterSpecific.cpp:152-154，
+    //   参考在那行注了 `// game adds regrow power`），纯 bool、进怪物快照（`REGROW: 1`）。
     moves: [
       {
+        // 撕咬：`const auto damage = miscInfo + (asc2 ? 2 : 0);`（MonsterSpecific.cpp:1474-1479）。
+        // ⚠ 伤害是**出生时掷定**的（见上方 `construct` 那条），不是字面量——所以走
+        //   `deal_damage_rolled`（与虱子的咬击同一条原语），asc2 那 +2 走 `ascAdd`（**加**不是覆盖）。
+        // ⚠ 参考在那行自注 `// todo maybe make d part of the miscInfo at prebattle`。
+        // 收尾是裸的 `addToBot(Actions::RollMove(idx))`，即 `MOVE_TURN_END` 的默认值。
         id: "darkling_nip",
         name: "撕咬",
-        effects: [{ kind: "deal_damage", amount: 8 }],
+        effects: [{ kind: "deal_damage_rolled", ascAdd: [{ atLeast: 2, amount: 2 }] }],
         intent: "attack",
       },
       {
+        // 啃食：`attackPlayerHelper(bc, asc2 ? 9 : 8)`（MonsterSpecific.cpp:1461-1464）。
+        // ⚠ 旧近似表把 9 当成了 asc0 的值，那是**高档**那个数。
+        // 收尾同样是默认的 `addToBot(RollMove)`。
         id: "darkling_chomp",
         name: "啃食",
-        effects: [{ kind: "deal_damage", amount: 9 }],
+        effects: [{ kind: "deal_damage", amount: 8, ascAmount: [{ atLeast: 2, amount: 9 }] }],
         intent: "attack",
       },
       {
+        // 硬化：`addBlock(12); if (asc17) buff<MS::STRENGTH>(2); rollMove(bc);`
+        //（MonsterSpecific.cpp:1466-1472）。
+        // ⚠ 三处照抄：
+        //  ① 加格挡是**同步**的裸 `addBlock(12)`，不是 `addToBot(MonsterGainBlock)`
+        //     ——所以 `sync: true`（与抢劫者的烟雾弹同族）。
+        //  ② asc17 那层力量是**多出来的一整条效果**（`minAscension`），不是换个数。
+        //  ③ 收尾是**同步的真 `rollMove`**（第六形态），见 `MOVE_TURN_END`。
         id: "darkling_harden",
         name: "硬化",
-        effects: [{ kind: "gain_block", amount: 12 }],
+        effects: [
+          { kind: "gain_block", amount: 12, sync: true },
+          { kind: "apply_power", power: "strength", amount: 2, on: "self", minAscension: 17 },
+        ],
         intent: "defend",
       },
+      {
+        // 重生：`// do nothing` + `rollMove(bc);`（MonsterSpecific.cpp:1481-1484）。
+        // ⚠ **效果是空的**——这一招唯一做的事就是收尾那次同步 rollMove，而 `getMoveForRoll`
+        //   看到 `halfDead` 为真就返回「复活」。它是 `Monster::die` 的 REGROW 分支
+        //   `setMove(MMID::DARKLING_REGROW)` 写进去的，从来不由 roll 掷出来。
+        // ⚠ 它也是颚虫军团那个「预置哨兵」用的那个枚举值（MonsterGroup.cpp:285，
+        //   参考在那注了「只要不是 INVALID 就行」）——两处无关，别串。
+        id: "darkling_regrow",
+        name: "重生",
+        effects: [],
+        intent: "unknown",
+      },
+      {
+        // 复活：五句全同步 + 同步 rollMove（MonsterSpecific.cpp:1486-1499），见 `reincarnate`。
+        id: "darkling_reincarnate",
+        name: "复生",
+        effects: [{ kind: "reincarnate" }],
+        intent: "unknown",
+      },
     ],
-    intentRule: {
-      scripted: [],
-      weighted: [
-        { move: "darkling_nip", weight: 40, maxInARow: 2 },
-        { move: "darkling_chomp", weight: 40, maxInARow: 1 },
-        { move: "darkling_harden", weight: 20, maxInARow: 1 },
-      ],
-    },
+    // 出招规则见 sts-combat.ts 的 `MOVE_RULES.darkling`（MonsterSpecific.cpp:3052-3093）。
+    // 旧近似表那份加权（40/40/20）与参考完全不同，本批弃用。
+    intentRule: { scripted: [], weighted: [] },
   },
   // 尖塔增生（第三十三批按参考逐位校准）。
   {
@@ -3501,6 +3579,8 @@ const ENCOUNTERS: Record<string, EncounterDef> = {
   //（MonsterGroup.cpp:460-463：`createMonster(LOOTER); createMonster(MUGGER);`）。
   // 旧近似表写的 `["mugger","mugger"]` 与参考不符，第二十四批改正。
   two_thieves: { id: "two_thieves", enemies: ["looter", "mugger"], isBoss: false },
+  // 三暗影客（MonsterGroup.cpp:418-421）：三只固定的暗影客，不掷任何 miscRng。
+  // ⚠ 它是**唯一**同时出现在第三幕「弱」池与「强」池里的编队（MonsterEncounters.h:162 / :174）。
   three_darklings: {
     id: "three_darklings",
     enemies: ["darkling", "darkling", "darkling"],
@@ -3539,6 +3619,7 @@ const ENCOUNTERS: Record<string, EncounterDef> = {
   reptomancer: { id: "reptomancer", enemies: ["reptomancer"], isBoss: false },
   donu_deca: { id: "donu_deca", enemies: ["deca", "donu"], isBoss: true },
   repulsor: { id: "repulsor", enemies: ["repulsor"], isBoss: false },
+  // 复形怪（MonsterGroup.cpp:445-447）：单怪。
   transient: { id: "transient", enemies: ["transient"], isBoss: false },
   two_orb_walkers: { id: "two_orb_walkers", enemies: ["orb_walker", "orb_walker"], isBoss: false },
   giant_head: { id: "giant_head", enemies: ["giant_head"], isBoss: false },

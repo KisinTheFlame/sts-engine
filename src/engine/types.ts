@@ -180,6 +180,38 @@ export type PowerId =
   //   说明它清楚两者像但没合并——**照抄，别自作主张合并**。
   // ⚠ 全参考项目**只有暗球游荡者一个宿主**。
   | "generic_strength_up"
+  // 重生（暗影客，第三十四批）：**怪物身上**的纯 bool 标记（`isBooleanPower(MS::REGROW)`
+  // 为真，MonsterStatusEffects.h:189），harness 恒输出 `REGROW: 1`。
+  // ⚠ 唯一的读点是 `Monster::die` 的那条 else-if 链（Monster.cpp:303-306）——它排在
+  //   **孢子云与停滞之间**（第二十八批装停滞时特意留出的那个「中间格」）：
+  //       if (SPORE_CLOUD) … else if (REGROW) { resetAllStatusEffects(); setMove(DARKLING_REGROW);
+  //                                             halfDead = true; } else if (STASIS) …
+  //   所以带这一位的怪不是真死，而是进入**半死**态（`halfDead`，见 `CombatMonster`）。
+  // ⚠⚠ **它自己会被 `resetAllStatusEffects()` 一起清掉**（那句 `statusBits = 0`），
+  //   所以复活那条 case 里必须**再 buff 一次**（MonsterSpecific.cpp:1493）——
+  //   漏掉的话第二次死亡就变成真死。
+  // ⚠ 那条判胜 `return` 排在这条链**之前**：最后一只暗影客倒下时玩家直接获胜，
+  //   它不会半死、也不会重生。
+  | "regrow"
+  // 变换（复形怪，第三十四批）：**怪物身上**的纯 bool 标记（`isBooleanPower(MS::SHIFTING)`
+  // 为真），harness 恒输出 `SHIFTING: 1`，开局 `preBattleAction` 上。
+  // ⚠ 读点有**两处**，都在「未被格挡的伤害」段里，形状不同：
+  //   ① `attackedUnblockedHelper` 那条 else-if 链的**最后一格**（Monster.cpp:393-396）；
+  //   ② `damageUnblockedHelper` 里的一个**独立 if**（Monster.cpp:453-456，与沉睡同族）。
+  //   两处的函数体一模一样：`addDebuff<MS::STRENGTH>(-damage); buff<MS::SHACKLED>(damage);`
+  // ⚠ 于是「这一击打了多少」被原样转成**负力量 + 等量枷锁**，而枷锁在**回合末**
+  //   （`applyEndOfTurnTriggers`）又原样还回力量——所以复形怪在**它自己的回合里**
+  //   力量是负的（本回合挨了多少就减多少），回合末归零。
+  | "shifting"
+  // 消逝（复形怪，第三十四批）：**怪物身上**的层数 Power（`uniquePower0` 后端），
+  // 开局 `preBattleAction` 上 5 层（asc17 是 6）。
+  // ⚠ 它**没有**任何回合末的自动递减：唯一的递减点是复形怪那条招式的**最后一句**
+  //   `decrementStatus<MS::FADING>()`（MonsterSpecific.cpp:1528），所以「层数」实际是
+  //   「还能出手几次」。层数降到 0 时 `decrementStatus` 连 statusBits 一起清掉。
+  // ⚠ 自杀的门是**递减之前**的 `getStatus<FADING>() == 1`（`:1524`），而且那条
+  //   `Actions::SuicideAction(idx, **false**)` 走的是 `Monster::suicideAction`
+  //   ——**不是**死亡链（见 Effect 的 `suicide`）。
+  | "fading"
   // —— 玩家能力牌触发型 power（在对应触发点由 combat 结算，玩家专属）——
   | "combust" // 燃烧：每个玩家回合结束，失 1 生命并对所有敌人造成 = 层数的伤害
   | "feel_no_pain" // 无痛：每消耗一张牌，获得 = 层数的格挡
@@ -276,7 +308,20 @@ export type AscTier = { atLeast: number; amount: number };
 export type Effect =
   // strengthMultiplier：力量按该倍率计入伤害（重刃 ×3/×5）；省略即 ×1（普通攻击）。
   // ascAmount：敌人专用的爬升度分档，覆盖 `amount`（见 AscTier）。
-  | { kind: "deal_damage"; amount: number; strengthMultiplier?: number; ascAmount?: AscTier[] }
+  // perMonsterTurn：敌人专用的**回合线性成长**（第三十四批）。伤害是
+  //   `amount + perMonsterTurn * (getMonsterTurnNumber() - 1)`，对齐复形怪的
+  //   `const auto damage = (asc2 ? 40 : 30) + 10*(bc.getMonsterTurnNumber()-1);`
+  //   （MonsterSpecific.cpp:1522）。省略 = 不成长（既有的怪都是这一种）。
+  // ⚠ 它读的是**全局回合计数**（`bc.turn + 1`），与这只怪自己的状态无关——与大嘴吞噬的
+  //   `times: "monsterTurnHalf"` 同源、与 `deal_damage_rolled` 的 `miscInfo` 无关。
+  // ⚠ `ascAmount` 只覆盖 `amount`（那个 `asc2 ? 40 : 30`），成长步长 10 是常数。
+  | {
+      kind: "deal_damage";
+      amount: number;
+      strengthMultiplier?: number;
+      ascAmount?: AscTier[];
+      perMonsterTurn?: number;
+    }
   | { kind: "deal_damage_all"; amount: number }
   // 敌人用：**非攻击伤害**打在玩家身上（爆破怪的自爆 30 点，第三十二批）。对齐
   // `bc.addToBot( Actions::DamagePlayer(30) )`（MonsterSpecific.cpp:1395）。
@@ -300,7 +345,28 @@ export type Effect =
   // ⚠ 全参考项目有两个宿主：爆破怪与蜥蜴法师的匕首（`DAGGER_EXPLODE`，:1634），
   //   两者写法逐字相同。⚠ 但**匕首的自爆算攻击**（走 `attackPlayerHelper(bc, 25)`）、
   //   爆破怪的不算（走 `DamagePlayer(30)`），别把两只怪的前半段也当成一样的。
-  | { kind: "suicide" }
+  //
+  // ⚠⚠ **`triggerRelics` 的另一支（第三十四批）**：复形怪写的是
+  //   `Actions::SuicideAction(idx, **false**)`（MonsterSpecific.cpp:1525），走的是
+  //   `Monster::suicideAction`（Monster.cpp:327-337）而**不是** `m.damage(bc, curHp)`：
+  //       if (!isAlive()) return;
+  //       --bc.monsters.monstersAlive;
+  //       curHp = 0;
+  //       if (monstersAlive == 0) outcome = PLAYER_VICTORY;
+  //   即「把血置 0 并自己减活怪数」——**整条死亡链一句都不跑**（没有 `Monster::die`，
+  //   于是亡语 / 重生 / 地精角 / 活体样本全不触发），也**不扣格挡**、不走 `onHpLost`。
+  //   两支的差别在带重生的怪身上是决定性的，所以这个开关必须逐招写清。
+  // ⚠ 默认值取 **true**（= 爆破怪与匕首那一支），这样已登记的两处一个字都不用改。
+  //
+  // ⚠ `onlyIfSelfPower`（第三十四批）：这条自杀带一道门——复形怪那句是
+  //   `if (getStatus<MS::FADING>() == 1) { addToBot(SuicideAction(idx, false)); }`。
+  //   门读的是**递减之前**的层数，所以「最后一次出手」才自杀；把 `equals` 抄成 0
+  //   会让它永远不消失（层数在收尾里减，读到 0 时它已经不在身上了）。
+  | {
+      kind: "suicide";
+      triggerRelics?: boolean;
+      onlyIfSelfPower?: { power: PowerId; equals: number };
+    }
   // ascAmount 覆盖**每一击**的 amount。绝大多数多段攻击的段数是恒定的——参考写的是
   // `attackPlayerHelper(bc, asc4 ? 6 : 5, 2)`（六火幽魂冲撞 MonsterSpecific.cpp:841），
   // 分档挂在那个伤害数上，段数是第二个实参、恒定。
@@ -341,7 +407,11 @@ export type Effect =
   | { kind: "deal_damage_random"; amount: number; times: number }
   | { kind: "deal_damage_equal_to_block" }
   // 敌人用：伤害取自本敌人锁定的固定值（红虱咬击；六火幽魂六重打击 times 连击）。
-  | { kind: "deal_damage_rolled"; times?: number }
+  // ⚠ `ascAdd`（第三十四批）：在**掷定值之上再加**一个爬升度分档的常数，而不是像
+  //   `ascAmount` 那样**覆盖**。唯一的用户是暗影客的撕咬——
+  //   `const auto damage = miscInfo + (asc2 ? 2 : 0);`（MonsterSpecific.cpp:1475）。
+  //   基础值是 0，所以 asc0 下就是纯 `miscInfo`。别把它写成 `ascAmount`：那会把掷定值整个丢掉。
+  | { kind: "deal_damage_rolled"; times?: number; ascAdd?: AscTier[] }
   // 敌人用：按玩家当前生命锁定一个每击伤害存入 miscInfo（六火幽魂激活：floor(hp/divisor)+add）。
   | { kind: "store_hp_scaled_damage"; divisor: number; add: number }
   // sync：敌人专用。参考的怪物加格挡有**两种写法并存**——绝大多数是**同步** `addBlock(n)`
@@ -616,6 +686,23 @@ export type Effect =
   // 而不是自增、一次 `noOpRollMove` 都不掷）。复用 `split` 那条路径必错，故单开一个 kind。
   // 分裂成什么同样读 `EnemyDef.splitInto`（下标 0 落在 0 号位、下标 1 落在 2 号位）。
   | { kind: "split_boss" }
+  // 敌人用：**复活**（暗影客的重生，第三十四批）。对齐 `MMID::DARKLING_REINCARNATE`
+  // 那条 case 的**全部五句**（MonsterSpecific.cpp:1488-1497）：
+  //   ```cpp
+  //   curHp = maxHp / 2;                                     // ← C++ 整除
+  //   halfDead = false;
+  //   ++bc.monsters.monstersAlive;
+  //   buff<MS::REGROW>();                                    // ← 再上一次，见 PowerId 那条
+  //   if (player.hasRelic<PHILOSOPHERS_STONE>()) buff<MS::STRENGTH>(1);   // TODO(后续PR)
+  //   ```
+  // 全部**同步**（这条 case 一个 `addToBot` 都没有），收尾是同步的真 `rollMove`。
+  // ⚠ 不带参数：五句里没有一句是「数据」，全是引擎侧的状态机，所以写在 sts-combat.ts。
+  // ⚠ `++monstersAlive` 是与 `Monster::die` 里那句 `--monstersAlive` 配对的——两者
+  //   一个都不能漏，否则判胜与 `getRandomMonsterIdx` 会整体偏。
+  // ⚠ 参考在这条 case 上自注 `// todo does it heep its buffs and debuffs?`——那是作者的
+  //   **疑问**不是结论，照抄它实际做的（`die` 里已经 `resetAllStatusEffects()` 清空过，
+  //   这里只补回 REGROW）。
+  | { kind: "reincarnate" }
   // sync：敌人专用。参考塞状态牌同样**两种写法并存**——史莱姆们是
   // `addToBot(Actions::MakeTempCardInDiscard(...))`，而史莱姆王的黏液喷射写的是
   // `Actions::MakeTempCardInDiscard({SLIMED}, 3).actFunc(bc)`（MonsterSpecific.cpp:1112）

@@ -621,8 +621,9 @@ describe("敌人与编队表", () => {
   // monsterHpRng 取值整体错位（不是「血量差一点」）。参考里只有三只怪走那条 case
   //（`Monster::initHp`，MonsterSpecific.cpp:119-124）：球状守卫者 / 大嘴 / 复形怪。
   // ⚠ 反方向同样要守：`{240,240}` 的守卫者**照样掷一次**，所以「上下界相同」不是判据。
-  // ⚠ 第三十三批装上了**第二个宿主**大嘴（`the_maw`），剩下复形怪（`transient`）还没登记。
-  const HP_NO_ROLL = new Set(["spheric_guardian", "the_maw"]);
+  // ⚠ 第三十三批装上了**第二个宿主**大嘴（`the_maw`），第三十四批补上**最后一个**
+  //   复形怪（`transient`，999 血）——这条 case 的三只怪现在全部登记，名单封闭。
+  const HP_NO_ROLL = new Set(["spheric_guardian", "the_maw", "transient"]);
 
   it("只有 initHp 里那条不掷 RNG 的怪才带 hpNoRoll", () => {
     for (const def of ALL_ENEMIES) {
