@@ -818,38 +818,56 @@ const ENEMY_LIST: EnemyDef[] = [
     intentRule: { scripted: [], weighted: [] },
   },
   {
+    // —— 第二十六批：百夫长（第二幕，`CENTURION_AND_HEALER`）——
+    //
+    // ⚠ **爬升度分档本批不写**（与第二十三~二十五批那几只同理）：`ascCalibrated` 没置，
+    //   `constructMonster` 在 `ascension > 0` 时直接抛错，写了也没有预言机。
+    //   参考的分档记在各招式注释里，留给「第二幕爬升度」那一批一次性转写。
     id: "centurion",
     name: "百夫长",
+    // MonsterIds.h:161 `{{76,80},{76,83}}`；普通怪阈值 `setRandomHp(hpRng, asc >= 7)`
+    // （MonsterSpecific.cpp:43）。高档那一组本批不写，理由同上。
+    // ⚠ 高档的下界与低档**相同**（76）、只有上界变宽，抄的时候别顺手写成 78。
     hpMin: 76,
     hpMax: 80,
     moves: [
       {
+        // MonsterSpecific.cpp:576-578 `attackPlayerHelper(bc, asc2 ? 14 : 12)`。
         id: "cent_slash",
         name: "斩击",
         effects: [{ kind: "deal_damage", amount: 12 }],
         intent: "attack",
       },
       {
+        // MonsterSpecific.cpp:571-574 `attackPlayerHelper(bc, asc2 ? 7 : 6, 3)`（**三段 6**）。
+        // ⚠⚠ **这一招在本批的 trace 里 0 例（出现与执行都是 0），是已知盲区。**
+        //   它只在**秘法师已死**时被选出，而 harness 的策略恒打 0 号位、百夫长恒在 0 号位
+        //   ——秘法师永远后死。理由与关门条件见 sts-combat.ts 的 `MOVE_RULES.centurion`。
         id: "cent_fury",
         name: "狂怒连斩",
         effects: [{ kind: "deal_damage_multi", amount: 6, times: 3 }],
         intent: "attack",
       },
       {
+        // MonsterSpecific.cpp:562-569：
+        //   `if (getAliveCount() > 1) { auto &mystic = arr[1]; mystic.addBlock(asc17?20:15); }`
+        // ⚠⚠ **格挡给的是 1 号位的秘法师，百夫长自己一点都不加**——旧近似表写的是
+        //   「自己 +15 格挡」，那是错的。它与出招规则配套：秘法师死了之后
+        //   `getMoveForRoll` 就不再返回防守（改出狂怒连斩），所以「只剩自己还出防守」
+        //   这个局面在参考的内容集合里压根不存在。详见 `Effect.gain_block_ally_fixed`。
+        // ⚠ 这一招的收尾是**同步的真 rollMove**，不是默认的入队 RollMove，
+        //   见 `MOVE_TURN_END["centurion/cent_defend"]`。
         id: "cent_defend",
         name: "防守",
-        effects: [{ kind: "gain_block", amount: 15 }],
+        effects: [{ kind: "gain_block_ally_fixed", amount: 15 }],
         intent: "defend",
       },
     ],
-    intentRule: {
-      scripted: [],
-      weighted: [
-        { move: "cent_slash", weight: 50, maxInARow: 2 },
-        { move: "cent_fury", weight: 25, maxInARow: 1 },
-        { move: "cent_defend", weight: 25, maxInARow: 1 },
-      ],
-    },
+    // 出招规则见 sts-combat.ts 的 `MOVE_RULES.centurion`（65 那道阈值 + 两条 `lastTwoMoves`，
+    // 且「秘法师还活着吗」决定防守/狂怒二选一）。**不追加任何 aiRng。**
+    // ⚠ 攻击白名单里是 `CENTURION_SLASH` / `CENTURION_FURY`（`MonsterMoves.h:439-440`），
+    //   `CENTURION_DEFEND` **不在**——与这里的 attack / attack / defend 一致。
+    intentRule: { scripted: [], weighted: [] },
   },
 
   {
@@ -1037,38 +1055,58 @@ const ENEMY_LIST: EnemyDef[] = [
     intentRule: { scripted: [], weighted: [] },
   },
   {
+    // —— 第二十六批：秘法师（第二幕，`CENTURION_AND_HEALER`）——
+    //
+    // ⚠ 它是全项目**唯一**给友军治疗 / 加力量的怪，两条效果原语（`heal_ally` /
+    //   `buff_ally`）都是为它加的。三招里有两招都是「照顾 0 号位 + 照顾自己」，
+    //   目标写死、一次 RNG 都不掷——**不要按护盾地精那条「随机友军」照搬**。
+    // ⚠ **爬升度分档本批不写**，理由同百夫长。
     id: "mystic",
     name: "秘法师",
+    // MonsterIds.h:183 `{{48,56},{50,58}}`；普通怪阈值 `setRandomHp(hpRng, asc >= 7)`
+    // （MonsterSpecific.cpp:56）。高档那一组本批不写。
     hpMin: 48,
     hpMax: 56,
     moves: [
       {
+        // MonsterSpecific.cpp:600-608：`healAmt = asc17 ? 20 : 16`，
+        //   `if (monstersAlive > 1) arr[0].heal(healAmt);` 然后 `heal(healAmt);`
+        // ⚠ **两只都回**（同伴活着时），不是「二选一」；且目标写死 0 号位、不看谁受伤。
+        // ⚠ 出招规则里的「缺血阈值」是 **21**（asc17）/ 16，与这里的**治疗量** 20 / 16
+        //   **不是同一个数**——asc17 下阈值 21 > 治疗量 20，照抄别对齐成一个常量。
         id: "mystic_heal",
         name: "治疗",
         effects: [{ kind: "heal_ally", amount: 16 }],
         intent: "buff",
       },
       {
+        // MonsterSpecific.cpp:588-598：`strAmts[] {2,3,4}` + `hallwayIdx = getTriIdx(asc,2,17)`，
+        //   `if (monstersAlive > 1) arr[0].buff<MS::STRENGTH>(n);` 然后 `buff<MS::STRENGTH>(n);`
+        // ⚠ 旧近似表写的是 `apply_power on: "all_enemies"`——在两只怪的编队里恰好同解，
+        //   但语义不同（那个是「场上每一只」，这个是「0 号位与自己」）。
         id: "mystic_buff",
         name: "鼓舞",
-        effects: [{ kind: "apply_power", power: "strength", amount: 2, on: "all_enemies" }],
+        effects: [{ kind: "buff_ally", power: "strength", amount: 2 }],
         intent: "buff",
       },
       {
+        // MonsterSpecific.cpp:581-586：`attackPlayerHelper(bc, asc2 ? 9 : 8)` +
+        // `addToBot(DebuffPlayer<PS::FRAIL>(2, true))`。⚠ 脆弱是**入队**，排在伤害之后
+        // （与带壳寄生虫的重击同形）。
         id: "mystic_attack",
         name: "法击",
-        effects: [{ kind: "deal_damage", amount: 8 }],
+        effects: [
+          { kind: "deal_damage", amount: 8 },
+          { kind: "apply_power", power: "frail", amount: 2, on: "target" },
+        ],
         intent: "attack",
       },
     ],
-    intentRule: {
-      scripted: [],
-      weighted: [
-        { move: "mystic_heal", weight: 35, maxInARow: 1 },
-        { move: "mystic_buff", weight: 30, maxInARow: 1 },
-        { move: "mystic_attack", weight: 35, maxInARow: 2 },
-      ],
-    },
+    // 出招规则见 sts-combat.ts 的 `MOVE_RULES.mystic`（缺血就强制治疗 → 40 那道阈值 →
+    // 连续限制）。**不追加任何 aiRng。**
+    // ⚠ 攻击白名单里只有 `MYSTIC_ATTACK_DEBUFF`（`MonsterMoves.h:475`），
+    //   `MYSTIC_HEAL` / `MYSTIC_BUFF` **都不在**——与这里的 buff / buff / attack 一致。
+    intentRule: { scripted: [], weighted: [] },
   },
 
   // —— 第二幕精英 ——
@@ -2761,8 +2799,19 @@ const ENCOUNTERS: Record<string, EncounterDef> = {
   shell_parasite: { id: "shell_parasite", enemies: ["shelled_parasite"], isBoss: false },
   chosen: { id: "chosen", enemies: ["chosen"], isBoss: false },
   snecko: { id: "snecko", enemies: ["snecko"], isBoss: false },
-  // 百夫长 + 秘法师：秘法师治疗/鼓舞百夫长，经典组合。
-  centurion_mystic: { id: "centurion_mystic", enemies: ["centurion", "mystic"], isBoss: false },
+  // 百夫长 + 秘法师：秘法师治疗 / 鼓舞百夫长，百夫长给秘法师加格挡。
+  // ⚠ 编队 id 用的是**参考的枚举名** `CENTURION_AND_HEALER`（不是 `centurion_mystic`）：
+  //   trace 文件名由参考枚举名小写而来（`split-traces.mjs`），而
+  //   `sts-combat-wiring.test.ts` 要求 `SUPPORTED_ENCOUNTERS` 与文件名一一对应。
+  //   第二十六批把原先的 `centurion_mystic` 改成了这个名字，与第二十五批那次
+  //   `shelled_parasite` → `shell_parasite` 同因。
+  // ⚠ **建怪顺序有语义**：百夫长在 0 号位、秘法师在 1 号位（MonsterGroup.cpp:193-196）。
+  //   百夫长的防守写死给 `arr[1]`、秘法师的治疗与鼓舞写死给 `arr[0]`，换个顺序两招全打空。
+  centurion_and_healer: {
+    id: "centurion_and_healer",
+    enemies: ["centurion", "mystic"],
+    isBoss: false,
+  },
   book_of_stabbing: { id: "book_of_stabbing", enemies: ["book_of_stabbing"], isBoss: false },
   // 地精首领带 2 只地精登场；死光了会继续召唤。
   gremlin_leader: {
@@ -2784,13 +2833,18 @@ const ENCOUNTERS: Record<string, EncounterDef> = {
     isBoss: false,
   },
   // —— 第二幕组合遭遇（既有敌人拼装）——
+  // 邪教徒 + 选民（MonsterGroup.cpp:230-233）：邪教徒 0 号位、选民 1 号位。
   cultist_and_chosen: {
     id: "cultist_and_chosen",
     enemies: ["cultist", "chosen"],
     isBoss: false,
   },
-  three_cultists: {
-    id: "three_cultists",
+  // 三邪教徒（MonsterGroup.cpp:412-416）。
+  // ⚠ id 是 `three_cultist`（**单数**）——参考的枚举就是 `MonsterEncounter::THREE_CULTIST`，
+  //   与 `THREE_BYRDS` / `THREE_SENTRIES` 那种复数不一致，但 trace 文件名跟着枚举名走。
+  //   第二十六批把原先的 `three_cultists` 改成了这个名字。
+  three_cultist: {
+    id: "three_cultist",
     enemies: ["cultist", "cultist", "cultist"],
     isBoss: false,
   },
@@ -2799,9 +2853,15 @@ const ENCOUNTERS: Record<string, EncounterDef> = {
     enemies: ["shelled_parasite", "fungi_beast"],
     isBoss: false,
   },
+  // 哨卫 + 球状守卫者（MonsterGroup.cpp:347-350）：**只有两只**，哨卫 0 号位。
+  // ⚠ 第二十六批修正：原先写的是 `["sentry", "spheric_guardian", "sentry"]`（三只、哨卫夹
+  //   球卫），那是凭印象写的。参考就是两句 `createMonster`，多一只会让 monsterHpRng 多掷
+  //   一次、整条流错位。
+  // ⚠ 哨卫的首招按**自己的下标**定（`idx % 2 == 0` 出射钉），所以「哨卫在 0 号位」是有
+  //   语义的：这里它固定先出射钉。
   sentry_and_sphere: {
     id: "sentry_and_sphere",
-    enemies: ["sentry", "spheric_guardian", "sentry"],
+    enemies: ["sentry", "spheric_guardian"],
     isBoss: false,
   },
   // —— 第三幕组合遭遇（几何体 shapes：爆破怪/斥力球/尖刺客 + 球卫/颚虫群）——
@@ -2939,13 +2999,13 @@ const ACT2_WEAK_POOL: readonly WeightedEncounter[] = [
 const ACT2_STRONG_POOL: readonly WeightedEncounter[] = [
   { id: "chosen", weight: 2 },
   { id: "snecko", weight: 2 },
-  { id: "centurion_mystic", weight: 2 },
+  { id: "centurion_and_healer", weight: 2 },
   { id: "shell_parasite", weight: 2 },
   { id: "snake_plant", weight: 1 },
   { id: "two_centurions", weight: 1 },
   { id: "spheric_guardian", weight: 1 },
   { id: "cultist_and_chosen", weight: 1 },
-  { id: "three_cultists", weight: 1 },
+  { id: "three_cultist", weight: 1 },
   { id: "shelled_parasite_and_fungi", weight: 1 },
   { id: "sentry_and_sphere", weight: 1 },
   { id: "chosen_and_byrds", weight: 1 },

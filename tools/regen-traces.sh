@@ -96,7 +96,16 @@ ENC_ALL="cultist jaw_worm jaw_worm_horde three_louse two_louse"
 #     （此前只有 2 例，本批实测 137 例——这个编队的仗比 `exordium_wildlife` 长得多）。
 #     ⚠ 同一批记着的「孢子云 addToTop ↔ addToBot」**没**关掉，仍是 0 例：亡语确实跑了
 #     （易伤层数、isSourceMonster 各有新背书），只是那一刻队列里没有别的动作能插在中间。
-ENC_V0_ACT2="spheric_guardian chosen snake_plant three_byrds two_thieves chosen_and_byrds shell_parasite shelled_parasite_and_fungi snecko"
+# 第二十六批：友方增益（百夫长 + 秘法师）+ 三个「已登记怪的新组合」。同样是**新追加的
+#   variant 26**（variant 23/24/25 的 encounters 一个字没动，那九个文件逐字节不变），
+#   牌组沿用 `BATCH_1 + SPOT_WEAKNESS`。
+#   ⚠ 两个文件名跟着参考枚举名走，与我们原先的近似表不同：`centurion_and_healer`
+#     （不是 `centurion_mystic`）、`three_cultist`（**单数**，不是 `three_cultists`）。
+#   ⚠ 本批给参考打了 `roll2` 补丁（带壳寄生虫的出招），它**确实改变**
+#     `shell_parasite` 与 `shelled_parasite_and_fungi` 两个已冻结文件的内容，
+#     所以那一次 `--install` 走的是 `ALLOW_CHANGED="shell_parasite shelled_parasite_and_fungi"`。
+#     理由与三条判据见 TODOS「已修正（参考侧已打补丁）」。
+ENC_V0_ACT2="spheric_guardian chosen snake_plant three_byrds two_thieves chosen_and_byrds shell_parasite shelled_parasite_and_fungi snecko centurion_and_healer three_cultist cultist_and_chosen sentry_and_sphere"
 ENC_V0_ASC0="small_slimes lots_of_slimes large_slime blue_slaver red_slaver looter exordium_thugs exordium_wildlife gremlin_gang gremlin_nob lagavulin three_sentries the_guardian slime_boss hexaghost $ENC_V0_ACT2"
 ENC_V0_ASC19="cultist@asc19 jaw_worm@asc19 jaw_worm_horde@asc19 two_louse@asc19 three_louse@asc19 small_slimes@asc19 lots_of_slimes@asc19 large_slime@asc19 blue_slaver@asc19 red_slaver@asc19 looter@asc19 exordium_thugs@asc19 exordium_wildlife@asc19 gremlin_gang@asc19 gremlin_nob@asc19 lagavulin@asc19 three_sentries@asc19 the_guardian@asc19 slime_boss@asc19 hexaghost@asc19"
 # ⚠ 必须拼成**单行**：policy_of 用 `case " $ENC_V0 " in *" $1 "*` 做匹配，中间夹一个换行会让

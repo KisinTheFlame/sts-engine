@@ -355,6 +355,13 @@ const ENCOUNTER: Record<string, string> = {
   SHELL_PARASITE: "shell_parasite",
   SHELLED_PARASITE_AND_FUNGI: "shelled_parasite_and_fungi",
   SNECKO: "snecko",
+  // —— 第二十六批：友方增益（百夫长 + 秘法师）+ 三个「已登记怪的新组合」，走 variant 26。
+  // ⚠ 两个名字与我们原先的近似表不同，本批跟着参考枚举名改了：
+  //   `CENTURION_AND_HEALER`（原 `centurion_mystic`）、`THREE_CULTIST`（**单数**）。
+  CENTURION_AND_HEALER: "centurion_and_healer",
+  THREE_CULTIST: "three_cultist",
+  CULTIST_AND_CHOSEN: "cultist_and_chosen",
+  SENTRY_AND_SPHERE: "sentry_and_sphere",
 };
 const MONSTER: Record<string, string> = {
   CULTIST: "cultist",
@@ -408,6 +415,12 @@ const MONSTER: Record<string, string> = {
   //   寄生虫在 0 号位——吸血攻击写死打/回 `arr[0]`，所以位置是有语义的。
   SHELLED_PARASITE: "shelled_parasite",
   SNECKO: "snecko",
+  // —— 第二十六批。⚠ 只有两只新怪：`CENTURION_AND_HEALER` 是百夫长（0 号位）+ 秘法师
+  //   （1 号位），下标有语义（防守写死给 `arr[1]`、治疗/鼓舞写死给 `arr[0]`）。
+  //   另外三个编队里的怪（邪教徒 / 选民 / 哨卫 / 球状守卫者）前面都已有映射；
+  //   `THREE_CULTIST` 里同一种怪出现三次，与三哨卫同形。
+  CENTURION: "centurion",
+  MYSTIC: "mystic",
   // ⚠ **分裂留下的空格**。参考的 `MonsterGroup::arr` 是定长 5 的数组，`monsterCount` 只是
   // 「dump 到第几格」；史莱姆王分裂时 `arr[0]` 与 `arr[2]` 被写、`monsterCount = 3`，
   // 于是 1 号格那只**从没被构造过**的默认 `Monster` 也被 dump 出来
@@ -536,6 +549,17 @@ const MOVE: Record<string, string> = {
   SNECKO_PERPLEXING_GLARE: "perplexing_glare",
   SNECKO_TAIL_WHIP: "tail_whip",
   SNECKO_BITE: "snecko_bite",
+  // —— 第二十六批：百夫长三条 + 秘法师三条 ——
+  // ⚠ 百夫长三条在我们这边带 `cent_` 前缀（裸名 `slash` / `fury` / `defend` 里
+  //   `defend` 太泛；比对虽是逐怪进行、重名不要紧，但前缀让 `MOVE_TURN_END` 的键更好读）。
+  CENTURION_SLASH: "cent_slash",
+  CENTURION_FURY: "cent_fury",
+  CENTURION_DEFEND: "cent_defend",
+  // ⚠ `MYSTIC_ATTACK_DEBUFF` 在我们这边叫 `mystic_attack`（数据表是一张平表，
+  //   招式 id 不能与别的怪重名）。
+  MYSTIC_HEAL: "mystic_heal",
+  MYSTIC_BUFF: "mystic_buff",
+  MYSTIC_ATTACK_DEBUFF: "mystic_attack",
   // 分裂留下的空格：那只默认 `Monster` 的 `moveHistory[0]` 是 `MMID::INVALID`
   // （`monsterMoveStrings[0] == "INVALID"`，MonsterMoves.h:215）。我们的空占位
   // `currentMove` 是空串。⚠ 这一条只有那个空格用得到——所有真怪在 `MonsterGroup::init`

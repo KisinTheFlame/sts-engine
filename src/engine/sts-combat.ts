@@ -1367,13 +1367,17 @@ const MOVE_RULES: Record<string, MoveForRoll> = {
   //  ② 连续限制**不同宽**：双重打击与吸取都看 `lastTwoMoves`（连两次才逼换），
   //     重击只看 `lastMove`（连一次就逼换）。
   //  ③ 阈值是 **20 / 60**。
-  //  ④⚠⚠ `roll2` 那次 `aiRng.random(20,99)` **照掷，但取值一定被短路吃掉**：它只在
-  //     `roll < 20` 的支里被赋值，而下面那句是 `roll < 60 || roll2 < 60` ——`roll < 20`
-  //     蕴含 `roll < 60`，所以 `||` 的左边恒真、右边永远不求值。于是这次掷骰**只影响
-  //     aiRng 计数器**，一点也不影响出招。这看着像参考的笔误（真实游戏是把同一个 `num`
-  //     覆盖掉再判，而这里 `roll` 是 `const int` 形参、改不了，作者才引入 `roll2`），
-  //     本批**照抄不改**、写进报告等裁定，详见 TODOS「已确认但尚未打补丁」。
-  //     ⚠ 千万别把它「优化」掉：次数是钉死的，去掉它 `rng.ai` 当场对不上。
+  //  ④⚠⚠ `roll2` 是「重击刚出过就重掷一个 [20,99] 来判 60 那道线」。
+  //     **参考原样是坏的，第二十六批给参考打了补丁**（`MonsterSpecific.cpp:2712-2724`）：
+  //     它原先写 `int roll2 = 100;` + `if (roll < 60 || roll2 < 60)`，而 `roll < 20` 蕴含
+  //     `roll < 60`，于是 `||` 的左边恒真、右边**永远不求值**——那次重掷的**取值**被短路
+  //     吃掉，只剩计数器可观察。真实游戏那边是
+  //     `num = AbstractDungeon.aiRng.random(20, 99);` 直接**覆盖同一个数**再判；参考里
+  //     `roll` 是 `const int` 形参改不了，作者才引入 `roll2`，却漏了把左边那半去掉。
+  //     补丁的形状是「`roll2` 初值取 `roll`、后面只判 `roll2`」= 覆盖语义，逐位等价。
+  //     裁定过程与三条判据见 TODOS「已修正（参考侧已打补丁）」。
+  //     ⚠⚠ 补丁**没有动那次掷骰**（位置与次数一个字没改，它已有 80 例背书），
+  //     只改了取值怎么被用。千万别把它「优化」掉：去掉它 `rng.ai` 当场对不上。
   shelled_parasite: (bc, m, roll) => {
     if (firstTurn(m)) {
       if (bc.ascension >= 17) {
@@ -1381,14 +1385,14 @@ const MOVE_RULES: Record<string, MoveForRoll> = {
       }
       return bc.rng.aiRng.randomBoolean() ? "double_strike" : "suck"; // ★ 追加一次 aiRng
     }
-    let roll2 = 100;
+    let roll2 = roll;
     if (roll < 20) {
       if (!lastMove(m, "fell")) {
         return "fell";
       }
-      roll2 = bc.rng.aiRng.random(20, 99); // ★ 追加一次 aiRng（取值被下面的短路吃掉，只有计数器可观察）
+      roll2 = bc.rng.aiRng.random(20, 99); // ★ 追加一次 aiRng（覆盖 roll2，下面只判它）
     }
-    if (roll < 60 || roll2 < 60) {
+    if (roll2 < 60) {
       return lastTwoMoves(m, "double_strike") ? "suck" : "double_strike";
     }
     if (!lastTwoMoves(m, "suck")) {
@@ -1412,6 +1416,74 @@ const MOVE_RULES: Record<string, MoveForRoll> = {
       return "tail_whip";
     }
     return "snecko_bite";
+  },
+
+  // —— 第二十六批 ——
+
+  // 百夫长：对齐 MonsterSpecific.cpp:2187-2216 CENTURION。**不追加任何 aiRng。**
+  // ⚠ 四处照抄：
+  //  ① 「秘法师还活着吗」= `bc.monsters.getAliveCount() > 1`，也就是 `monstersAlive`
+  //     （MonsterGroup.cpp:36-38），**不是**「数组里活着的个数」，也不是「1 号位那只活着」。
+  //     单怪的百夫长编队（参考里没有）会让它恒假，于是防守整招不出场。
+  //  ② 它**先算一次、后面用两次**（参考把 `mysticAlive` 声明在 switch case 顶部）：
+  //     两个「防守 or 狂怒」的分岔读的是同一个值。当前两处等价，照抄形状。
+  //  ③ 阈值是 **65**（`roll >= 65`），而且那一支**同时**要求「斩击之外的两招都没连出两次」
+  //     ——`!lastTwoMoves(DEFEND) && !lastTwoMoves(FURY)`，两个都要满足。
+  //  ④ 第二支的连续限制只看斩击（`!lastTwoMoves(SLASH)`），落空才走第三支。
+  // ⚠⚠ **`!mysticAlive` 那两支（狂怒连斩）在本批的 trace 里 0 例，是盲区**——不是抄错，
+  //   是**结构性不可达**：`CENTURION_AND_HEALER` 是全参考项目**唯一**带百夫长的编队
+  //   （`MonsterGroup.cpp:193-196` 是 `MonsterId::CENTURION` 的唯一出处），百夫长恒在 0 号位，
+  //   而 harness 的策略恒打 `firstAliveMonster` = 0 号位 → 秘法师永远死在百夫长之后。
+  //   ⚠ 换牌组救不回来：单体伤害只落在百夫长身上、群伤（劈砍 / 雷霆一击）两只平摊，
+  //   而秘法师每次治疗给两只各回 16 且自己血上限更低（回血更容易被上限吃掉）——
+  //   「秘法师先死」在任何牌组下都不成立。这与第十五批抢劫者逃跑那条同族
+  //   （「编队的成员结构本身」那一维），**关门条件是给 harness 加一条「打最右侧」的
+  //   目标策略轴**（与爬升度轴同构：DeckVariant 加个默认 0 的字段 + 文件名后缀）。
+  //   本批不做那个轴（那是第二个机制，见 WORKFLOW），如实记进 TODOS 盲区表。
+  //   ⚠ 真实游戏里「先秒奶妈」是标准打法，所以这一支**不是边角**——它只是我们量不到。
+  centurion: (bc, m, roll) => {
+    const mysticAlive = bc.monstersAlive > 1;
+    if (roll >= 65 && !lastTwoMoves(m, "cent_defend") && !lastTwoMoves(m, "cent_fury")) {
+      return mysticAlive ? "cent_defend" : "cent_fury";
+    }
+    if (!lastTwoMoves(m, "cent_slash")) {
+      return "cent_slash";
+    }
+    return mysticAlive ? "cent_defend" : "cent_fury";
+  },
+
+  // 秘法师：对齐 MonsterSpecific.cpp:2219-2244 MYSTIC。**不追加任何 aiRng。**
+  // ⚠⚠ 它是全项目**唯一**一条读生命值的出招规则，五处都要照抄：
+  //  ① 缺血阈值是 `asc17 ? 21 : 16`，**与治疗量（asc17 ? 20 : 16）不是同一个数**
+  //     ——asc17 下阈值 21 > 治疗量 20。别对齐成一个常量。
+  //  ② 判据是 `maxHp - curHp >= healNeedAmt`（**缺了多少**，不是「剩多少」）。
+  //  ③ 只看**自己**与**0 号位**两只，写死；而且 `knight` 那半还带 `knight.isAlive()`
+  //     ——参考的 `isAlive()` 是 `curHp > 0`（Monster.cpp:237），**不是**
+  //     `!isDeadOrEscaped()`。当前两者在这个编队里同解（百夫长不逃跑、不假死），
+  //     所以这里照抄成「血 > 0」而不是我们的 `alive` 字段，把差别留在原处。
+  //  ④ 短路顺序照抄：`自己缺血 || (knight 活着 && knight 缺血)`——C++ 的 `||` 与 `&&`
+  //     都短路，但这里两边都没有副作用，所以顺序不可观察。写成参考的形状即可。
+  //  ⑤ 第二支的连续限制**随爬升度变宽**：`asc17 ? !lastMove(ATTACK) : !lastTwoMoves(ATTACK)`
+  //     ——高层数只要上一招是法击就不许再来，低层数要连两次才拦。
+  // ⚠ 治疗与鼓舞的收尾都是**同步的真 rollMove**（见 `MOVE_TURN_END`），所以这条规则被调用时
+  //   治疗**已经生效**了：刚治完的那一回合缺血量已经回落，不会连着强制治疗第二次。
+  mystic: (bc, m, roll) => {
+    const healNeedAmt = bc.ascension >= 17 ? 21 : 16;
+    const knight = bc.monsters[0];
+    const knightNeedsHeal =
+      knight !== undefined && knight.hp > 0 && knight.maxHp - knight.hp >= healNeedAmt;
+    if (m.maxHp - m.hp >= healNeedAmt || knightNeedsHeal) {
+      return "mystic_heal";
+    }
+    const attackBlocked =
+      bc.ascension >= 17 ? lastMove(m, "mystic_attack") : lastTwoMoves(m, "mystic_attack");
+    if (roll >= 40 && !attackBlocked) {
+      return "mystic_attack";
+    }
+    if (!lastTwoMoves(m, "mystic_buff")) {
+      return "mystic_buff";
+    }
+    return "mystic_attack";
   },
 };
 
@@ -1919,6 +1991,32 @@ const MOVE_TURN_END: Record<string, MoveTurnEnd> = {
   // 撕咬 / 惑目 / 尾击都以 `addToBot(Actions::RollMove(idx))` 结尾
   // （MonsterSpecific.cpp:1147 / :1152 / :1162），也就是这张表的默认值。
   // 写进来反而多一份可以抄错的真相，所以留空（与第二十三批选民 / 食蛇草同理）。
+
+  // —— 百夫长 + 秘法师（第二十六批）：**「照顾友军」的三招都是同步的真 rollMove** ——
+  //
+  // 两只攻击招（`CENTURION_SLASH` / `CENTURION_FURY` / `MYSTIC_ATTACK_DEBUFF`）都是
+  // `addToBot(Actions::RollMove(idx))`（MonsterSpecific.cpp:573 / :578 / :584），
+  // 即这张表的默认值，不写进来。
+  //
+  // 而防守 / 治疗 / 鼓舞三条 case 的最后一句都是裸的 `rollMove(bc);`
+  // （MonsterSpecific.cpp:567 / :596 / :606）——与带壳寄生虫的眩晕同族的**第六形态**：
+  // 同步的**真** rollMove（掷一次 `aiRng.random(99)` 并真的选出新意图），
+  // 不是 `noOpRollMove` 那种掷完丢掉，也不是入队的 `Actions::RollMove`。
+  // ⚠⚠ **同步这件事在秘法师身上真的可观察**：它的三个效果都是同步的（治疗 / 加力量 /
+  //   加格挡都不入队），所以 rollMove 跑的时候血量与力量**已经变了**——而秘法师的
+  //   `getMoveForRoll` 正是读「自己或 0 号位缺了多少血」。写成入队的 `"roll"`
+  //   会让它读到治疗**之前**的血量，于是刚治完还会再强制治疗一次。
+  // ⚠ 与眩晕那条的差别：眩晕是 `setMove(FELL); rollMove(bc);` 两句（一次推两格历史），
+  //   这三条**只有** `rollMove(bc)` 一句。别照搬邻居。
+  "centurion/cent_defend": (bc, m) => {
+    rollMove(bc, m); // ★ 消耗一次 aiRng（同步的真 rollMove，不是 no_op）
+  },
+  "mystic/mystic_heal": (bc, m) => {
+    rollMove(bc, m); // ★ 消耗一次 aiRng（同步的真 rollMove）
+  },
+  "mystic/mystic_buff": (bc, m) => {
+    rollMove(bc, m); // ★ 消耗一次 aiRng（同步的真 rollMove）
+  },
 };
 
 /**
@@ -2711,6 +2809,19 @@ function overwriteMove(m: CombatMonster, move: string): void {
  *     | `SNECKO_PERPLEXING_GLARE`                   | 否         | —                                | debuff        |
  *     ⚠ 寄生虫那三条在参考里的顺序是 DOUBLE_STRIKE / **SUCK** / FELL，而枚举声明序是
  *     DOUBLE_STRIKE / FELL / STUNNED / SUCK——又一个「按名字找、别按位置数」的例子。
+ *   * **第二十六批的两只**（逐条核对 `MonsterMoves.h:439-440` / `:475`）：
+ *     | 参考招式                        | 在白名单？ | 我们的键                | 数据表 intent |
+ *     | ------------------------------- | ---------- | ----------------------- | ------------- |
+ *     | `CENTURION_SLASH` (`:439`)      | **是**     | `centurion/cent_slash`  | attack        |
+ *     | `CENTURION_FURY` (`:440`)       | **是**     | `centurion/cent_fury`   | attack        |
+ *     | `CENTURION_DEFEND`              | 否         | —                       | defend        |
+ *     | `MYSTIC_ATTACK_DEBUFF` (`:475`) | **是**     | `mystic/mystic_attack`  | attack        |
+ *     | `MYSTIC_HEAL`                   | 否         | —                       | buff          |
+ *     | `MYSTIC_BUFF`                   | 否         | —                       | buff          |
+ *     ⚠ 白名单里百夫长只有两条（枚举声明序是 SLASH / FURY / DEFEND，参考的白名单也按这个序
+ *     写，但秘法师那三条只挑了 ATTACK_DEBUFF 一条、位置在 `:475` 而不是 `:475-477`）。
+ *     本批另外两个新编队（`THREE_CULTIST` / `CULTIST_AND_CHOSEN` / `SENTRY_AND_SPHERE`）
+ *     里的怪全是已登记的，白名单一条都不用加。
  *
  * ⚠⚠ **第二十四批起这张表第一次有预言机**：`isMonsterAttacking` 的唯一读者是觅敌之弱，
  * 而第十三批之后的编队都走 `ENC_V0`（只有 variant 0 那副 21 张牌组，里面没有它）。
@@ -2743,6 +2854,11 @@ const MONSTER_ATTACK_MOVES: ReadonlySet<string> = new Set([
   "blue_slaver/rake",
   "red_slaver/rs_stab",
   "red_slaver/scrape",
+  // 百夫长（`:439-440`，第二十六批）。⚠ 防守不在——它给 1 号位加格挡、不带伤害。
+  "centurion/cent_slash",
+  "centurion/cent_fury",
+  // 秘法师（`:475`，第二十六批）。⚠ 治疗与鼓舞都不在（纯 buff），只有法击在。
+  "mystic/mystic_attack",
   // 选民（`:441-443`，第二十三批）
   "chosen/poke",
   "chosen/zap",
@@ -8108,6 +8224,56 @@ function takeTurn(bc: BattleContext, m: CombatMonster): string | null {
       const amount = ascValue(bc, eff.amount, eff.ascAmount);
       const src = bc.monsters.indexOf(m);
       addToBot(bc, (c) => gainBlockRandomEnemy(c, src, amount));
+    } else if (eff.kind === "gain_block_ally_fixed") {
+      // 给**写死 1 号位**的友军加格挡（百夫长的防守，第二十六批）。参考是
+      //   `if (bc.monsters.getAliveCount() > 1) { auto &mystic = bc.monsters.arr[1];
+      //    mystic.addBlock(asc17 ? 20 : 15); }`（MonsterSpecific.cpp:562-569）
+      // ⚠ 与护盾地精那条 `gain_block_ally` 三处都不同（见 `Effect` 的注释）：目标写死、
+      //   **同步**执行、候选为空时什么都不做（不退化成「给自己加」）。
+      // ⚠ `getAliveCount()` 就是 `monstersAlive`（MonsterGroup.cpp:36-38）。判的是「场上
+      //   还有别人」，**不是**「1 号位那只活着」——两者在两怪编队里同解，参考写的是前者。
+      // ⚠ 目标不判活：门是 `monstersAlive > 1`，进门之后直接 `arr[1].addBlock(...)`。
+      //   给一只已死的怪加格挡在参考里是无害的（它不会再行动），照抄不要顺手补判活。
+      if (bc.monstersAlive > 1) {
+        const ally = bc.monsters[1];
+        if (ally !== undefined) {
+          ally.block += ascValue(bc, eff.amount, eff.ascAmount);
+        }
+      }
+    } else if (eff.kind === "heal_ally") {
+      // 治疗 **0 号位 + 自己**（秘法师的治疗，第二十六批）。参考是
+      //   `const auto healAmt = asc17 ? 20 : 16;`
+      //   `if (bc.monsters.monstersAlive > 1) { auto &knight = bc.monsters.arr[0];
+      //    knight.heal(healAmt); }`
+      //   `heal(healAmt);`（MonsterSpecific.cpp:600-608）
+      // ⚠ 三处照抄：① 目标写死 0 号位、不看谁受伤、不掷 RNG；② 自己**无条件**也回
+      //   （不是二选一）；③ 两句都是**同步**的——紧随其后那次同步 rollMove 读到的是
+      //   治疗**之后**的血量，而它的判据正是「缺了多少血」。
+      // ⚠ 门用的是 `monstersAlive`（与百夫长那条的 `getAliveCount()` 同值、两个访问器）。
+      const healAmt = ascValue(bc, eff.amount, eff.ascAmount);
+      if (bc.monstersAlive > 1) {
+        const knight = bc.monsters[0];
+        if (knight !== undefined) {
+          monsterHeal(knight, healAmt);
+        }
+      }
+      monsterHeal(m, healAmt);
+    } else if (eff.kind === "buff_ally") {
+      // 给 **0 号位 + 自己**加一个 Power（秘法师的鼓舞，第二十六批）。参考是
+      //   `const int strAmts[] {2,3,4}; const auto strBuff = strAmts[hallwayIdx];`
+      //   `if (bc.monsters.monstersAlive > 1) { arr[0].buff<MS::STRENGTH>(strBuff); }`
+      //   `buff<MS::STRENGTH>(strBuff);`（MonsterSpecific.cpp:588-598）
+      // 形状与 `heal_ally` 逐字对应（写死 0 号位、自己无条件、两句都同步）。
+      // ⚠ `buff` 是**累加**（`setStatus(getStatus + n)`），不是覆盖——鼓舞两次就是 +4。
+      const { power } = eff;
+      const strBuff = ascValue(bc, eff.amount, eff.ascAmount);
+      if (bc.monstersAlive > 1) {
+        const knight = bc.monsters[0];
+        if (knight !== undefined) {
+          addPower(knight.powers, power, strBuff);
+        }
+      }
+      addPower(m.powers, power, strBuff);
     } else if (eff.kind === "steal_gold") {
       // 偷金：**同步**执行（参考的 `stealGoldFromPlayer` 是裸调用，不是 addToBot），
       // 排在同一条 case 里的 attackPlayerHelper **之前**。
@@ -8857,6 +9023,15 @@ export const SUPPORTED_ENCOUNTERS: readonly string[] = [
   "shell_parasite",
   "shelled_parasite_and_fungi",
   "snecko",
+  // —— 第二十六批：友方增益（百夫长 + 秘法师）+ 三个「已登记怪的新组合」。走 harness 新
+  //   追加的 variant 26，牌组同样是 `BATCH_1 + SPOT_WEAKNESS`。
+  //   ⚠ 两个编队 id 跟着参考枚举名改过：`centurion_and_healer`（原 `centurion_mystic`）、
+  //     `three_cultist`（**单数**，原 `three_cultists`）。
+  //   ⚠ 同样**只有 asc0 的背书**（百夫长与秘法师的 `ascCalibrated` 都没置）。
+  "centurion_and_healer",
+  "three_cultist",
+  "cultist_and_chosen",
+  "sentry_and_sphere",
 ];
 
 export function isEncounterSupported(encounterId: string): boolean {

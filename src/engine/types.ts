@@ -234,6 +234,18 @@ export type Effect =
   | { kind: "enter_stance"; stance: PlayerStance }
   // 敌人用：给一名随机存活友军加格挡（护盾地精保护）。
   | { kind: "gain_block_ally"; amount: number; ascAmount?: AscTier[] }
+  // 敌人用：给**写死 1 号位**的友军加格挡（百夫长的防守，第二十六批）。对齐
+  // `MonsterSpecific.cpp:562-569`：`if (getAliveCount() > 1) { auto &mystic = arr[1];
+  // mystic.addBlock(asc17 ? 20 : 15); }`。
+  //
+  // ⚠ 与上面那条 `gain_block_ally`（护盾地精）**是三件不同的事**，别复用：
+  //   ① 目标是**写死的 1 号位**，不是随机友军——一次 aiRng 都不掷；
+  //   ② 它是**同步** `addBlock`，不是 `addToBot(GainBlockRandomEnemy)`；
+  //   ③ 候选为空（只剩自己）时**什么都不做**，而护盾地精那条会退化成「给自己加」。
+  // ⚠ 百夫长自己**一点格挡都不加**——这一招是纯粹「护住奶妈」。它与出招规则是配套的：
+  //   秘法师死了之后 `getMoveForRoll` 就不再返回防守（改出狂怒连斩），所以「场上只剩自己
+  //   还出防守」这个局面在参考的内容集合里压根不存在。
+  | { kind: "gain_block_ally_fixed"; amount: number; ascAmount?: AscTier[] }
   // sync：敌人专用，且**只对 `on: "target"` 有意义**（`on: "self"` 在参考里一律是同步的
   // `buff<MS::X>()`）。给玩家上减益同样有两种写法并存：绝大多数是
   // `addToBot(Actions::DebuffPlayer<...>)`，而拉加维林的吸取灵魂写的是
@@ -286,8 +298,25 @@ export type Effect =
   // ⚠ 目标写死 **0 号位**（连荆棘/火焰屏障反弹给谁也是 0），不是「自己」——见
   //   `vampireAttack` 的注释：参考的内容集合里带壳寄生虫恒在 0 号位，故不产生分歧。
   | { kind: "vampire_attack"; amount: number; ascAmount?: AscTier[] }
-  // 敌人用：治疗一名受伤的友军（秘法师；无受伤友军则治自己）。
-  | { kind: "heal_ally"; amount: number }
+  // 敌人用：治疗 **0 号位的友军 + 自己**（秘法师的治疗，第二十六批）。对齐
+  // `MonsterSpecific.cpp:600-608`：
+  //   `if (monstersAlive > 1) { auto &knight = arr[0]; knight.heal(amt); } heal(amt);`
+  //
+  // ⚠ **不是**「治一名受伤的友军，没有就治自己」（这条注释在第二十六批之前就是这么写的、
+  //   而且是错的）。参考里三处都要照抄：
+  //   ① 目标写死 **0 号位**，不看谁受伤、不掷任何 RNG；
+  //   ② 自己**无条件**也回同样的量——不是「二选一」，同伴活着时两只都回；
+  //   ③ 两句都是**同步**的，所以紧随其后那次同步 rollMove 已经看得见新血量
+  //      （秘法师的出招规则读的正是「自己或 0 号位缺了多少血」，见 `MOVE_RULES.mystic`）。
+  // ⚠ `heal` 本身带上限钳制（`curHp = min(maxHp, curHp + amount)`，Monster.cpp:269-277）。
+  | { kind: "heal_ally"; amount: number; ascAmount?: AscTier[] }
+  // 敌人用：给 **0 号位的友军 + 自己**加一个 Power（秘法师的鼓舞，第二十六批）。对齐
+  // `MonsterSpecific.cpp:588-598`：
+  //   `if (monstersAlive > 1) { arr[0].buff<MS::STRENGTH>(n); } buff<MS::STRENGTH>(n);`
+  // 形状与 `heal_ally` 逐字对应（写死 0 号位、自己无条件、两句都同步），只是换成 buff。
+  // ⚠ 与 `apply_power` + `on: "all_enemies"` **不是一回事**：那个是「场上每一只」，
+  //   这个是「0 号位与自己」——三只以上的编队里两者会分岔（当前没有这样的编队）。
+  | { kind: "buff_ally"; power: PowerId; amount: number; ascAmount?: AscTier[] }
   // 敌人用：召唤若干敌人加入战斗（地精首领召唤地精；新生者本回合不行动）。
   | { kind: "summon"; defIds: string[] }
   // 敌人用：**分裂**——本敌人当场被 `splitInto` 那两只顶替（对齐 `Monster::largeSlimeSplit`）。
