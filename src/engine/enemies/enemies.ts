@@ -2284,41 +2284,97 @@ const ENEMY_LIST: EnemyDef[] = [
     intentRule: { scripted: [], weighted: [] },
   },
 
-  // —— 第三幕 Boss：觉醒者（死亡后复活二阶段）——
+  // —— 第三幕 Boss：觉醒者（两阶段 / 假死，第三十七批按参考逐位校准）——
   {
     id: "awakened_one",
     name: "觉醒者",
+    // MonsterIds.h:155 `{{300,300},{300,320}}`；`setRandomHp(hpRng, asc >= 9)`
+    //（MonsterSpecific.cpp:76-89，**Boss** 那一档）。
+    // ⚠ 上下界相同**照样掷一次**（`Random::random(int,int)` 无条件 `++counter`）——
+    //   与守卫者的 `{240,240}` 同族，不是 `hpNoRoll`。
+    // ⚠ 二阶段的血量**不读这张表**：复活那条 case 写死 `maxHp = asc9 ? 320 : 300`
+    //   （MonsterSpecific.cpp:1712），是与这里并列的**第二个字面量**。旧近似表那个
+    //   `reviveHp` 字段本批删掉——它从来没有被任何代码读过。
     hpMin: 300,
     hpMax: 300,
-    reviveHp: 300,
+    // preBattleAction 见 sts-combat.ts 的 `PRE_BATTLE_ACTION.awakened_one`
+    //（MonsterSpecific.cpp:186-193）：asc4 才有的 +2 力量、CURIOSITY 1（asc19 是 2）、
+    // REGEN 10（asc19 是 15）。⚠ 参考在那里注着 `// buff minion leader only in stage 2`
+    // ——`MINION_LEADER` 是**复活那条 case** 才上的，开局没有。
     moves: [
       {
+        // 斩击（MonsterSpecific.cpp:1724-1731）：`attackPlayerHelper(bc, 20)`。
+        // ⚠ **一阶段专属**，参考没有任何 asc 分档（20 是写死的）。
+        // 收尾是裸的 `addToBot(Actions::RollMove(idx))`，即 `MOVE_TURN_END` 的默认值。
         id: "aw_slash",
         name: "斩击",
         effects: [{ kind: "deal_damage", amount: 20 }],
         intent: "attack",
       },
       {
+        // 灵魂打击（MonsterSpecific.cpp:1743-1750）：`attackPlayerHelper(bc, 6, 4)`
+        // ——四段、每段 6。**一阶段专属**，同样没有 asc 分档。收尾默认。
         id: "soul_strike",
         name: "灵魂打击",
         effects: [{ kind: "deal_damage_multi", amount: 6, times: 4 }],
         intent: "attack",
       },
       {
-        id: "aw_buff",
-        name: "汲取",
-        effects: [{ kind: "apply_power", power: "strength", amount: 2, on: "self" }],
-        intent: "buff",
+        // 重生（MonsterSpecific.cpp:1711-1722）：**假死之后的复活**，七句状态机 + 两句收尾。
+        // ⚠ 它**从来不由 roll 掷出来**：`Monster::die` 的第一个分支
+        //   `setMove(MMID::AWAKENED_ONE_REBIRTH)` 写进去（Monster.cpp:290），而出招规则里
+        //   `if (halfDead) return REBIRTH;` 那一支只是「假死期间无论如何还是它」的兜底。
+        // ⚠ 它**不在** `isMoveAttack` 白名单里（MonsterMoves.h:422-426 只收另外五条）。
+        // ⚠ 意图 `unknown`：真实游戏这一格显示的是「昏迷」，与暗影客的重生/复活同族。
+        id: "rebirth",
+        name: "重生",
+        effects: [{ kind: "awakened_rebirth" }],
+        intent: "unknown",
+      },
+      {
+        // 黑暗回响（MonsterSpecific.cpp:1702-1709）：`attackPlayerHelper(bc, 40)`。
+        // ⚠ **二阶段的开场必出招**——复活那条 case 的收尾是同步 `setMove(DARK_ECHO)`，
+        //   所以复活之后紧接着的那个怪物回合恒是它。收尾默认（`addToBot(RollMove)`）。
+        id: "dark_echo",
+        name: "黑暗回响",
+        effects: [{ kind: "deal_damage", amount: 40 }],
+        intent: "attack",
+      },
+      {
+        // 污泥（MonsterSpecific.cpp:1733-1741）：
+        //     attackPlayerHelper(bc, 18);
+        //     bc.addToBot( Actions::ShuffleTempCardIntoDrawPile(CardId::VOID) );
+        //     bc.addToBot( Actions::RollMove(idx) );
+        // ⚠ 三处照抄：
+        //  ① 塞牌是**入队**的（不是 `.actFunc(bc)`），排在伤害之后、收尾之前；
+        //  ② 去向是**抽牌堆**，`count` 默认 1 → 抽牌堆非空时**掷一次 cardRandomRng** 选插入位
+        //     （与斥力怪那两张恍惚同一条原语）；
+        //  ③ 塞的是**虚无（VOID）**，本项目第一张「抽到时有效果」的状态牌
+        //     （`CardManager::draw` 里 `bc.player.energy = std::max(0, energy-1)`，
+        //     CardManager.cpp:426-429）。它打不出（费用哨兵 -2）、是虚无牌（回合末消耗）。
+        id: "sludge",
+        name: "污泥",
+        effects: [
+          { kind: "deal_damage", amount: 18 },
+          { kind: "add_card", cardId: "void", pile: "draw", count: 1 },
+        ],
+        // ⚠ `intent` 只管渲染（真实游戏这一格是「攻击 + debuff」双意图，而我们的
+        //   `EnemyIntentKind` 五个值互斥）。**攻击分类走 `MONSTER_ATTACK_MOVES` 白名单**，
+        //   与这个字段无关——同族的先例是球状守卫者的「攻击削弱」。
+        intent: "attack",
+      },
+      {
+        // 冲撞（MonsterSpecific.cpp:1752-1759）：`attackPlayerHelper(bc, 10, 3)`
+        // ——三段、每段 10。**二阶段专属**，没有 asc 分档。收尾默认。
+        id: "aw_tackle",
+        name: "冲撞",
+        effects: [{ kind: "deal_damage_multi", amount: 10, times: 3 }],
+        intent: "attack",
       },
     ],
-    intentRule: {
-      scripted: [],
-      weighted: [
-        { move: "aw_slash", weight: 45, maxInARow: 2 },
-        { move: "soul_strike", weight: 35, maxInARow: 1 },
-        { move: "aw_buff", weight: 20, maxInARow: 1 },
-      ],
-    },
+    // 出招规则见 sts-combat.ts 的 `MOVE_RULES.awakened_one`（MonsterSpecific.cpp:3280-3328）。
+    // 旧近似表那份加权（45/35/20，还带一条参考里根本不存在的「汲取」）与参考完全不同，本批弃用。
+    intentRule: { scripted: [], weighted: [] },
   },
 
   // —— 第三幕 Boss：时间吞噬者（时间扭曲 + 半血加速）——
@@ -3810,7 +3866,15 @@ const ENCOUNTERS: Record<string, EncounterDef> = {
   transient: { id: "transient", enemies: ["transient"], isBoss: false },
   two_orb_walkers: { id: "two_orb_walkers", enemies: ["orb_walker", "orb_walker"], isBoss: false },
   giant_head: { id: "giant_head", enemies: ["giant_head"], isBoss: false },
-  awakened_one: { id: "awakened_one", enemies: ["awakened_one"], isBoss: true },
+  // 觉醒者（MonsterGroup.cpp:179-184，第三十七批）：**三只**——两只邪教徒 + 觉醒者，
+  // 而且觉醒者在 **2 号位**（最后一格）。
+  // ⚠ 旧近似表写的是单怪，那是错的：邪教徒每回合 +3 力量的仪式正是这场仗的时间压力来源，
+  //   而觉醒者排在最后一格意味着 harness 默认的 `firstAliveMonster` 会先啃两只邪教徒。
+  awakened_one: {
+    id: "awakened_one",
+    enemies: ["cultist", "cultist", "awakened_one"],
+    isBoss: true,
+  },
   time_eater: { id: "time_eater", enemies: ["time_eater"], isBoss: true },
   nemesis: { id: "nemesis", enemies: ["nemesis"], isBoss: false },
   // ⚠ 第十九批把它从 `guardian` 改名成 `the_guardian`：编队 id 必须与参考的

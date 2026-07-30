@@ -93,7 +93,32 @@ export type PowerId =
   // ⚠ 怪物侧的荆棘**只增不减**：开局 `{3,4,7}[getTriIdx(asc,2,17)]`，增生尖刺每次 +2，
   //   而出招规则攒够 6 次就封顶（asc0 上限 15）。
   | "thorns"
-  | "regen" // 再生：每回合结束回复 = 层数的生命，然后层数 -1
+  // 再生（觉醒者，第三十七批第一次有宿主）：**怪物身上**，`preBattleAction` 上 10 层
+  // （asc19 是 15）。
+  // ⚠ 唯一的读点是 `Monster::applyEndOfTurnTriggers` 的**第五句**
+  //   （金属化 → 易塑 → 镀甲 → 虚无缥缈 → **再生** → 枷锁，Monster.cpp:59-61）：
+  //       if (hasStatus<MS::REGEN>()) { heal(getStatus<MS::REGEN>()); }
+  // ⚠⚠ **怪物侧的再生一层都不掉**——参考这里只有 `heal`，没有任何 `decrementStatus`。
+  //   玩家侧那条（回合末回血再 -1 层，`Player::applyAtEndOfRoundPowers`）是**另一回事**，
+  //   两边共用这一个 PowerId（harness 两边都 dump 成 `REGEN`），但语义不同，别互相顶替。
+  // ⚠ `Monster::heal` 是 `curHp = std::min(maxHp, curHp + amount)`（Monster.cpp:276），
+  //   所以满血时这一层白加、也不会溢出。
+  // ⚠ 半死的觉醒者**不吃这一条**：`applyEndOfRoundPowers` 的两个循环都跳过 `isDying()` 的怪，
+  //   而半死必然伴随 `curHp == 0`。所以假死期间它不会被自己的再生救回来。
+  | "regen"
+  // 好奇心（觉醒者，第三十七批）：**怪物身上**，`preBattleAction` 上 1 层（asc19 是 2）。
+  // ⚠⚠ **参考里它是一个纯粹的标记：唯一的读点被整段注释掉了。**
+  //   真实游戏的语义是「玩家每打出一张能力牌，此怪 +层数 力量」，而参考的那段
+  //   （`BattleContext::onUsePowerCard` 的最末，BattleContext.cpp:1909-1912）写着
+  //       // auto &m = monsters.optionMap[2];
+  //       // if (m.hasStatusInternal<MS::CURIOSITY>()) { m.buff<MS::STRENGTH>(...); }
+  //   ——连怪物下标都是写死的 2。**照抄参考的实际行为（什么都不做）**：补上它就没有预言机
+  //   了（预言机就是参考本身）。这是「参考与真实游戏分歧」的候选，见 TODOS 的待裁定。
+  // ⚠ 它照样**必须建模**：它进怪物快照（开局那一帧就是 `CURIOSITY: 1`），而且
+  //   `Monster::die` 的觉醒者分支会 `removeStatus<MS::CURIOSITY>()` 把它摘掉
+  //   ——所以「假死之后它从快照里消失」是逐帧可比对的。
+  // ⚠ 复活那条 case **不补回来**（与暗影客重生时补 REGROW 正相反），二阶段身上没有它。
+  | "curiosity"
   // 镀甲（带壳寄生虫，第二十五批）：两处协同，都在 sts-combat.ts 里。
   //  ① **回合末加 = 层数的格挡**（`applyEndOfTurnTriggers`，Monster.cpp:51-52，
   //     是同步 `addBlock`，排在金属化与易塑之后）；
@@ -772,6 +797,27 @@ export type Effect =
   //   **疑问**不是结论，照抄它实际做的（`die` 里已经 `resetAllStatusEffects()` 清空过，
   //   这里只补回 REGROW）。
   | { kind: "reincarnate" }
+  // 敌人用：**觉醒者的复活**（第三十七批）。对齐 `MMID::AWAKENED_ONE_REBIRTH` 那条 case 的
+  // **前七句**（MonsterSpecific.cpp:1711-1720，末尾两句 `setMove` + `noOpRollMove` 是收尾，
+  // 见 `MOVE_TURN_END`）：
+  //   ```cpp
+  //   maxHp = asc9 ? 320 : 300;
+  //   curHp = maxHp;
+  //   halfDead = false;
+  //   miscInfo = true;                     // ← 二阶段锁存位，出招规则读它
+  //   strength = std::max(0, strength);    // ← **直接写数值字段**，不碰 statusBits
+  //   ++bc.monsters.monstersAlive;
+  //   buff<MS::MINION_LEADER>();           // ← 从此「它一死当场判胜」
+  //   ```
+  // ⚠⚠ **与暗影客的 `reincarnate` 是两条完全不同的 case，别复用**，差别有五处：
+  //  ① 血量是**写死的 300/320**（不是 `maxHp / 2`），而且**连 `maxHp` 一起重写**；
+  //  ② 多一个 `miscInfo = true` 的阶段锁存位（暗影客可以反复重生，觉醒者只能一次）；
+  //  ③ 多一句 `strength = max(0, strength)`；
+  //  ④ 上的是 `MINION_LEADER` 而不是补回 `REGROW`（`die` 的觉醒者分支根本没清状态——
+  //     它走的是逐个 `removeDebuffs()`，不是 `resetAllStatusEffects()`）；
+  //  ⑤ 收尾是 `setMove(DARK_ECHO)` + **同步 `noOpRollMove`**（暗影客是同步的**真** rollMove）。
+  // ⚠ 不带参数：七句里没有一句是「数据」，全是引擎侧的状态机。asc9 那一档写在实现里。
+  | { kind: "awakened_rebirth" }
   // sync：敌人专用。参考塞状态牌同样**两种写法并存**——史莱姆们是
   // `addToBot(Actions::MakeTempCardInDiscard(...))`，而史莱姆王的黏液喷射写的是
   // `Actions::MakeTempCardInDiscard({SLIMED}, 3).actFunc(bc)`（MonsterSpecific.cpp:1112）

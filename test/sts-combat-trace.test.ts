@@ -331,6 +331,14 @@ const CARD: Record<string, string> = {
   // ⚠ 它是**虚无（ethereal）**：回合末没打出去就被消耗，`cards.ts:3450` 已登记该属性，
   //   asc19 的 trace 里逐帧可见（手牌 → 消耗堆）。
   ASCENDERS_BANE: "ascenders_bane",
+  // —— 第三十七批：觉醒者的污泥洗进**抽牌堆**的那张状态牌 ——
+  // ⚠ 它与 BURN / WOUND / DAZED 同族（费用哨兵 -2、`cardCanUse` 恒假），所以**不进
+  //   `CARD_RULES`**、也不能进 `check-coverage.mjs` 的 `--no-upgrade` 段；
+  //   但它躺在抽牌堆 / 手牌 / 消耗堆的快照里，映射必须有。
+  // ⚠ 它是本项目**第一张「抽到时有效果」的状态牌**：`CardManager::draw` 里
+  //   `bc.player.energy = std::max(0, energy-1)`（CardManager.cpp:426-429），见
+  //   sts-combat 的 `drawOneCard`。⚠ 它还是**虚无牌**（回合末没打出去就被消耗）。
+  VOID: "void",
 };
 const ENCOUNTER: Record<string, string> = {
   CULTIST: "cultist",
@@ -438,6 +446,10 @@ const ENCOUNTER: Record<string, string> = {
   //     **两只 `DAGGER`**（1 / 4 号位），法师在中间的 2 号位——0 与 3 号位是预留空格。
   NEMESIS: "nemesis",
   REPTOMANCER: "reptomancer",
+  // —— 第三十七批：走 harness 新追加的 variant 37（variant 36 的 encounters 一个字没动）。
+  //   ⚠ 编队与它建的 Boss **同名**，但它一共建**三只**：`CULTIST` / `CULTIST` /
+  //     `AWAKENED_ONE`（MonsterGroup.cpp:179-184），觉醒者在**最后一格（2 号位）**。
+  AWAKENED_ONE: "awakened_one",
 };
 const MONSTER: Record<string, string> = {
   CULTIST: "cultist",
@@ -547,6 +559,13 @@ const MONSTER: Record<string, string> = {
   NEMESIS: "nemesis",
   REPTOMANCER: "reptomancer",
   DAGGER: "dagger",
+  // —— 第三十七批：觉醒者（编队里另外两只是早就登记的邪教徒）。
+  //   ⚠ 它在快照里最显眼的一段是**假死那几帧**：`hp: 0` / `alive: false` /
+  //     `halfDead: true` / `move: AWAKENED_ONE_REBIRTH`，而且 `CURIOSITY` 与被玩家挂上的
+  //     虚弱 / 易伤全部消失（`removeDebuffs()` + `removeStatus<CURIOSITY>()`），
+  //     只剩 `REGEN: 10`。复活那一帧 `hp/maxHp` 直接回到 300/300 并多出 `MINION_LEADER: 1`。
+  //   ⚠ `REGEN` 整场恒是 10：怪物侧的再生**不递减**。
+  AWAKENED_ONE: "awakened_one",
   // ⚠ **分裂留下的空格**。参考的 `MonsterGroup::arr` 是定长 5 的数组，`monsterCount` 只是
   // 「dump 到第几格」；史莱姆王分裂时 `arr[0]` 与 `arr[2]` 被写、`monsterCount = 3`，
   // 于是 1 号格那只**从没被构造过**的默认 `Monster` 也被 dump 出来
@@ -791,6 +810,19 @@ const MOVE: Record<string, string> = {
   REPTOMANCER_BIG_BITE: "big_bite",
   DAGGER_STAB: "dagger_stab",
   DAGGER_EXPLODE: "dagger_explode",
+  // —— 第三十七批：觉醒者六条（一阶段两条 + 重生 + 二阶段三条）——
+  // ⚠ **重生不是掷出来的**：`Monster::die` 的第一个分支 `setMove(AWAKENED_ONE_REBIRTH)`
+  //   写进去，所以它只出现在**半死**的那几帧里（`halfDead: true`、`alive: false`）。
+  // ⚠ **黑暗回响也不是掷出来的**：重生那条 case 的收尾是同步 `setMove(DARK_ECHO)` +
+  //   `noOpRollMove`，所以复活之后紧接着的那个怪物回合恒是它。
+  // ⚠ 一阶段与二阶段的招式集**互不相交**：斩击 / 灵魂打击只在 `miscInfo == 0` 时掷得出，
+  //   污泥 / 冲撞只在二阶段。
+  AWAKENED_ONE_SLASH: "aw_slash",
+  AWAKENED_ONE_SOUL_STRIKE: "soul_strike",
+  AWAKENED_ONE_REBIRTH: "rebirth",
+  AWAKENED_ONE_DARK_ECHO: "dark_echo",
+  AWAKENED_ONE_SLUDGE: "sludge",
+  AWAKENED_ONE_TACKLE: "aw_tackle",
   // 分裂留下的空格：那只默认 `Monster` 的 `moveHistory[0]` 是 `MMID::INVALID`
   // （`monsterMoveStrings[0] == "INVALID"`，MonsterMoves.h:215）。我们的空占位
   // `currentMove` 是空串。⚠ 这一条只有那个空格用得到——所有真怪在 `MonsterGroup::init`
@@ -1006,6 +1038,21 @@ const POWER: Record<string, string> = {
   // ⚠ 它**只挂在 0 号位**（参考 `onAfterUseCard` 读的是 `monsters.arr[0]`），
   //   巨头是单怪编队，当前无分歧。
   SLOW: "slow",
+  // —— 第三十七批 ——
+  // 好奇心：**怪物身上**，觉醒者 preBattleAction 里上的 1 层（asc19 是 2）。
+  // ⚠⚠ **它在参考里什么都不做**：唯一的读点（`BattleContext::onUsePowerCard` 末尾那句
+  //   「玩家打出能力牌 → 此怪 +层数 力量」）**被整段注释掉了**（BattleContext.cpp:1909-1912）。
+  //   它只是个进快照的标记，与孢子云那 2 层同族——但它有一个决定性的可观察面：
+  //   `Monster::die` 的觉醒者分支 `removeStatus<CURIOSITY>()` 会把它摘掉，
+  //   所以**假死之后它从快照里消失、复活也不补回来**。
+  CURIOSITY: "curiosity",
+  // 再生：**怪物身上**，觉醒者 preBattleAction 里上的 10 层（asc19 是 15）。
+  // ⚠⚠ **怪物侧的再生一层都不掉**——`Monster::applyEndOfTurnTriggers` 那一句只有 `heal`，
+  //   没有任何递减。所以它在快照里整场恒是 10，而觉醒者的血量每个回合末 +10（封顶在 maxHp）。
+  //   玩家侧那条会 -1 层的再生是**另一回事**，两边共用这一个映射。
+  // ⚠ 假死期间它照旧挂着（`removeDebuffs` 的名单里没有它），但不生效——
+  //   回合末那两个循环跳过 `hp == 0` 的怪。
+  REGEN: "regen",
 };
 
 const mapPotion = (p: string): string | null => (p in POTION ? POTION[p]! : p);

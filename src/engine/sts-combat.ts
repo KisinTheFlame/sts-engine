@@ -870,9 +870,10 @@ export function addToBot(
   bc.actionQueue.pushBack(makeAction(fn, clearOnVictory, desc));
 }
 
-function livingMonsters(bc: BattleContext): CombatMonster[] {
-  return bc.monsters.filter((m) => m.alive);
-}
+// ⚠ 这里原先有一个 `livingMonsters(bc)` 辅助函数，唯一的调用者是 `afterMonsterTurns`
+//   末尾那句「场上没有活怪就判胜」。第三十七批把那句删掉了（参考里没有它，理由见那一处），
+//   于是这个函数也跟着退场。判胜的完整名单在 `monsterDie` / `monsterEscape` /
+//   `monsterSuicideNoTrigger` 三个函数里，都是「怪物退场的那一刻」判。
 
 // ============================================================================
 // 怪物意图选择（rollMove）——对齐 Monster::rollMove + getMoveForRoll
@@ -2348,6 +2349,58 @@ const MOVE_RULES: Record<string, MoveForRoll> = {
   //   ——所以这条规则其实只在**开局那两把**匕首身上被调用（`MonsterGroup::init` 的
   //   rollMove 循环），召唤路径一次都不调。
   dagger: () => "dagger_stab",
+
+  // —— 第三十七批：第三幕 Boss 觉醒者 ——
+  //
+  // 对齐 MonsterSpecific.cpp:3280-3328。它是本项目第一条**按阶段分成两块**的出招规则：
+  //
+  //     if (halfDead) return REBIRTH;                       // ← 假死期间的兜底
+  //     const bool phase2 = miscInfo;
+  //     if (!phase2) {
+  //         if (firstTurn()) return SLASH;
+  //         if (roll < 25) return lastMove(SOUL_STRIKE) ? SLASH : SOUL_STRIKE;
+  //         return !lastTwoMoves(SLASH) ? SLASH : SOUL_STRIKE;
+  //     }
+  //     if (roll < 50) return !lastTwoMoves(SLUDGE) ? SLUDGE : TACKLE;
+  //     return !lastTwoMoves(TACKLE) ? TACKLE : SLUDGE;
+  //
+  // ⚠ 六处照抄：
+  //  ①⚠⚠ **`halfDead` 那道门排在最前面，而且它在当前语料里是「死代码但必须照抄」**：
+  //     `Monster::die` 的觉醒者分支已经 `setMove(REBIRTH)` 过了，所以假死期间意图本来就是
+  //     重生，而重生那条 case 的收尾是 `noOpRollMove`（掷完就丢）——真正会**用到**这个
+  //     返回值的路径要有人在假死期间对它调真的 `rollMove`。参考里没有这样的调用点。
+  //     ⚠ 它与暗影客那条形状相同（`if (halfDead) return DARKLING_REINCARNATE`），但那一条
+  //     **真的被走到**：暗影客的「重生」是一条空 case，收尾是同步的**真** rollMove。
+  //     两者别按同一条推——判据永远是「收尾是 RollMove 还是 noOpRollMove」。
+  //  ②⚠⚠ **阶段位是 `miscInfo`，不是任何 Power**（参考在 `die` 那行自注
+  //     `// todo change to status`）。它由复活那条 case 的 `miscInfo = true` 置起，
+  //     整场只可能置一次——所以觉醒者只会假死一次，第二次死是真死。
+  //  ③ 一阶段的 `firstTurn()` 恒出斩击（开局那次 rollMove 的 roll 被丢掉）。
+  //  ④ 一阶段两档的分界是 **25**，二阶段是 **50**——两个独立的字面量，别统一。
+  //  ⑤ 一阶段 roll < 25 那档读的是 **`lastMove`**（上一格），而下面那档读的是
+  //     **`lastTwoMoves`**（最近两格都是）。同一只怪上两种谓词并存，抄串了只在
+  //     「刚出过一次灵魂打击」的那些回合分岔。
+  //  ⑥ 二阶段两档**互为镜像**（污泥档满了出冲撞、冲撞档满了出污泥），都用 `lastTwoMoves`。
+  awakened_one: (_bc, m, roll) => {
+    if (m.halfDead) {
+      return "rebirth";
+    }
+    const phase2 = m.miscInfo !== 0;
+    if (!phase2) {
+      if (firstTurn(m)) {
+        return "aw_slash";
+      }
+      if (roll < 25) {
+        return lastMove(m, "soul_strike") ? "aw_slash" : "soul_strike";
+      }
+      return !lastTwoMoves(m, "aw_slash") ? "aw_slash" : "soul_strike";
+    }
+    // 二阶段
+    if (roll < 50) {
+      return !lastTwoMoves(m, "sludge") ? "sludge" : "aw_tackle";
+    }
+    return !lastTwoMoves(m, "aw_tackle") ? "aw_tackle" : "sludge";
+  },
 };
 
 // ============================================================================
@@ -3288,6 +3341,28 @@ const MOVE_TURN_END: Record<string, MoveTurnEnd> = {
     bc.rng.aiRng.random(99); // ★ 消耗一次 aiRng（noOpRollMove，**同步**）
   },
   "dagger/dagger_explode": (bc) => {
+    bc.rng.aiRng.random(99); // ★ 消耗一次 aiRng（noOpRollMove，**同步**，意图不变）
+  },
+
+  // —— 第三十七批：觉醒者 ——
+  //
+  // 六条 case 里只有**重生**不是默认值（MonsterSpecific.cpp:1702-1759）：
+  //   斩击 / 灵魂打击 / 黑暗回响 / 污泥 / 冲撞  `addToBot(Actions::RollMove(idx));` —— 默认 `"roll"`
+  //   重生                                       `setMove(DARK_ECHO); bc.noOpRollMove();`
+  //
+  // ⚠ 四处照抄：
+  //  ① 第五形态（两件事都做）：与球状守卫者 / 青铜自动机 / 匕首的突刺同形——
+  //     `{setMove: …}` 不掷 aiRng、`"no_op_roll"` 不改意图，静态形态一个都表达不了。
+  //  ② **两句都是同步的**，而重生那条 case 的效果**也全是同步的**（七句状态机里
+  //     一个 `addToBot` 都没有）。按第二十六批那条判据，这里的「同步 ↔ 入队」属于
+  //     **等价改写**——但顺序照抄：`setMove` 排在 `noOpRollMove` 之前。
+  //  ③ ⚠⚠ **`setMove` 前移历史**（`moveHistory[1] = moveHistory[0]`），所以复活之后
+  //     那一格里躺着的是「重生」，上上格是死之前的最后一个意图。二阶段第一次真正 roll
+  //     发生在黑暗回响打完之后，那时 `lastTwoMoves(SLUDGE)` / `(TACKLE)` 读到的正是
+  //     「黑暗回响 + 重生」——两条都不满足，所以二阶段第二招按 roll 自由二选一。
+  //  ④ `noOpRollMove` 掷完就丢：这一次不改意图，黑暗回响就此钉死为下一个怪物回合的招式。
+  "awakened_one/rebirth": (bc, m) => {
+    setMove(m, "dark_echo");
     bc.rng.aiRng.random(99); // ★ 消耗一次 aiRng（noOpRollMove，**同步**，意图不变）
   },
 };
@@ -4986,6 +5061,34 @@ const PRE_BATTLE_ACTION: Record<string, PreBattleAction> = {
   dagger: (_bc, m) => {
     addPower(m.powers, "minion", 1);
   },
+
+  // —— 第三十七批 ——
+
+  // 觉醒者（对齐 MonsterSpecific.cpp:186-193）：
+  //     case MonsterId::AWAKENED_ONE:
+  //         // buff minion leader only in stage 2
+  //         if (asc4) { buff<MS::STRENGTH>(2); }
+  //         buff<MS::CURIOSITY>(asc19 ? 2 : 1);
+  //         buff<MS::REGEN>(asc19 ? 15 : 10);
+  //         break;
+  // **不消耗 RNG。**
+  // ⚠ 四处照抄：
+  //  ① 力量那一条是**多出来的一整条效果**（asc>=4 才有，Boss 那一族的低阈值），
+  //     不是「换个数」——asc0 下觉醒者开局**没有** STRENGTH 条目。
+  //  ② 参考那句注释 `// buff minion leader only in stage 2` 是在说：`MINION_LEADER`
+  //     **不在这里上**，而在复活那条 case（`MonsterSpecific.cpp:1718`）。开局快照里
+  //     只有 `CURIOSITY` 与 `REGEN` 两条。
+  //  ③ **好奇心的效果在参考里被整段注释掉了**（`BattleContext.cpp:1909-1912`），所以它
+  //     只是个进快照的标记——照抄「什么都不做」，理由见 `PowerId` 的 `curiosity`。
+  //  ④ 再生**一层都不掉**（`applyEndOfTurnTriggers` 里只有 `heal`，没有递减），
+  //     所以它在快照里整场恒是 10；玩家侧那条会 -1 的再生是另一回事。
+  awakened_one: (bc, m) => {
+    if (bc.ascension >= 4) {
+      addPower(m.powers, "strength", 2);
+    }
+    addPower(m.powers, "curiosity", bc.ascension >= 19 ? 2 : 1);
+    addPower(m.powers, "regen", bc.ascension >= 19 ? 15 : 10);
+  },
 };
 
 type EncounterSetup = (bc: BattleContext) => void;
@@ -5406,6 +5509,21 @@ const MONSTER_ATTACK_MOVES: ReadonlySet<string> = new Set([
   //   **差别只在用了哪个函数**——这就是判据本身。
   "dagger/dagger_stab",
   "dagger/dagger_explode",
+  // 觉醒者（`:422-426`，第三十七批）。⚠ **六招里有五条在**——白名单里连着五行：
+  //   `AWAKENED_ONE_SLASH` / `_SOUL_STRIKE` / `_DARK_ECHO` / `_SLUDGE` / `_TACKLE`；
+  //   只有 **`AWAKENED_ONE_REBIRTH` 不在**（它一点伤害都不带，整条是状态机）。
+  // ⚠ 污泥在列这件事值得记一笔：它「打 18 点 + 往抽牌堆塞一张虚无」，与球状守卫者的
+  //   「攻击削弱」、复仇魔的「灼烧诅咒」正好是同一条判据的两侧——判据是**有没有走
+  //   `attackPlayerHelper`**，不是「这一招还顺手做了别的没有」。灼烧诅咒之所以不在，
+  //   是因为它**一点伤害都不带**。
+  // ⚠ 白名单里这五条的顺序（SLASH / SOUL_STRIKE / **DARK_ECHO** / SLUDGE / TACKLE）
+  //   与枚举声明序（SLASH / SOUL_STRIKE / **REBIRTH** / DARK_ECHO / SLUDGE / TACKLE）
+  //   不同——又一个「按名字找、别按位置数」的例子（先例是蜥蜴法师那两条）。
+  "awakened_one/aw_slash",
+  "awakened_one/soul_strike",
+  "awakened_one/dark_echo",
+  "awakened_one/sludge",
+  "awakened_one/aw_tackle",
 ]);
 
 /**
@@ -5516,6 +5634,22 @@ function drawOneCard(bc: BattleContext, card: CombatCard): void {
     const fireBreathing = getPower(bc.player.powers, "fire_breathing");
     if (fireBreathing > 0) {
       addToBot(bc, (c) => damageAllEnemiesNonAttack(c, fireBreathing));
+    }
+    // 虚无（VOID，觉醒者的污泥塞进抽牌堆的那张，第三十七批）：对齐 CardManager.cpp:426-429
+    //     if (c.getId() == CardId::VOID) {
+    //         // game adds action to bottom of the queue but I think it is ok to do directly
+    //         bc.player.energy = std::max(0, bc.player.energy-1);
+    //     }
+    // ⚠ 四处照抄：
+    //  ① **同步**扣能量，不入队——参考在那行自注「游戏里是入队的，但我觉得直接做也行」，
+    //     那是作者**明说的偏离真实游戏**，照抄参考（预言机就是它）。
+    //  ② `std::max(0, …)`：能量已经是 0 时抽到它不会变成 -1。
+    //  ③ 位置在**状态牌那一段的最后**（进化抽牌 → 烈焰吐息 → 这一条），而且整段排在
+    //     「进手牌」之前——所以这一点能量在这张牌落进手牌之前就没了。
+    //  ④ 它是按**卡 id** 判的，不是按某个属性。虚无自己打不出（费用哨兵 -2）、是虚无牌
+    //     （回合末没打出去就被消耗），两者都由数据表带着，与这一条无关。
+    if (card.defId === "void") {
+      bc.player.energy = Math.max(0, bc.player.energy - 1);
     }
   } else if (type === "curse") {
     const fireBreathing = getPower(bc.player.powers, "fire_breathing");
@@ -7294,7 +7428,49 @@ function monsterDie(bc: BattleContext, m: CombatMonster): void {
   //   ⚠ **背书从 4 例涨到 21 例（第三十一批）**：`@tgt1` 直接打下标最大的活怪，而地精首领
   //     恰在 3 号位——19 次胜利里有 17 次是「首领死了但小鬼还站着」（tgt0 下是 55 次里 4 次）。
   //     第二十七批那 4 例薄得几乎像巧合，现在这条路是常态。
-  if (bc.monstersAlive === 0 || getPower(m.powers, "minion_leader") > 0) {
+  // ⚠⚠ **觉醒者的假死排在判胜之前，是这条链上唯一能跳过判胜的路径**（第三十七批）。
+  //   对齐 Monster.cpp:285-297 那个 `if / else if`：
+  //   ```cpp
+  //   if (id == MonsterId::AWAKENED_ONE && !miscInfo) { // is awakened one stage 1
+  //       halfDead = true;                              // todo change to status
+  //       removeDebuffs();
+  //       removeStatus<MS::CURIOSITY>();
+  //       setMove(MonsterMoveId::AWAKENED_ONE_REBIRTH);
+  //       bc.cardQueue.clear();
+  //   } else if (bc.monsters.monstersAlive == 0 || hasStatus<MS::MINION_LEADER>()) {
+  //       bc.outcome = Outcome::PLAYER_VICTORY;
+  //       return;
+  //   }
+  //   ```
+  // ⚠ 七处照抄：
+  //  ①⚠⚠ **门是「怪种 id + `miscInfo` 为 0」，不是任何状态位**。参考自己在那行注了
+  //     `// todo change to status`——它清楚这跟暗影客的 `hasStatus<REGROW>()` 形状不同，
+  //     只是没改。**照抄 id 判断**，别顺手统一成一个 Power。
+  //  ②⚠⚠ **它排在判胜之前，而且是 `if / else if`**：一阶段的觉醒者倒下时**根本不看
+  //     `monstersAlive`**——把最后一只怪打死也不算赢。这与暗影客的重生（在判胜
+  //     `return` **之后**的那条 else-if 链上，所以「同伴全死了就是真赢」）正好相反，
+  //     是同一个 `halfDead` 字段的两个相反的门。
+  //  ③ **二阶段走的是另一支**：复活时 `miscInfo = 1`，于是这道门为假，落到 `else if`
+  //     ——而那时它身上有 `MINION_LEADER`，所以**两只邪教徒还站着也当场判胜**。
+  //  ④ 清减益走的是**逐个 `removeStatus`** 的 `Monster::removeDebuffs()`（Monster.cpp:538-552，
+  //     与冠军的暴怒共用 `monsterRemoveDebuffs`），
+  //     **不是** `resetAllStatusEffects()`。差别是承重的：前者数值与 bit 一起归零（等价于
+  //     整条摘掉），后者只清 bit、留下会被下一次 buff 继续加的残值（见 `PowerInstance.cleared`）。
+  //     所以觉醒者身上**不会**出现暗影客那种「复活后虚弱从 1 继续加到 3」的现象。
+  //  ⑤ 好奇心是**在 `removeDebuffs()` 之外单独摘的**（它不是减益，不在那张名单里）。
+  //     ⚠ 再生 / 力量**不摘**：`removeDebuffs` 只在力量为**负**时把它归零。
+  //  ⑥ 改意图用的是 **`setMove`（前移历史）**，不是 `onHpLost` 里那种裸的 `moveHistory[0] =`。
+  //  ⑦⚠ **`bc.cardQueue.clear()`** 是全参考项目怪物侧唯一一次清出牌队列（另一个调用点是
+  //     `Actions::ClearCardQueue`）。语义：玩家这一击若来自「一张牌排了后续出牌项」的连锁
+  //     （浩劫 / 混乱 / 二连击 / 复制…），觉醒者假死的那一刻把还没打的那些**整个丢掉**。
+  //     ⚠ 它排在这一格的**最后一句**，在 `setMove` 之后。
+  if (m.defId === "awakened_one" && m.miscInfo === 0) {
+    m.halfDead = true;
+    monsterRemoveDebuffs(m);
+    removePower(m.powers, "curiosity");
+    setMove(m, "rebirth");
+    bc.cardQueue.clear();
+  } else if (bc.monstersAlive === 0 || getPower(m.powers, "minion_leader") > 0) {
     bc.outcome = "player_victory";
     return; // ★ 参考在这里 return，下面的死亡触发一概不跑
   }
@@ -7345,8 +7521,8 @@ function monsterDie(bc: BattleContext, m: CombatMonster): void {
     //   于是这一击若还排着别的动作，牌在它们执行**之前**就已经回到手里了。
     returnStasisCard(bc, m);
   }
-  // TODO(后续PR): 尸爆 / 地精角 / 活体样本，以及觉醒者的假死（`Monster::die` 的
-  //   **第一个**分支，与重生并列的另一处 `halfDead = true`）。
+  // TODO(后续PR): 尸爆 / 地精角 / 活体样本。
+  // ✅ 觉醒者的假死（`Monster::die` 的**第一个**分支）第三十七批已补，见函数开头那一格。
 }
 
 /**
@@ -11473,6 +11649,49 @@ function takeTurn(bc: BattleContext, m: CombatMonster): string | null {
       m.alive = true;
       bc.monstersAlive += 1;
       addPower(m.powers, "regrow", 1);
+    } else if (eff.kind === "awakened_rebirth") {
+      // 觉醒者的复活（第三十七批）。对齐 `MMID::AWAKENED_ONE_REBIRTH` 那条 case 的**前七句**
+      // （MonsterSpecific.cpp:1712-1718；末尾的 `setMove` + `noOpRollMove` 是收尾，
+      // 见 `MOVE_TURN_END["awakened_one/rebirth"]`）：
+      //     maxHp = asc9 ? 320 : 300;
+      //     curHp = maxHp;
+      //     halfDead = false;
+      //     miscInfo = true;
+      //     strength = std::max(0,strength);
+      //     ++bc.monsters.monstersAlive;
+      //     buff<MS::MINION_LEADER>();
+      // ⚠ 七处照抄：
+      //  ①⚠⚠ **`maxHp` 也被重写**，而且用的是**写死的字面量**（不是数据表里那次
+      //     `setRandomHp` 的结果）。asc0 下两者恰好都是 300，所以这一句当前观察不到——
+      //     它是 asc9 那一档才分岔的盲区（见 TODOS）。
+      //  ② `curHp = maxHp` 是**满血**复活，与暗影客的 `maxHp / 2` 不同族。
+      //  ③ `halfDead = false` 与 `alive` 要一起翻回来（三位现在全为假：血 > 0、不半死、没逃跑）。
+      //  ④⚠⚠ `miscInfo = true` 是**二阶段锁存位**——出招规则读它分成两块，`Monster::die`
+      //     的第一格也读它（`!miscInfo` 才假死）。所以它同时管「出什么招」与「下次死是不是真死」，
+      //     一个字段两个读者。
+      //  ⑤ `strength = std::max(0, strength)` 是**直接写数值字段**（不碰 statusBits），
+      //     与 `Monster::removeDebuffs` 里那句同形。⚠ 它在 asc0 的当前语料下是**空操作**：
+      //     觉醒者身上唯一的力量来源是 asc4 那条 +2，而 `die` 里的 `removeDebuffs()`
+      //     已经把负力量抬回过 0，两次之间玩家也没有任何降力量的手段（这副牌组没有黑暗镣铐
+      //     / 缴械）。照抄，记进盲区。
+      //  ⑥ `++monstersAlive` 与 `Monster::die` 开头那句 `--monstersAlive` 配对。
+      //  ⑦⚠⚠ `buff<MS::MINION_LEADER>()`——**从此它一死当场判胜**：二阶段的觉醒者倒下时，
+      //     两只邪教徒还站着也算玩家赢。这是 `MINION_LEADER` 的第三个已登记宿主
+      //     （地精首领 / 蜥蜴法师 / 它）。
+      // ⚠ 全部**同步**（这条 case 一个 addToBot 都没有）。
+      // ⚠ **不补 CURIOSITY**（与暗影客复活时补回 REGROW 正相反）：`die` 那一格把它摘掉之后
+      //   就再也不回来，二阶段快照里没有它。
+      m.maxHp = bc.ascension >= 9 ? 320 : 300;
+      m.hp = m.maxHp;
+      m.halfDead = false;
+      m.alive = true;
+      m.miscInfo = 1;
+      const strength = findPower(m.powers, "strength");
+      if (strength !== undefined && strength.amount < 0) {
+        strength.amount = 0;
+      }
+      bc.monstersAlive += 1;
+      addPower(m.powers, "minion_leader", 1);
     } else if (eff.kind === "store_hp_scaled_damage") {
       // 按玩家**此刻**的生命算定一个每击伤害，存进 miscInfo（六火幽魂的激活，
       // MonsterSpecific.cpp:794 `miscInfo = bc.player.curHp / 12 + 1;`）。
@@ -11644,8 +11863,9 @@ function decrementPlayerPower(bc: BattleContext, id: string): void {
  * 回合看到的 8 点格挡来自 `preBattleAction` 那句 `addBlock(8)`，不是这里。
  * ⚠ 苏醒之后金属化被 `decrementStatus(8)` 减没（见 `wakeUpLagavulin`），这条自然不再触发。
  *
- * TODO(后续PR): 怪物侧虚无缥缈递减、再生（`Monster::heal`）。当前登记的怪一只都没有这两种
- * Power，写了也没有预言机走到。（金属化第十八批、易塑第二十三批、镀甲第二十五批已补。）
+ * ✅ **六句现在全齐了**：金属化（第十八批）→ 易塑（第二十三批）→ 镀甲（第二十五批）→
+ * 虚无缥缈（第三十六批）→ 再生（第三十七批）→ 枷锁（第十二批）。参考的
+ * `Monster::applyEndOfTurnTriggers` 就这六条，名单封闭。
  */
 function applyMonsterEndOfTurnTriggers(m: CombatMonster): void {
   const metallicize = getPower(m.powers, "metallicize");
@@ -11698,6 +11918,23 @@ function applyMonsterEndOfTurnTriggers(m: CombatMonster): void {
     if (intangible.amount === 0) {
       m.powers.splice(m.powers.indexOf(intangible), 1);
     }
+  }
+  // 再生（觉醒者，第三十七批）：对齐 Monster.cpp:59-61
+  //     if (hasStatus<MS::REGEN>()) { heal(getStatus<MS::REGEN>()); }
+  // ——这个函数的**第五句**（金属化 → 易塑 → 镀甲 → 虚无缥缈 → **再生** → 枷锁）。
+  // ⚠ 三处照抄：
+  //  ①⚠⚠ **一层都不掉**：参考这里只有 `heal`，没有任何 `decrementStatus`。玩家侧那条再生
+  //     （`Player::applyAtEndOfRoundPowers` 里回血再 -1 层）是**另一回事**，两边共用同一个
+  //     PowerId（harness 两边都 dump 成 `REGEN`）但语义不同——所以觉醒者的 `REGEN: 10`
+  //     在快照里整场恒定。
+  //  ② 走的是 `Monster::heal`（`curHp = min(maxHp, curHp + amount)`，Monster.cpp:270-277）
+  //     ——满血时白加、不会溢出。它与撕咬/吸取那条吸血用的是同一个函数。
+  //  ③ 位置在**虚无缥缈之后、枷锁之前**。当前没有一只怪同时带再生与它们，故不可观察；照抄。
+  // ⚠ 半死的怪走不到这里：`applyEndOfRoundPowers` 的两个循环都跳过 `!alive` 的怪，
+  //   而半死必然伴随 `hp == 0`。所以假死期间觉醒者不会被自己的再生救回来。
+  const regen = getPower(m.powers, "regen");
+  if (regen > 0) {
+    monsterHeal(m, regen);
   }
   const shackled = getPower(m.powers, "shackled");
   if (shackled > 0) {
@@ -11940,8 +12177,10 @@ function monsterHeal(m: CombatMonster, amount: number): void {
 }
 
 /**
- * 怪物侧的「清掉自己的减益」（对齐 `Monster::removeDebuffs`，Monster.cpp:522-535）。
- * 第二十九批的冠军的暴怒是它在**战斗内**唯一的读者（另一个调用点是觉醒者的假死，未登记）。
+ * 怪物侧的「清掉自己的减益」（对齐 `Monster::removeDebuffs`，Monster.cpp:538-552）。
+ * **两个调用点**：冠军的暴怒（第二十九批，走数据表的 `remove_debuffs` 效果）与
+ * 觉醒者的假死（第三十七批，`monsterDie` 的第一格直接调用）。
+ * ⚠ 觉醒者那条在这个调用**之外**还单独摘了一次好奇心——好奇心不是减益，不在这张名单里。
  *
  * ⚠ 它**不是「清空所有 Power」**，而是一张写死的名单，两段：
  *  ①⚠ 力量**只抬负值**：`if (getStatus<STRENGTH>() < 0) setStatus<STRENGTH>(0);`
@@ -12109,10 +12348,17 @@ function afterMonsterTurns(bc: BattleContext): void {
   // TODO(后续PR): DRAW_REDUCTION 的 skipFirst 递减；applyStartOfTurnPostDrawRelics（怀表 / 扭曲钳）。
   applyStartOfTurnPostDrawPowers(bc);
   bc.player.energy = bc.player.energyPerTurn;
-  // 胜负检查（怪全灭）。
-  if (livingMonsters(bc).length === 0) {
-    bc.outcome = "player_victory";
-  }
+  // ⚠⚠ **这里原先有一句「场上没有活怪就判胜」，第三十七批删掉了——参考的
+  //   `BattleContext::afterMonsterTurns`（BattleContext.cpp:2183-2246）里没有这样一句。**
+  //   参考在这个函数里唯一与胜负有关的是 `if (isBattleOver) return;`，而 `isBattleOver`
+  //   **全项目只在 `BattleContext::init` 里被赋过一次 false**（:44），是个死标志位。
+  //   判胜的完整名单是四处、全部在怪物退场那一刻：`Monster::die` 的两条
+  //   （`monstersAlive == 0` / `MINION_LEADER`）、逃跑、`Monster::suicideAction`。
+  // ⚠ 它一直是冗余的（那四处已经覆盖了「怪全灭」），到觉醒者才**变成错的**：
+  //   一阶段的觉醒者假死时 `alive` 为假、`monstersAlive` 可以是 0，而参考**故意不判胜**
+  //   （`Monster::die` 的第一个分支排在判胜之前，见 `monsterDie`）。留着它会让
+  //   「打死一阶段觉醒者的那一刻场上没有别的活怪」直接结束战斗，复活永远不会发生。
+  //   实测：留着它红 2 例（`awakened_one.jsonl` 里两条邪教徒先死光的 trace）。
 }
 
 // ============================================================================
@@ -12496,6 +12742,25 @@ export const SUPPORTED_ENCOUNTERS: readonly string[] = [
   //   ⚠ 两个编队**只有 asc0 的背书**：三只新怪的 `ascCalibrated` 一只都没置。
   "nemesis",
   "reptomancer",
+  // —— 第三十七批：第三幕 Boss **觉醒者**（走 harness 新追加的 variant 37，variant 36 的
+  //   encounters 一个字没动，那两个文件逐字节不变）。40 种子、asc0、目标策略 0。
+  //   ⚠⚠ **这是第一个不用 `BATCH_1 + SPOT_WEAKNESS` 的第三幕 variant**，而且理由是量出来的：
+  //     那副 22 张牌组下战斗平均只有 **3.6 回合**、120 条 trace **一次都没打死过一阶段**，
+  //     `REBIRTH` / `DARK_ECHO` / `SLUDGE` / `TACKLE` 四条招式全是「出现 0 / 执行 0」。
+  //     改用 45 张的**全升级**聚焦牌组（BATCH_1 + 4×觅敌之弱 + 2×极限突破 + 4×幽灵护甲 +
+  //     4×铜头 + 2×收割 + 2×剑刃回旋 + 2×直觉 + 2×灵巧 + 2×钢铁闪光）之后：平均 8.7 回合、
+  //     45 / 120 条走到假死、六条招式全部出现且执行。理由与「聚焦小牌组」那条逃生口同族，
+  //     只是这次为的是**怪物**覆盖而不是卡牌覆盖。牌组形状的两条约束见 harness 的注释：
+  //     ① 策略严格从左往右花能量 → **3 费牌几乎打不出来**（恶魔形态 / 壁垒实测毫无作用）；
+  //     ② `upgradeAll` 让极限突破**不再消耗**，那是整套力量引擎的发动机。
+  //   ⚠ `awakened_one` 是**三只怪**（邪教徒 ×2 + 觉醒者，觉醒者在 **2 号位**），
+  //     不是旧近似表写的单怪。
+  //   ⚠ 它带来 **`Monster::die` 的第一个分支**（假死 / 两阶段 Boss）——那是这条链上
+  //     **唯一排在判胜 `return` 之前**的一格，与暗影客的重生（在 `return` 之后）正好相反。
+  //     另有 **CURIOSITY**（参考里读点被整段注释掉的纯标记）与 **REGEN**（怪物侧、一层不掉）
+  //     两个新 Power，以及第一张「抽到时有效果」的状态牌**虚无**（抽到 -1 能量）。
+  //   ⚠ 这个编队**只有 asc0 的背书**：觉醒者的 `ascCalibrated` 没有置。
+  "awakened_one",
 ];
 
 export function isEncounterSupported(encounterId: string): boolean {

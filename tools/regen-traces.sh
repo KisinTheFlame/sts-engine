@@ -225,8 +225,28 @@ ENC_ALL="cultist jaw_worm jaw_worm_horde three_louse two_louse"
 #   ⚠⚠ **本批同时给参考打了萎缩的白名单补丁**（`isMoveAttack` 加一行
 #     `WRITHING_MASS_WITHER`，理由见 TODOS「已修正」），它改变了**已冻结**的
 #     `writhing_mass.jsonl`，所以那一次 `--install` 走的是 `ALLOW_CHANGED="writhing_mass"`。
+# 第三十七批：第三幕 Boss **觉醒者**（走**新追加的 variant 37**，variant 36 的 encounters
+#   一个字没动，那两个文件逐字节不变）。40 种子、**爬升度 0**、**目标策略 0**。
+#   ⚠⚠ **牌组第一次不是 `BATCH_1 + SPOT_WEAKNESS`，而且理由是量出来的**：那副 22 张牌组下
+#     战斗平均只有 **3.6 回合**、120 条 trace **一次都没打死过觉醒者的一阶段**，于是
+#     `AWAKENED_ONE_REBIRTH` / `_DARK_ECHO` / `_SLUDGE` / `_TACKLE` 四条全是「出现 0 /
+#     执行 0」——本批要装的那条假死分支**结构性没有预言机**。改成 45 张的**全升级**聚焦牌组
+#     （BATCH_1 + 4×觅敌之弱 + 2×极限突破 + 4×幽灵护甲 + 4×铜头 + 2×收割 + 2×剑刃回旋 +
+#     2×直觉 + 2×灵巧 + 2×钢铁闪光）之后：平均 **8.7 回合**、**45 / 120** 条走到假死、
+#     六条招式全部出现且执行。这是 WORKFLOW 里「聚焦小牌组」那条逃生口，只是这次为的是
+#     **怪物**覆盖。⚠ 牌组形状由策略决定：`pickAction` 严格从左往右花能量，所以**3 费牌
+#     几乎打不出来**（恶魔形态 / 壁垒实测毫无作用），加的牌一律 0~2 费；`upgradeAll` 让
+#     极限突破**不再消耗**，那是整套力量引擎的发动机。
+#   ⚠ 牌组变了 ⇒ variant 指纹变了，所以它与 variant 24~36 的 encounters 撞不上（双保险：
+#     `AWAKENED_ONE` 本来也没有别的 variant 点名）。
+#   ⚠ `awakened_one` 是**三只怪**（邪教徒 ×2 + 觉醒者，觉醒者在 **2 号位**），
+#     参考的 `MonsterGroup.cpp:179-184` 就是这么建的。
+#   ⚠ 它带来 **`Monster::die` 的第一个分支**（假死 / 两阶段 Boss）——那是那条链上唯一
+#     **排在判胜 `return` 之前**的一格，与暗影客的重生（在 `return` 之后）正好相反；
+#     另有 **CURIOSITY**（参考里读点被整段注释掉的纯标记）与 **REGEN**（怪物侧、一层不掉），
+#     以及第一张「抽到时有效果」的状态牌**虚无**（抽到 -1 能量）。
 ENC_V0_ACT2="spheric_guardian chosen snake_plant three_byrds two_thieves chosen_and_byrds shell_parasite shelled_parasite_and_fungi snecko centurion_and_healer three_cultist cultist_and_chosen sentry_and_sphere gremlin_leader slavers book_of_stabbing automaton champ collector"
-ENC_V0_ACT3="three_shapes four_shapes sphere_and_two_shapes orb_walker spire_growth maw three_darklings transient writhing_mass giant_head nemesis reptomancer"
+ENC_V0_ACT3="three_shapes four_shapes sphere_and_two_shapes orb_walker spire_growth maw three_darklings transient writhing_mass giant_head nemesis reptomancer awakened_one"
 ENC_V0_ACT2_ASC19="spheric_guardian@asc19 chosen@asc19 snake_plant@asc19 three_byrds@asc19 two_thieves@asc19 chosen_and_byrds@asc19 shell_parasite@asc19 shelled_parasite_and_fungi@asc19 snecko@asc19 centurion_and_healer@asc19 three_cultist@asc19 cultist_and_chosen@asc19 sentry_and_sphere@asc19 gremlin_leader@asc19 slavers@asc19 book_of_stabbing@asc19 automaton@asc19 champ@asc19 collector@asc19"
 ENC_V0_ASC0="small_slimes lots_of_slimes large_slime blue_slaver red_slaver looter exordium_thugs exordium_wildlife gremlin_gang gremlin_nob lagavulin three_sentries the_guardian slime_boss hexaghost $ENC_V0_ACT2"
 ENC_V0_TGT1="jaw_worm_horde@tgt1 two_louse@tgt1 three_louse@tgt1 small_slimes@tgt1 lots_of_slimes@tgt1 large_slime@tgt1 gremlin_gang@tgt1 exordium_thugs@tgt1 exordium_wildlife@tgt1 three_sentries@tgt1 slime_boss@tgt1 three_byrds@tgt1 two_thieves@tgt1 chosen_and_byrds@tgt1 sentry_and_sphere@tgt1 cultist_and_chosen@tgt1 three_cultist@tgt1 shelled_parasite_and_fungi@tgt1 centurion_and_healer@tgt1 gremlin_leader@tgt1 slavers@tgt1 automaton@tgt1 collector@tgt1"
