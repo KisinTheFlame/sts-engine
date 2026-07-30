@@ -66,9 +66,15 @@
   **现在两者彻底分开**：`intent` 只管渲染，`isAttacking` 谓词只认白名单。
   ⚠ **每登记一只怪仍然必须回 `MonsterMoves.h` 逐条抄那张表**（漏一条 = 那个意图被判成
   「不是攻击」），只是判据从「核对 intent 对不对得上」变成了「有没有抄全」。
-  ⚠ 这条规则本身**当前没有预言机**：`isMonsterAttacking` 的唯一读者是觅敌之弱与瞄准眼睛，
-  两张牌都在卡牌批次的聚焦 variant 里，从没与怪物编队同场。第二十三批实测两个方向
-  （去掉硬化 / 多加汲取 / 整表退回读 intent）**各 0 例**——见 TODOS 的盲区表。
+  ⚠ **第二十四批起这条规则有预言机了**：`isMonsterAttacking` 的唯一读者是觅敌之弱，
+  做法是**给第二幕每个新 variant 的牌组加一张 `SPOT_WEAKNESS`**（成本是 1 张牌，
+  收益是从那一批起每只新怪的攻击分类都被钉住）。第二十五批实测「谓词恒真」红 357 例、
+  「白名单漏掉本批五条」红 662 例。**新批次照此办理，别把那张牌漏掉。**
+  ⚠⚠ **两个方向都要量**：第二十五批的 `SHELL_PARASITE`（单怪）在「谓词恒真」那个方向上是
+  **0 例**——它四招里只有眩晕不是攻击，而眩晕的分母只有 16 帧。只量恒真会把它误判成有背书，
+  反方向（白名单里漏掉那三条，243 例）才盖住它。
+  ⚠ 第十三~二十三批登记的那些怪仍然没有背书（它们的编队走 `ENC_V0`、牌组里没有觅敌之弱），
+  见 TODOS 的盲区表。
 - **`construct` 里的怪种特例会消耗 `monsterHpRng`**（虱子的咬击伤害就是这么定的）。
   漏掉不会静默——`rng.hp` 计数器当场对不上。
 - ⚠⚠ **`Monster::initHp` 有三种形态，第三种一次 RNG 都不掷。** 除了「掷一次」与
@@ -107,6 +113,23 @@
 - ⚠ **`getMoveForRoll` 可以完全不看 `roll`**。酸液史莱姆小（asc<17）直接
   `bc.aiRng.randomBoolean()` 二选一，顶部那次 `random(99)` 照掷但结果被丢掉——
   于是它一次 rollMove 消耗 **2** 次 aiRng。别以为「不追加 RNG」等于「只消耗 1 次」。
+- ⚠⚠ **收尾还有第六形态：同步的「真」`rollMove`。** 带壳寄生虫的眩晕整条 case 就是
+  `setMove(MMID::SHELLED_PARASITE_FELL); rollMove(bc);`（`MonsterSpecific.cpp:1083-1086`）
+  ——两句都是**同步**的，而且 `rollMove` 是真的滚一个新意图（掷 `aiRng.random(99)`，
+  `getMoveForRoll` 里还可能再追加一次），不是 `noOpRollMove` 那种掷完丢掉。
+  ⚠ 一次眩晕**推两格 moveHistory**（`setMove` 与 `rollMove` 各推一格），而且
+  **两句的顺序真的可观察**：`setMove(重击)` 先跑正是为了让紧接着的 `getMoveForRoll`
+  读到「刚重击过」，从而点亮「roll < 20 且刚重击过」那一支。第二十五批实测顺序调换红 6 例。
+  别把它与球状守卫者 / 拜鸟那种「同步 `setMove` + `noOpRollMove`」搞混——形状像、语义完全不同。
+- ⚠⚠ **参考清一个 Power 的层数有两种写法，方向相反，抄串了两边都静默错。**
+  `decrementStatus<s>()` 对「枚举值 <= WEAK」那一族会 `setHasStatus(newAmount)`，
+  **归零时连 statusBits 一起清掉**（`Monster.h:299-303`）——镀甲走这一支，所以壳破之后
+  它在 else-if 链上的那一格**让位**给后面的蜷缩/飞行/易塑，回合末也不再加格挡。
+  而飞行那一格写的是裸的 `setStatus<FLIGHT>(flight-1)`，**只写数值、不碰 bit**，
+  所以摔下来之后它照样占着自己那一格、层数还会减成负数。
+  **判据：看那一处写的是 `decrementStatus` 还是裸 `setStatus`，别看「层数归零」这个现象。**
+  第二十五批实测「把镀甲抄成飞行那种写法」红 13 例——例数小（要先打光 14 层壳、再挨一次），
+  但它是那一批最不能抄错的一处。
 - ⚠ **收尾其实有第五形态：任意函数。** 抢劫者的抢劫收尾按怪物回合数分岔、还带一次 aiRng
   （`if (回合数==1) setMove(抢劫) else setMove(randomBoolean(0.5) ? 烟雾弹 : 猛扑)`），
   四个静态形态一个都表达不了。同一条 case 还可能在**效果之前**有语句（抢劫者首回合白掷一次
@@ -328,7 +351,14 @@ emitProduct(act2Variants, act2Encounters);  // 第二幕，必须排在最后
   在 seed 循环之前 `continue`、**不消耗 traceIdx**——所以往这个列表里加编队是免费的，
   而往某个 **variant 的 `encounters` 里**加不是（那会平移其后一切，规矩同 variant 21→22）。
 - **每批只追加一个新 variant**、filter 到本批的编队。第二十三批是 variant 23
-  （BATCH_1 牌组 / 125 种子 / asc 0，三个单怪编队）。
+  （BATCH_1 牌组 / 125 种子 / asc 0，三个单怪编队），第二十四批是 variant 24
+  （牌组改成 **`BATCH_1 + SPOT_WEAKNESS`**，理由见上方 `isMonsterAttacking` 那条），
+  第二十五批是 variant 25（牌组与 24 **逐字节相同**）。
+  ⚠⚠ **牌组与前一个 variant 完全相同时，两者的 `encounters` 必须互不相交。**
+  `split-traces.mjs` / `variant0-rows.mjs` 用**整副牌组的内容**做 variant 指纹，
+  所以牌组相同 = 指纹相同：只要某个编队同时出现在两个 variant 的列表里，
+  它们的行就会落进同一个文件、被当成**一整块**，`variant0-rows.mjs` 数出来的「冻结前缀」
+  会静默变长。按「每批只装此前没装过的编队」这条惯例走就自动安全，但要知道为什么。
 - ⚠⚠ **两步验证，第一步不能跳**：先只加循环骨架、`act2Variants` 留空，跑 `--check`，
   **已提交的文件必须逐字节复现**；不过就停下来查。之后才填 variant。
   这与「加爬升度轴」「加 `isReplayableCard` 那道门」是同一个套路。
@@ -370,6 +400,14 @@ ENC_V0="small_slimes lots_of_slimes large_slime blue_slaver red_slaver looter ex
 ——黏液被打出 46 次，第十三批那三个「0 例」的变异一次性转成 36 例。
 所以：选批次时先量一眼战斗长度，**并把「这一批能救回哪条旧盲区」写进计划**；
 真需要长战斗的东西，等带它的长仗编队（Boss / 大怪）那一批。
+
+⚠ **但「换更耐打的编队」只能救「需要更多回合」的盲区，救不了「需要特定队列局面」的。**
+第二十五批同时试了两条第十六批的盲区，用的是同一个新编队（`shelled_parasite_and_fungi`，
+真菌兽在这里恒有同伴、仗比 `exordium_wildlife` 长得多）：
+**真菌兽出招阈值的下方向从 2 例涨到 137 例（关掉了）**，而**孢子云的 `addToTop ↔ addToBot`
+仍然 0 例**——亡语确实跑了（易伤层数、`isSourceMonster` 两条各拿到 41~62 例新背书），
+只是真菌兽被打死那一刻队列里没有别的动作能插在中间。
+**选批次时要先判一条盲区卡在哪一维上：回合数、场上局面、还是队列内容。**
 
 ⚠ **「换编队」这条逃生口也有救不到的东西：编队的成员结构本身。** 第十五批实测：
 抢劫者的逃跑执行了 16 次，但**每一次场上都只剩它自己**（harness 的策略专打最左侧的活怪，
@@ -523,7 +561,7 @@ tools/regen-traces.sh --install UPPERCUT DEMON_FORM --moves SENTRY_BOLT SENTRY_B
 pnpm typecheck && pnpm lint && pnpm test && pnpm format
 ```
 
-全绿是**下限**，不是完成。`sts-combat-trace.test.ts` 现有 12556 例逐帧对拍，
+全绿是**下限**，不是完成。`sts-combat-trace.test.ts` 现有 20956 例逐帧对拍（第二十五批），
 其中一部分用**全升级牌组**——所以每条规则 `up ? x : y` 的两个分支都会被验证。
 
 改共享路径（`callEndOfTurnActions`、`drawCards`、`onTurnEnding`、`useCard` 之类）时，

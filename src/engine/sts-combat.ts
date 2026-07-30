@@ -2850,6 +2850,8 @@ function shuffleCards(bc: BattleContext, cards: CombatCard[]): void {
  * ⚠ 腐化那条与状态/诅咒两条是**同一条 if/else-if 链**（技能牌 → 状态牌 → 诅咒牌），
  * 三者互斥。传的是 -9，`setCostForTurn` 夹成 0。
  *
+ * ⚠ 困惑（第二十五批）排在那条链**之前**，是函数体的第一段——见下方注释。
+ *
  * TODO(后续PR): 虚无（抽到时 -1 能量，位置在烈焰吐息之后）——那张状态牌还没有入手途径。
  */
 function drawOneCard(bc: BattleContext, card: CombatCard): void {
