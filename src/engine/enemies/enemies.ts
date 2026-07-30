@@ -840,9 +840,11 @@ const ENEMY_LIST: EnemyDef[] = [
       },
       {
         // MonsterSpecific.cpp:571-574 `attackPlayerHelper(bc, asc2 ? 7 : 6, 3)`（**三段 6**）。
-        // ⚠⚠ **这一招在本批的 trace 里 0 例（出现与执行都是 0），是已知盲区。**
-        //   它只在**秘法师已死**时被选出，而 harness 的策略恒打 0 号位、百夫长恒在 0 号位
-        //   ——秘法师永远后死。理由与关门条件见 sts-combat.ts 的 `MOVE_RULES.centurion`。
+        // ⚠⚠ **这一招的效果在本批的 trace 里 0 例，是已知盲区**（它的**意图选择**另有 8 例
+        //   背书，那是荆棘打死百夫长之后在尸体上滚出来的——两件事分开看，
+        //   理由与关门条件见 sts-combat.ts 的 `MOVE_RULES.centurion`）。
+        //   要让活着的百夫长出这一招得让秘法师先死，而 harness 的策略恒打 0 号位、
+        //   百夫长恒在 0 号位——秘法师永远后死。
         id: "cent_fury",
         name: "狂怒连斩",
         effects: [{ kind: "deal_damage_multi", amount: 6, times: 3 }],
