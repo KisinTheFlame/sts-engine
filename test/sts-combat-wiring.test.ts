@@ -396,6 +396,9 @@ describe("接线：战斗内选牌屏", () => {
         exhaustOnUse: false,
         // 第九批新增：二连击复制出来的那份结算完直接丢掉，不进任何牌堆。
         purgeOnUse: false,
+        // 第三十五批新增：缓慢（巨头）那道 `if (item.triggerOnUse)` 的门。
+        // 正常出牌恒为真；老档没有这一位时按 true 回填。
+        triggerOnUse: true,
       },
     ]);
     // 出牌队列此刻是空的——只有嵌套出牌（二连击 / 混乱）才会让它非空。
@@ -632,23 +635,30 @@ describe("接线：尚未迁移的内容显式抛错", () => {
     return coverage.supported ? "" : coverage.reason;
   };
 
-  // 样本编队选 `giant_head` 巨头（第三幕精英）。判据与下面那条「未迁移卡牌」的 `seek`
-  // 同源：**它不在 harness 的 20 个第一幕编队里**，而那个列表按 WORKFLOW 是不许增删的
-  //（`traceIdx` 一移，遗物/药水轮换整体错位），所以它在可预见的将来都不会有预言机。
-  // ⚠ 原先用的是 `gremlin_nob`，第十八批把它登记了，故换掉。别换成 `the_guardian` /
-  //   `hexaghost` / `slime_boss`——它们就在 harness 的列表里，第十九/二十批已经登记了。
-  // ⚠ 第二十批之后那 20 个编队**全部**登记完毕，所以这个样本只能来自第二/三幕，
-  //   而覆盖第二/三幕要先给 harness 追加一遍循环。第二十九批把第二幕装满了，
-  //   **第三十二批开了第三幕的乘积**——所以 `giant_head` 现在是「随时会被顶掉」的样本。
-  // ⚠⚠ **装 `giant_head` 那一批（TODOS 的建议排在第三十六批）必须先换掉这个样本。**
-  //   它不会静默失败（这条用例会当场红），但换的时候要挑一个「参考项目里存在、而 harness
-  //   的四个乘积都不覆盖」的编队——最稳的是**第四幕**的 `shield_and_spear` / `the_heart`，
-  //   或者事件编队（`MASKED_BANDITS_EVENT` 那一族）。
+  // 样本编队选 `donu_deca`（第三幕最后一个 Boss）。
+  //
+  // ⚠⚠ **这个样本与「未迁移卡牌」的 `seek` 不是一回事，别照搬那条的心态。**
+  //   `seek` 是**永久**样本：参考项目三个 switch 里都没有它的 case，等于压根没实现，
+  //   所以它永远不会有预言机。而**编队这边没有永久样本**——参考实现了全部编队，
+  //   铺量的终点就是全部登记。所以这个样本**每隔几批就得换一次**，
+  //   WORKFLOW 的「附：踩过的坑」里写着这条。
+  //
+  // 判据是「**挑最晚才会被登记的那个**」。当下（第三十五批）的答案是 `donu_deca`：
+  //   * 第一幕 20 个编队第二十批全装完，第二幕 19 个第二十九批全装完；
+  //   * 第三幕按 TODOS 的批次计划还剩 5 个，`donu_and_deca` 排在**最后一批（第四十批）**
+  //     ——它是收官批，装完第三幕 16 / 16。所以这个样本有 5 批的余量。
+  // ⚠ 别换成 `nemesis` / `reptomancer` / `awakened_one` / `time_eater`：它们分别排在
+  //   第三十六~三十九批，下一批就可能被顶掉。
+  // ⚠ 换到第四幕（`the_heart` / `shield_and_spear`）或事件编队（`MASKED_BANDITS_EVENT`
+  //   那一族）能撑更久，但那要先往 `enemies.ts` 里加**没有预言机的新数据**
+  //   （腐化之心 / 尖塔护盾 / 尖塔长矛 / 罗密欧 / 熊 / 尖头怪一只都还没有定义），
+  //   与「未验证的实现比没有实现更糟」相抵触。等第四幕真的排上日程再说。
+  // ⚠ 历史：`gremlin_nob`（第十八批顶掉）→ `giant_head`（**第三十五批**顶掉）→ 现在这个。
   it("未迁移的编队：startCombat 抛错，且不留半个战斗状态", () => {
     const state = runAtMap();
-    expect(() => startCombat(state, "giant_head")).toThrow(/giant_head/);
+    expect(() => startCombat(state, "donu_deca")).toThrow(/donu_deca/);
     expect(state.combat).toBeNull();
-    expect(reason(state, "giant_head")).toContain("尚未迁移");
+    expect(reason(state, "donu_deca")).toContain("尚未迁移");
   });
 
   // 样本牌选 `seek` 搜寻：参考项目三个 switch 里都**没有 case**，等于压根没实现，

@@ -2155,27 +2155,69 @@ const ENEMY_LIST: EnemyDef[] = [
     intentRule: { scripted: [], weighted: [] },
   },
 
-  // —— 第三幕精英：巨型头颅（蓄势后连续重击）——
+  // —— 第三幕精英：巨型头颅（第三十五批按参考逐位校准）——
   {
     id: "giant_head",
     name: "巨型头颅",
+    // MonsterIds.h:173 `{{500,500},{520,520}}`；`setRandomHp(hpRng, asc >= 8)`
+    //（MonsterSpecific.cpp:91-102，**精英**那一档，不是普通怪的 7）。
     hpMin: 500,
     hpMax: 500,
+    // preBattleAction 见 sts-combat.ts 的 `PRE_BATTLE_ACTION.giant_head`：
+    //   `setHasStatus<MS::SLOW>(true); setStatus<MS::SLOW>(0);`（MonsterSpecific.cpp:163-165）
+    // ⚠ **不是 `buff(n)`**：bit 置上、层数是 0，所以缓慢平时不出现在快照里。
     moves: [
       {
-        id: "gh_glare",
-        name: "凝视",
-        effects: [{ kind: "deal_damage", amount: 10 }],
+        // 数数：`attackPlayerHelper(bc, 13)`（MonsterSpecific.cpp:1567-1569）。
+        // ⚠ 参考那里**一个 `asc? :` 都没有**（`MonsterMoveDamage.cpp:74` 同样是裸的 `{13}`），
+        //   所以巨头在高爬升度下变强的只有血量与「时候到了」的起点。
+        // ⚠ 旧近似表**根本没有这一招**（只列了凝视与「时候到了」），本批补上。
+        id: "gh_count",
+        name: "数数",
+        effects: [{ kind: "deal_damage", amount: 13 }],
         intent: "attack",
       },
       {
-        id: "it_is_time",
+        // 凝视：`bc.player.debuff<PS::WEAK>(1, true);`（MonsterSpecific.cpp:1572-1575）——
+        // **裸的 `player.debuff`**，即第二十九批冠军嘲讽那一族（与
+        // `Actions::DebuffPlayer<...>(n).actFunc(bc)` 逐位等价），用同一个 `sync: true` 表达。
+        // ⚠ 三处照抄：① `sync: true`（不入队，紧随其后那次同步 `rollMove` 执行时已生效）；
+        //   ② 显式传了 `true`（`isSourceMonster`），所以虚弱走 justApplied、施加那个回合末不递减；
+        //   ③ **没有任何伤害**——旧近似表把它写成「10 点攻击」，与参考完全无关。
+        id: "gh_glare",
+        name: "凝视",
+        effects: [{ kind: "apply_power", power: "weak", amount: 1, on: "target", sync: true }],
+        intent: "debuff",
+      },
+      {
+        // 时候到了（MonsterSpecific.cpp:1577-1583）：
+        //     const auto t = std::min(bc.getMonsterTurnNumber()-5, 6) * 5;
+        //     const auto damage = (asc3 ? 40 : 30) + t;
+        //     attackPlayerHelper(bc, damage);   // 参考在这行注了 `// todo this can be done immediately`
+        //     bc.noOpRollMove();
+        // ⚠ 四处照抄：
+        //  ① 成长是**封顶**的（`monsterTurnRamp`），不是复形怪那种无上限线性；
+        //  ②⚠⚠ **`t` 可以为负**：出招规则的门是 `getMonsterTurnNumber() >= 4`，所以第一次
+        //     出这一招时 `min(4-5, 6)*5 = -5`，伤害是 **25**，比下一回合的 30 还低。
+        //     写成 `max(0, …)` 会让第一击多打 5 点。
+        //  ③ 分档是 **asc3**（**精英**那一族 `getTriIdx(asc, 3, 18)` 的低阈值），
+        //     不是走廊小怪的 asc2——照搬邻居必错。
+        //  ④ 旧近似表写死 35，与参考的 25/30/35/…/60 序列完全无关。
+        id: "gh_it_is_time",
         name: "时候到了",
-        effects: [{ kind: "deal_damage", amount: 35 }],
+        effects: [
+          {
+            kind: "deal_damage",
+            amount: 30,
+            ascAmount: [{ atLeast: 3, amount: 40 }],
+            monsterTurnRamp: { subtract: 5, cap: 6, scale: 5 },
+          },
+        ],
         intent: "attack",
       },
     ],
-    // 出招由 sts-combat.ts 的 MOVE_RULES 登记 giant_head（待迁移）（前 3 回合凝视，之后每回合重击）。
+    // 出招规则见 sts-combat.ts 的 `MOVE_RULES.giant_head`（MonsterSpecific.cpp:3207-3229）。
+    // 三条 case 的收尾**三种形态并存**，见 `MOVE_TURN_END`。
     intentRule: { scripted: [], weighted: [] },
   },
 
@@ -3294,49 +3336,102 @@ const ENEMY_LIST: EnemyDef[] = [
     // 旧近似表那份 `scripted: ["maw_roar"] + 50/50` 与参考完全不同，本批弃用。
     intentRule: { scripted: [], weighted: [] },
   },
+  // 蠕动血块（第三十五批按参考逐位校准）。
   {
     id: "writhing_mass",
     name: "蠕动之物",
+    // MonsterIds.h:216 `{{160,160},{175,175}}`；`setRandomHp(hpRng, asc >= 7)`
+    //（MonsterSpecific.cpp:72-74，与史莱姆 / 食蛇草 / 尖塔增生同一组 case）。
+    // ⚠ **两组**，不是一个区间；走普通的 `setRandomHp`（掷一次），上下界相同**照样掷**。
     hpMin: 160,
     hpMax: 160,
+    // preBattleAction 见 sts-combat.ts 的 `PRE_BATTLE_ACTION.writhing_mass`：
+    //   `setHasStatus<REACTIVE>(true); setStatus<REACTIVE>(0); buff<MALLEABLE>(3);`
+    // ⚠ 它是**全参考项目唯一同时带易塑与反应的怪**，也正因为如此，
+    //   `attackedUnblockedHelper` 那一格（两者共用）的形状只有它能钉住。
     moves: [
       {
-        id: "wm_multi_strike",
-        name: "乱抽",
-        effects: [{ kind: "deal_damage_multi", amount: 7, times: 3 }],
-        intent: "attack",
-      },
-      {
+        // 重抽：`attackPlayerHelper(bc, asc2 ? 38 : 32)`（MonsterSpecific.cpp:1555）。
         id: "wm_strong_strike",
         name: "重抽",
-        effects: [{ kind: "deal_damage", amount: 32 }],
+        effects: [{ kind: "deal_damage", amount: 32, ascAmount: [{ atLeast: 2, amount: 38 }] }],
         intent: "attack",
       },
       {
-        id: "wm_flail",
-        name: "挥击",
-        effects: [{ kind: "deal_damage", amount: 15 }],
-        intent: "attack",
-      },
-      {
-        id: "wm_wither",
-        name: "萎缩",
+        // 乱抽：`attackPlayerHelper(bc, asc2 ? 9 : 7, 3)`（MonsterSpecific.cpp:1550）。
+        // ⚠ 段数是第二个实参、**恒 3**；`asc? :` 落在每击伤害上（见 `ascTimes` 的对照）。
+        id: "wm_multi_strike",
+        name: "乱抽",
         effects: [
-          { kind: "deal_damage", amount: 10 },
-          { kind: "apply_power", power: "weak", amount: 2, on: "target" },
+          {
+            kind: "deal_damage_multi",
+            amount: 7,
+            times: 3,
+            ascAmount: [{ atLeast: 2, amount: 9 }],
+          },
         ],
         intent: "attack",
       },
+      {
+        // 挥击：`attackPlayerHelper(bc, asc2 ? 16 : 15)`
+        //     + `addToBot(Actions::MonsterGainBlock(idx, asc2 ? 18 : 16))`
+        //（MonsterSpecific.cpp:1534-1536）。
+        // ⚠ 两个数**各有各的分档**（15/16 与 16/18），别当成同一个数。
+        // ⚠ 格挡是 `addToBot`（省略 `sync` 即入队），与颚虫的猛击同族——所以它排在
+        //   本次攻击**之后**结算，触发它的那一击不被自己挡下。
+        // ⚠ 旧近似表只有伤害 15、**漏了格挡**，本批补上。
+        id: "wm_flail",
+        name: "挥击",
+        effects: [
+          { kind: "deal_damage", amount: 15, ascAmount: [{ atLeast: 2, amount: 16 }] },
+          { kind: "gain_block", amount: 16, ascAmount: [{ atLeast: 2, amount: 18 }] },
+        ],
+        intent: "attack",
+      },
+      {
+        // 萎缩：`attackPlayerHelper(bc, asc2 ? 12 : 10)`
+        //     + `addToBot(Actions::DebuffPlayer<PS::WEAK>(2, true))`
+        //     + `addToBot(Actions::DebuffPlayer<PS::VULNERABLE>(2, true))`
+        //（MonsterSpecific.cpp:1560-1564）。
+        // ⚠ 三处照抄：① 伤害带 asc2 分档（10 → 12），旧近似表写死 10；
+        //   ② **两条减益都是入队的**（省略 `sync`），顺序是先虚弱、后易伤；
+        //   ③ 旧近似表**漏了易伤**那一条。
+        // ⚠⚠ 它走 `attackPlayerHelper` 却**不在**参考的 `isMoveAttack` 白名单里
+        //   （MonsterMoves.h:527-529 只收挥击 / 乱抽 / 重抽）。这与第三十二批爆破怪那条
+        //   正好是同一判据的两个方向，疑似参考笔误——**照抄参考、不打补丁**，
+        //   见 TODOS「待裁定」。
+        id: "wm_wither",
+        name: "萎缩",
+        effects: [
+          { kind: "deal_damage", amount: 10, ascAmount: [{ atLeast: 2, amount: 12 }] },
+          { kind: "apply_power", power: "weak", amount: 2, on: "target" },
+          { kind: "apply_power", power: "vulnerable", amount: 2, on: "target" },
+        ],
+        intent: "attack",
+      },
+      {
+        // 植入（MonsterSpecific.cpp:1540-1547）：
+        //     miscInfo = true;
+        //     if (!bc.player.hasRelic<R::OMAMORI>()) {
+        //         if (bc.player.hasRelic<R::DARKSTONE_PERIAPT>()) { bc.player.increaseMaxHp(6); }
+        //     }
+        //     rollMove(bc);
+        // ⚠ 参考**不建模那张寄生虫诅咒**（真实游戏是往牌组里塞一张，属于 run 层），
+        //   战斗内只剩「标记已植入」这一句 + 两个遗物的副作用。
+        // ⚠ 两个遗物（御守 / 暗石护符）**都不在 harness 的八个轮换里**，所以那一支
+        //   结构性不可达，留 TODO 不实现（同贤者之石那一族）。见 sts-combat.ts。
+        // ⚠ 收尾是**同步的真 `rollMove`**（第六形态），不是 `addToBot(RollMove)`——
+        //   而且必须排在 `miscInfo = true` **之后**，否则出招规则会再选一次植入。
+        // ⚠ 旧近似表**根本没有这一招**（只列了四条攻击），本批补上。
+        id: "wm_implant",
+        name: "植入",
+        effects: [{ kind: "set_misc_info", amount: 1 }],
+        intent: "debuff",
+      },
     ],
-    intentRule: {
-      scripted: [],
-      weighted: [
-        { move: "wm_multi_strike", weight: 30, maxInARow: 1 },
-        { move: "wm_strong_strike", weight: 20, maxInARow: 1 },
-        { move: "wm_flail", weight: 25, maxInARow: 2 },
-        { move: "wm_wither", weight: 25, maxInARow: 1 },
-      ],
-    },
+    // 出招规则见 sts-combat.ts 的 `MOVE_RULES.writhing_mass`（MonsterSpecific.cpp:3119-3202）。
+    // 旧近似表那份加权（30/20/25/25）与参考完全不同，本批弃用。
+    intentRule: { scripted: [], weighted: [] },
   },
 ];
 

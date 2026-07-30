@@ -152,7 +152,18 @@ export type ActionFn = (bc: BattleContext) => void;
  * 一次结算（少抽两张牌、牌凭空消失），正是这个项目最不能容忍的静默错。
  */
 export type ActionDesc =
-  | { kind: "after_use_card"; card: CombatCard; exhaustOnUse: boolean; purgeOnUse?: boolean }
+  | {
+      kind: "after_use_card";
+      card: CombatCard;
+      exhaustOnUse: boolean;
+      purgeOnUse?: boolean;
+      /**
+       * 第三十五批新增（缓慢那道 `if (item.triggerOnUse)` 的门）。**老档没有这一位，
+       * 按 `true` 回填**——参考的 `CardQueueItem::triggerOnUse` 默认就是 true，而能排出
+       * 这条动作的路径上它恒为真（唯一的假值来源是尚未登记的时间吞噬者）。
+       */
+      triggerOnUse?: boolean;
+    }
   | { kind: "draw_cards"; count: number };
 
 export type Action = {
@@ -2036,6 +2047,141 @@ const MOVE_RULES: Record<string, MoveForRoll> = {
   //   怪物回合的收尾是**同步**的 `bc.noOpRollMove()`（掷一次 aiRng 就丢，意图与
   //   moveHistory 都不动），从不再走 `rollMove`。见 `MOVE_TURN_END`。
   transient: () => "transient_slam",
+
+  // —— 第三十五批：蠕动血块与巨头 ——
+
+  // 蠕动血块：对齐 MonsterSpecific.cpp:3119-3202。参考的形状是一个 **`while (true)` 循环 +
+  // 一串并列的（不是 else-if 的）`if`**，每个 if 要么 return、要么把 `myRoll` **重掷**到
+  // 下一段区间然后**落到下一个 if**：
+  //
+  //     if (firstTurn()) { <33 乱抽 / <66 挥击 / 否则 萎缩 }
+  //     const bool haveUsedImplant = miscInfo;
+  //     auto myRoll = roll;
+  //     while (true) {
+  //       if (myRoll < 10) { if (!lastMove(重抽)) return 重抽; myRoll = aiRng.random(10, 99); }
+  //       if (myRoll < 20) { if (!haveUsedImplant && !lastMove(植入)) return 植入;
+  //                          else if (aiRng.randomBoolean(0.1f)) return 重抽;
+  //                          myRoll = aiRng.random(20, 99); }
+  //       if (myRoll < 40) { if (!lastMove(萎缩)) return 萎缩;
+  //                          if (aiRng.randomBoolean(0.4f)) {
+  //                            myRoll = aiRng.random(0, 19);
+  //                            if (myRoll < 10) return 重抽;
+  //                            if (!haveUsedImplant) return 植入;
+  //                            if (aiRng.randomBoolean(0.1f)) return 重抽;
+  //                            myRoll = aiRng.random(20, 99); continue; }
+  //                          myRoll = aiRng.random(40, 99); }
+  //       if (myRoll < 70) { if (!lastMove(乱抽)) return 乱抽;
+  //                          else if (aiRng.randomBoolean(0.3f)) return 挥击;
+  //                          else { myRoll = aiRng.random(0, 39); continue; } }
+  //       if (!lastMove(挥击)) return 挥击; else return 萎缩;
+  //     }
+  //
+  // ⚠ 八处照抄，一处都不能省：
+  //  ①⚠⚠ **那些 `if` 是并列的、不是 else-if**：重掷之后**接着往下判**同一轮里的下一段。
+  //     写成 else-if / switch 会让「重掷到 25 之后落进 `< 40` 那一段」这条路整个消失。
+  //  ②⚠⚠ 每一次 `myRoll = aiRng.random(a, b)` 都是**真的重掷**（`a + nextInt(b-a+1)`），
+  //     不是把 roll 钳到 a。所以单次 rollMove 的 aiRng 消耗是 **1 到很多次**。
+  //  ③ 三个 `randomBoolean` 的概率各不相同（0.1 / 0.4 / 0.3），而且 0.1 那个出现**两次**
+  //     （`< 20` 段一次、`< 40` 段的内层一次）——是两处独立的字面量。
+  //  ④ **`continue` 与「落到下一个 if」不是一回事**：`continue` 回到 `myRoll < 10` 重头判，
+  //     所以 `< 70` 段那次 `random(0, 39)` 之后真的可能再出重抽 / 植入 / 萎缩。
+  //  ⑤ `haveUsedImplant` 在**进循环之前**读一次就定了（`const`），循环里不再刷新——
+  //     当前无差别（循环内不改 miscInfo），照抄形状。
+  //  ⑥ 首回合三分（33 / 66）用的是**顶层那次 roll**，且首回合**不看**植入标志。
+  //  ⑦ `< 40` 段内层的 `random(0, 19)` 之后判的是 `myRoll < 10`（**10 而不是 20**），
+  //     另一半才轮到植入。
+  //  ⑧ 兜底（`myRoll >= 70`）是「没连挥击就挥击、否则萎缩」，不是「恒挥击」。
+  // ⚠ 它必然终止：`< 70` 段的 `continue` 要求刚出过乱抽，而重抽 / 植入 / 萎缩 / 挥击
+  //   任何一条命中都直接 return。
+  writhing_mass: (bc, m, roll) => {
+    if (firstTurn(m)) {
+      if (roll < 33) {
+        return "wm_multi_strike";
+      }
+      if (roll < 66) {
+        return "wm_flail";
+      }
+      return "wm_wither";
+    }
+    const haveUsedImplant = m.miscInfo !== 0;
+    let myRoll = roll;
+    for (;;) {
+      if (myRoll < 10) {
+        if (!lastMove(m, "wm_strong_strike")) {
+          return "wm_strong_strike";
+        }
+        myRoll = bc.rng.aiRng.random(10, 99); // ★ 追加一次 aiRng（重掷，不是钳制）
+      }
+      if (myRoll < 20) {
+        if (!haveUsedImplant && !lastMove(m, "wm_implant")) {
+          return "wm_implant";
+        } else if (bc.rng.aiRng.randomBoolean(Math.fround(0.1))) {
+          // ★ 追加一次 aiRng
+          return "wm_strong_strike";
+        }
+        myRoll = bc.rng.aiRng.random(20, 99); // ★ 追加一次 aiRng
+      }
+      if (myRoll < 40) {
+        if (!lastMove(m, "wm_wither")) {
+          return "wm_wither";
+        }
+        // 刚萎缩过
+        if (bc.rng.aiRng.randomBoolean(Math.fround(0.4))) {
+          // ★ 追加一次 aiRng
+          myRoll = bc.rng.aiRng.random(0, 19); // ★ 追加一次 aiRng
+          if (myRoll < 10) {
+            return "wm_strong_strike";
+          } else if (!haveUsedImplant) {
+            return "wm_implant";
+          } else if (bc.rng.aiRng.randomBoolean(Math.fround(0.1))) {
+            // ★ 追加一次 aiRng
+            return "wm_strong_strike";
+          } else {
+            myRoll = bc.rng.aiRng.random(20, 99); // ★ 追加一次 aiRng
+            continue;
+          }
+        }
+        myRoll = bc.rng.aiRng.random(40, 99); // ★ 追加一次 aiRng
+      }
+      if (myRoll < 70) {
+        if (!lastMove(m, "wm_multi_strike")) {
+          return "wm_multi_strike";
+        } else if (bc.rng.aiRng.randomBoolean(Math.fround(0.3))) {
+          // ★ 追加一次 aiRng
+          return "wm_flail";
+        } else {
+          myRoll = bc.rng.aiRng.random(0, 39); // ★ 追加一次 aiRng
+          continue;
+        }
+      }
+      if (!lastMove(m, "wm_flail")) {
+        return "wm_flail";
+      }
+      return "wm_wither";
+    }
+  },
+
+  // 巨头：对齐 MonsterSpecific.cpp:3207-3229。
+  //     if (bc.getMonsterTurnNumber() >= 4) return IT_IS_TIME;
+  //     if (roll < 50) { if (!lastTwoMoves(GLARE)) return GLARE; else return COUNT; }
+  //     if (!lastTwoMoves(COUNT)) return COUNT; else return GLARE;
+  // ⚠ 四处照抄：
+  //  ①⚠⚠ **第一道门读的是全局怪物回合数**（`bc.turn + 1`），不是这只怪自己的历史——
+  //     一旦到了第 4 个怪物回合，此后**每一次** rollMove 都返回「时候到了」。
+  //     配合那条 case 的收尾（同步 `noOpRollMove`，**不改意图**），它其实只会被走到一次。
+  //  ② 两道连续限制都是 `lastTwoMoves`（连出两次才封），不是 `lastMove`。
+  //  ③ 分界恰好 50，两侧对称（低位偏凝视、高位偏数数）。
+  //  ④ 首回合**没有**特判：`moveHistory` 为空时两个 `lastTwoMoves` 都为假，
+  //     于是 roll < 50 出凝视、否则出数数。
+  giant_head: (bc, m, roll) => {
+    if (getMonsterTurnNumber(bc) >= 4) {
+      return "gh_it_is_time";
+    }
+    if (roll < 50) {
+      return lastTwoMoves(m, "gh_glare") ? "gh_count" : "gh_glare";
+    }
+    return lastTwoMoves(m, "gh_count") ? "gh_glare" : "gh_count";
+  },
 };
 
 // ============================================================================
@@ -2854,6 +3000,41 @@ const MOVE_TURN_END: Record<string, MoveTurnEnd> = {
         m.powers.splice(m.powers.indexOf(fading), 1);
       }
     }
+  },
+
+  // —— 第三十五批：蠕动血块与巨头 ——
+  //
+  // 蠕动血块五条 case 里只有**一条**不是默认值（MonsterSpecific.cpp:1534-1565）：
+  //   挥击 / 乱抽 / 重抽 / 萎缩  `addToBot(Actions::RollMove(idx));` —— 默认 `"roll"`，不写进来
+  //   植入                        `rollMove(bc);`                     —— 第六形态：**同步的真 rollMove**
+  //
+  // ⚠⚠ 植入那条**必须是同步**，而且**必须排在 `miscInfo = true` 之后**：紧接着的
+  //   `getMoveForRoll` 读的正是 `haveUsedImplant = miscInfo`。写成入队的 `"roll"` 在
+  //   当前形状下取值相同（出队时 miscInfo 已经是 1），但那条 case **没有排任何队列动作**，
+  //   所以「同步 ↔ 入队」在这里属于第二十六批那条判据说的**等价改写**——照抄参考。
+  //   ⚠ 写成 `{setMove: …}` 则会少掷一次 aiRng，`rng.ai` 计数器当场对不上。
+  "writhing_mass/wm_implant": (bc, m) => {
+    rollMove(bc, m); // ★ 消耗至少一次 aiRng（同步的真 rollMove，不是 no_op）
+  },
+
+  // 巨头三条 case 的收尾**三种形态并存**（MonsterSpecific.cpp:1567-1583）：
+  //   数数        `addToBot(Actions::RollMove(idx));` —— 默认 `"roll"`，不写进来
+  //   凝视        `rollMove(bc);`                     —— 第六形态：**同步的真 rollMove**
+  //   时候到了    `bc.noOpRollMove();`                —— **同步**的 noOpRollMove
+  //
+  // ⚠ 凝视那条：虚弱是同步施加的（`sync: true`），排在 rollMove 之前——但出招规则不读玩家
+  //   状态，所以顺序当前不可观察；照抄。
+  "giant_head/gh_glare": (bc, m) => {
+    rollMove(bc, m); // ★ 消耗一次 aiRng（同步的真 rollMove）
+  },
+  // ⚠⚠ 「时候到了」用的是 `noOpRollMove` 而不是 `RollMove`：掷一次 aiRng 就丢、**意图不变**。
+  //   配合出招规则那道 `getMonsterTurnNumber() >= 4`，效果是**这一招一旦出场就再也不换**
+  //   ——巨头从第 4 个怪物回合起每回合都砸，伤害 25 / 30 / 35 …一路涨到 60 封顶。
+  //   写成 `"roll"` 表面上也永远滚到「时候到了」（那道门恒成立），但 `moveHistory` 会被
+  //   一路前移，而且它是**入队**的——这一击若打死玩家，主循环跳出、那次掷骰就永远不发生，
+  //   `rng.ai` 计数器当场对不上（「效果入队 + 收尾同步」那一族，工头 / 复形怪同理）。
+  "giant_head/gh_it_is_time": (bc) => {
+    bc.rng.aiRng.random(99); // ★ 消耗一次 aiRng（noOpRollMove，**同步**，意图不变）
   },
 };
 
@@ -4371,6 +4552,45 @@ const PRE_BATTLE_ACTION: Record<string, PreBattleAction> = {
     addPower(m.powers, "shifting", 1);
     addPower(m.powers, "fading", bc.ascension >= 17 ? 6 : 5);
   },
+
+  // —— 第三十五批 ——
+
+  // 蠕动血块的反应 + 易塑（对齐 MonsterSpecific.cpp:210-215）：
+  //     case MonsterId::WRITHING_MASS: {
+  //         setHasStatus<MS::REACTIVE>(true);
+  //         setStatus<MS::REACTIVE>(0);
+  //         buff<MS::MALLEABLE>(3);
+  //         break;
+  //     }
+  // **不消耗 RNG、没有 asc 分档。**
+  // ⚠⚠ **前两句不是 `buff<REACTIVE>(0)`**：`buff` 会 `uniquePower1 += 0` 再置 bit，
+  //   数值上同解，但参考写的是「置位 + 覆盖成 0」这两句，而**第三十四批的 `cleared` 那条
+  //   教训正是「bit 与数值是两回事」**——照抄形状。我们这边两种写法都落成
+  //   「条目在、`amount` 是 0」，所以用 `addPower(…, 0)` 表达（条目一旦加上就永不摘除，
+  //   同飞行那一族）。
+  // ⚠ 层数 0 的条目**不进快照**（harness 的 `getStatusInternal` 返回 0 就被 `v == 0` 折叠，
+  //   我们的 `powersOf` 同样滤掉），所以开局那一帧只看得见 `MALLEABLE: 3`。
+  //   反应只在「挨了打、`ReactiveRollMove` 还没出队」的那几帧现身。
+  // ⚠⚠ 它是**全参考项目唯一同时带易塑与反应的怪**，而那两者在
+  //   `attackedUnblockedHelper` 的 else-if 链上**共用同一格**（见 `monsterDamageUnblocked`）。
+  //   第二十三批装食蛇草时只写了易塑那一半，本批把那一格补完整。
+  writhing_mass: (_bc, m) => {
+    addPower(m.powers, "reactive", 0);
+    addPower(m.powers, "malleable", 3);
+  },
+
+  // 巨头的缓慢（对齐 MonsterSpecific.cpp:163-166）：
+  //     case MonsterId::GIANT_HEAD:     // game adds slow power
+  //         setHasStatus<MS::SLOW>(true);
+  //         setStatus<MS::SLOW>(0);
+  //         break;
+  // **不消耗 RNG、没有 asc 分档。**
+  // ⚠ 与反应同形：**置位 + 覆盖成 0**，不是 `buff(n)`。所以开局快照里巨头身上
+  //   一个 power 都没有——缓慢要等玩家打出第一张牌（`onAfterUseCard` 里 +1）才现身。
+  // ⚠ 三个读点见 `PowerId` 的注释；回合末清零在 `applyEndOfRoundPowers`。
+  giant_head: (_bc, m) => {
+    addPower(m.powers, "slow", 0);
+  },
 };
 
 type EncounterSetup = (bc: BattleContext) => void;
@@ -4750,6 +4970,22 @@ const MONSTER_ATTACK_MOVES: ReadonlySet<string> = new Set([
   "darkling/darkling_chomp",
   // 复形怪（`:526`，第三十四批）。它只有这一招，在列。
   "transient/transient_slam",
+  // 巨头（`:456-457`，第三十五批）。⚠ **三招里只有两条在**：数数 / 时候到了 → 在；
+  //   凝视 → **不在**（它走的是裸的 `bc.player.debuff<PS::WEAK>(1, true)`，不带任何伤害）。
+  "giant_head/gh_count",
+  "giant_head/gh_it_is_time",
+  // 蠕动血块（`:527-529`，第三十五批）。⚠⚠ **五招里只有三条在，而这是全项目最刺眼的一格**：
+  //   挥击 / 乱抽 / 重抽 → 在；植入（没有伤害）→ 不在，这两点都符合判据；
+  //   ⚠⚠ **萎缩走 `attackPlayerHelper(bc, asc2 ? 12 : 10)` 却不在参考的白名单里**
+  //   （MonsterMoves.h:527-529 只列了三条）。按第三十二批立下的判据
+  //   （「`isMoveAttack` 收的就是走 `attackPlayerHelper` / `Actions::AttackPlayer` 的那些招」）
+  //   它应该在，而且真实游戏里萎缩显示的是**攻击 + 减益**双意图——所以这**疑似参考的笔误**。
+  //   ⚠ 但三条判据只过了第 ①、③ 条（补丁没有预言机：预言机就是参考本身），
+  //   与第三十二批爆破怪自爆那条同族，**照抄参考、不打补丁**，记进 TODOS「待裁定」。
+  //   ⚠ 这条差异已被数据钉住（把萎缩加进来会当场红），不会静默飘走。
+  "writhing_mass/wm_flail",
+  "writhing_mass/wm_multi_strike",
+  "writhing_mass/wm_strong_strike",
 ]);
 
 /**
@@ -6207,6 +6443,9 @@ function hasPower(powers: PowerInstance[], id: string): boolean {
   return findPower(powers, id) !== undefined;
 }
 
+/** 缓慢每层的伤害加成，对齐参考的字面量 `0.1f`（float，不是精确的 0.1）。 */
+const SLOW_STEP = Math.fround(0.1);
+
 export function calculateCardDamage(
   bc: BattleContext,
   targetIdx: number,
@@ -6227,10 +6466,24 @@ export function calculateCardDamage(
 
   // 敌人 Power AtDamageReceive
   const target = bc.monsters[targetIdx];
+  // 缓慢（SLOW，巨头，第三十五批）：`if (monster.hasStatus<MS::SLOW>())
+  //   damage *= 1 + static_cast<float>(monster.getStatus<MS::SLOW>()) * 0.1f;`
+  // （BattleContext.cpp:2748-2750）。⚠ 四处照抄：
+  //  ① **位置在易伤之前**——两者都是乘法，但 `float` 乘法不满足结合律，先后顺序真的会
+  //     在个别数值上分岔（先 ×1.3 再 ×1.5 与反过来可能差 1 点）。
+  //  ② 门是 `hasStatus`（条目在不在）而不是层数 > 0：巨头开局层数就是 0，
+  //     但那时倍率也恰好是 1，所以当前两种写法同解；照抄 `hasPower`。
+  //  ③ 层数就是「玩家本回合已经打出的牌数」（回合末清零），所以同一回合越往后打越疼
+  //     ——这才是缓慢的全部玩法。
+  //  ④ 浮点逐位对齐：`0.1f` 不是精确值，必须走 `Math.fround`，且三步各 round 一次
+  //     （`slow * 0.1f` → `1 + …` → `damage * …`），与 C++ 的 float 运算一一对应。
+  if (target !== undefined && hasPower(target.powers, "slow")) {
+    const slowMult = Math.fround(1 + Math.fround(getPower(target.powers, "slow") * SLOW_STEP));
+    damage = Math.fround(damage * slowMult);
+  }
   if (target !== undefined && getPower(target.powers, "vulnerable") > 0) {
     damage = Math.fround(damage * 1.5);
   }
-  // TODO(后续PR): 缓慢（在易伤**之前**）。
 
   // —— 怪物 Power AtDamageReceiveFinal ——
   // 飞行（拜鸟，第二十四批）：`if (monster.hasStatus<MS::FLIGHT>()) damage *= .5;`
@@ -6312,6 +6565,8 @@ function monsterAttacked(bc: BattleContext, m: CombatMonster, rawDamage: number)
 function monsterDamageUnblocked(bc: BattleContext, m: CombatMonster, damage: number): void {
   // onAttacked 链（对齐 attackedUnblockedHelper 的 if/**else-if**顺序，Monster.cpp:348-396）。
   // 参考的顺序是：无敌 → **镀甲** → 蜷缩 → 飞行 → 易塑/反应 → **荆棘** → **沉睡** → 变换。
+  // ⚠ 第五格是**一格装两条 Power**（`hasStatus<MALLEABLE>() || hasStatus<REACTIVE>()`），
+  //   不是两格——第三十五批装蠕动血块时补全，详见那一格的注释。
   // ⚠ 它是一条 **else-if 链**：同时带蜷缩与沉睡的怪只会触发排在前面的那一条。当前没有这种
   //   怪（虱子只有蜷缩、拉加维林只有沉睡），但形状照抄——写成两个独立 if 会在将来静默出错。
   // 蜷缩把加格挡 addToBot 排在扣血之后，故这里先记下、扣完血再加。
@@ -6319,6 +6574,7 @@ function monsterDamageUnblocked(bc: BattleContext, m: CombatMonster, damage: num
   const curl = findPower(m.powers, "curl_up");
   const flight = findPower(m.powers, "flight");
   const malleable = findPower(m.powers, "malleable");
+  const reactive = findPower(m.powers, "reactive");
   const thorns = findPower(m.powers, "thorns");
   if (platedArmor !== undefined) {
     // 镀甲（PLATED_ARMOR，带壳寄生虫）：对齐 Monster.cpp:352-355 那一格。
@@ -6394,22 +6650,65 @@ function monsterDamageUnblocked(bc: BattleContext, m: CombatMonster, damage: num
       setMove(m, "stunned");
     }
     flight.amount = amount - 1;
-  } else if (malleable !== undefined && malleable.amount > 0) {
-    // 易塑（MALLEABLE，食蛇草）：对齐 Monster.cpp:369-374 那一格。
-    // ⚠ 参考写的是 `else if (hasStatus<MALLEABLE>() || hasStatus<REACTIVE>())`，进去之后
-    //   **两个 if 各判各的**（蠕动血块两者都有）。当前只有食蛇草带易塑、没有怪带反应，
-    //   所以这里只写易塑那一半；补反应时要注意它俩共用这一格（不是两格）。
-    // ⚠ 三处照抄：
+  } else if (malleable !== undefined || reactive !== undefined) {
+    // 易塑 + 反应（MALLEABLE / REACTIVE）：对齐 Monster.cpp:369-383 那**一格**。
+    //
+    //     } else if (hasStatus<MS::MALLEABLE>() || hasStatus<MS::REACTIVE>()) {
+    //         if (hasStatus<MS::MALLEABLE>()) {
+    //             const auto malleable = getStatus<MS::MALLEABLE>();
+    //             bc.addToBot( Actions::MonsterGainBlock(this->idx, malleable) );
+    //             setStatus<MS::MALLEABLE>(malleable+1);
+    //         }
+    //         if (hasStatus<MS::REACTIVE>()) {
+    //             if (getStatus<MS::REACTIVE>() == 0) {
+    //                 setStatus<MS::REACTIVE>(1);
+    //                 bc.addToBot( Actions::ReactiveRollMove() );
+    //             } else {
+    //                 setStatus<MS::REACTIVE>(getStatus<MS::REACTIVE>()+1);
+    //             }
+    //         }
+    //     }
+    //
+    // ⚠⚠ **这是链上的一格、不是两格**（第二十三批装易塑时就记下了这条账，第三十五批结清）：
+    //   门是两者的**或**，进去之后两个 if **各判各的**。蠕动血块两者都有，所以它一次挨打
+    //   会同时加格挡与滚意图；食蛇草只有易塑、巨头两者都没有。
+    //   拆成两个 else-if 会让蠕动血块只走到前一格——反应整条静默失效。
+    // ⚠ 门读的是 `hasStatus`（**条目在不在**），不是层数 > 0：反应的层数平时**恰好是 0**
+    //   （`preBattleAction` 就是 `setHasStatus(true); setStatus(0);`），写成 `> 0` 它永远
+    //   触发不了。易塑那一半此前写的是 `amount > 0`，本批一并改成条目判定（同解，形状对齐）。
+    //
+    // 易塑三处照抄：
     //  ① 加的格挡是 `addToBot(MonsterGainBlock(idx, malleable))` ——**入队**，所以
     //     触发它的那一击不被减免（与蜷缩同族）；
     //  ② 层数 **+1**（`setStatus<MALLEABLE>(malleable+1)`），不是消耗掉——挨得越多、
     //     下一次挡得越多；
     //  ③ 复位**不在这里**，在 `applyMonsterEndOfTurnTriggers`（每回合末拉回 3）。
-    const amount = malleable.amount;
-    addToBot(bc, () => {
-      m.block += amount;
-    });
-    malleable.amount = amount + 1;
+    //
+    // 反应四处照抄：
+    //  ①⚠⚠ 层数在这里的语义是「**这一波攒了几次重滚**」，不是强度：0 → 1 并**入队**
+    //     一条 `Actions::ReactiveRollMove`，1 → 2 / 2 → 3 只加数、**不再入队**。
+    //     所以一张多段攻击牌打三下只排**一条**动作，但那条动作会滚 **3** 次意图。
+    //     写成「每次都入队」会让 aiRng 消耗次数相同、而 `moveHistory` 的推进次数完全不同。
+    //  ② 排的是 `addToBot`，`clearOnCombatVictory` 取默认的 **true**
+    //     （`Action(ActionFunction)` 单参构造）——所以**打死它的那一击不会再滚意图**，
+    //     而层数已经被置成 1 且再也没人清：最后一帧快照里会留着 `REACTIVE: 1`。
+    //  ③ 它排在易塑那条加格挡**之后**入队（两条都是 addToBot），顺序照抄。
+    //  ④ 层数归零在 `reactiveRollMove` 里（`setStatus<REACTIVE>(0)`，**只写数值、不清 bit**）。
+    if (malleable !== undefined) {
+      const amount = malleable.amount;
+      addToBot(bc, () => {
+        m.block += amount;
+      });
+      malleable.amount = amount + 1;
+    }
+    if (reactive !== undefined) {
+      if (reactive.amount === 0) {
+        reactive.amount = 1;
+        addToBot(bc, (c) => reactiveRollMove(c));
+      } else {
+        reactive.amount += 1;
+      }
+    }
   } else if (thorns !== undefined) {
     // 荆棘（THORNS，尖刺客，第三十二批）：对齐 Monster.cpp:384-386 那一格。
     //
@@ -6469,7 +6768,7 @@ function monsterDamageUnblocked(bc: BattleContext, m: CombatMonster, damage: num
     addPower(m.powers, "strength", -damage);
     addPower(m.powers, "shackled", damage);
   }
-  // TODO(后续PR): 无敌 / 反应等其余 onAttacked 分支。
+  // TODO(后续PR): 无敌（链的第一格，腐化之心）。第三十五批补上了反应那半格。
 
   m.hp -= damage;
   if (m.hp <= 0) {
@@ -6693,6 +6992,50 @@ function gainBlockRandomEnemy(bc: BattleContext, sourceIdx: number, amount: numb
   if (target !== undefined) {
     target.block += amount;
   }
+}
+
+/**
+ * 反应触发的重滚意图（对齐 `Actions::ReactiveRollMove`，Actions.cpp:133-142；第三十五批）。
+ *
+ * ```cpp
+ * Action Actions::ReactiveRollMove() {
+ *     return {[=] (BattleContext &bc) {
+ *         // writhing mass is always monster 0
+ *         Monster &m = bc.monsters.arr[0];
+ *         for (int i = 0 ; i < m.getStatus<MS::REACTIVE>(); ++i) {
+ *             m.rollMove(bc);
+ *         }
+ *         m.setStatus<MS::REACTIVE>(0);
+ *     }};
+ * }
+ * ```
+ *
+ * ⚠ 四处照抄：
+ *  ①⚠⚠ **目标写死 0 号位**，参考在那行自注 `// writhing mass is always monster 0`。
+ *     它不查这只怪是不是排这条动作的那只、也不判死活。当前唯一的宿主是单怪编队
+ *     `WRITHING_MASS`，所以两者同解；照抄写死的形状，别改成 `indexOf(m)`。
+ *  ② 循环次数是**执行那一刻**的层数（这一波攒了几击就滚几次），而不是排队时的 1。
+ *     每一次都是**真的 `rollMove`**：掷 `aiRng.random(99)` 走出招规则（那条规则自己还可能
+ *     再追加若干次 aiRng），并且 `setMove` **推进 moveHistory**。
+ *  ③ 层数在循环**结束后**才清零，所以循环条件每次重读也不会变（`rollMove` 不碰反应）。
+ *  ④ 清零走 `setStatus`（**只写数值、不清 statusBits**），所以这条 Power 永不摘除
+ *     ——下一次挨打照样从 0 → 1 重新入队。这与镀甲的 `decrementStatus` 正相反。
+ * ⚠ 它是 `Action(ActionFunction)` 单参构造 → `clearOnCombatVictory` 取默认的 **true**，
+ *   所以打死蠕动血块的那一击排下的这条动作会被 `checkCombat` 清掉，层数停在 1。
+ */
+function reactiveRollMove(bc: BattleContext): void {
+  const m = bc.monsters[0];
+  if (m === undefined) {
+    return;
+  }
+  const reactive = findPower(m.powers, "reactive");
+  if (reactive === undefined) {
+    return;
+  }
+  for (let i = 0; i < reactive.amount; i += 1) {
+    rollMove(bc, m); // ★ 每次至少消耗一次 aiRng（真 rollMove，会推进 moveHistory）
+  }
+  reactive.amount = 0; // setStatus：只写数值、不清 bit
 }
 
 /** 对齐 BattleContext::checkCombat：胜利时清扫「战斗后不该再跑」的排队动作。 */
@@ -8952,11 +9295,13 @@ function useCard(bc: BattleContext, item: CardQueueItem): void {
   //（参考读的是成员 curCardQueueItem，同理不会变）。
   const exhaustOnUse = item.exhaustOnUse;
   const purgeOnUse = item.purgeOnUse;
-  addToBot(bc, (c) => onAfterUseCard(c, card, exhaustOnUse, purgeOnUse), false, {
+  const triggerOnUse = item.triggerOnUse;
+  addToBot(bc, (c) => onAfterUseCard(c, card, exhaustOnUse, purgeOnUse, triggerOnUse), false, {
     kind: "after_use_card",
     card,
     exhaustOnUse,
     purgeOnUse,
+    triggerOnUse,
   });
 
   // 移出手牌 + 扣能量（对齐 useCard 尾部）。
@@ -9137,18 +9482,49 @@ function onUseStatusOrCurseCard(bc: BattleContext): void {
 }
 
 /**
- * 对齐 onAfterUseCard 的卡去向：消耗 or 进弃牌堆。
+ * 对齐 `BattleContext::onAfterUseCard`（BattleContext.cpp:1967-2046）。
  *
- * ⚠ `purgeOnUse` 那道提前返回排在**最前**（BattleContext.cpp:1979，还在能力牌那道之前）：
+ * 参考的函数体分**两段**，中间夹着 `purgeOnUse` 那道提前返回：
+ *   ① `if (item.triggerOnUse) { … }` —— 「玩家打完一张牌」这个时点上的**怪物侧**触发
+ *      （时间扭曲 / **缓慢** / 死亡节拍），三条都只看 `monsters.arr[0]`；
+ *   ② 卡去向：消耗 or 进弃牌堆。
+ *
+ * ⚠ `purgeOnUse` 那道提前返回排在**两段之间**（BattleContext.cpp:1993，还在能力牌那道之前）：
  * 二连击复制出来的那份是队列项里的副本，结算完就直接丢掉——不进弃牌堆、不进消耗堆，
  * 也不触发消耗链。少了这道门，二连击每打一次就凭空多出一张牌。
+ * ⚠⚠ 但**第①段在它之前**，所以二连击复制出来的那一击**照样让缓慢 +1**。
  */
 function onAfterUseCard(
   bc: BattleContext,
   card: CombatCard,
   exhaustOnUse: boolean,
   purgeOnUse: boolean,
+  triggerOnUse: boolean,
 ): void {
+  // —— 第①段：`if (item.triggerOnUse)`（BattleContext.cpp:1971-1991）——
+  //
+  // ⚠ 参考读的是 `monsters.arr[0]`：**写死 0 号位、不判死活**，与激怒 / 尖锐外壳同一个写法。
+  //   缓慢全参考项目只有巨头一个宿主，而它是单怪编队，所以这里永远不会产生分歧。
+  // ⚠ `triggerOnUse` 在能走到这里的路径上**恒为真**（`CardQueueItem::triggerOnUse` 默认 true，
+  //   而 `playCardQueueItem` 只在 `purgeOnUse || (triggerOnUse && …)` 时才调 `useCard`，
+  //   `purgeOnUse` 那一族又不改这一位）。唯一的假值来源是 `Actions::TimeEaterPlayCardQueueItem`
+  //   （时间吞噬者，尚未登记）。照抄这道门，别因为「当前恒真」就省掉。
+  if (triggerOnUse) {
+    const m0 = bc.monsters[0];
+    // 缓慢（SLOW，巨头，第三十五批）：`if (m.hasStatus<MS::SLOW>()) m.buff<MS::SLOW>(1);`
+    // ⚠ 三处照抄：
+    //  ① 时点是 `Actions::OnAfterCardUsed` 这条**排队动作**执行的那一刻（`useCard` 末尾
+    //     `addToBot`），也就是**这张牌自己的效果全部排完之后**。而攻击牌的伤害是在
+    //     `CARD_RULES` 里就按当时的缓慢层数算好的——所以**打出的这张牌不吃自己那一层加成**，
+    //     加成从下一张开始。把它挪到 `useCard` 开头会让每张牌都多吃一层。
+    //  ② 是 `buff`（**累加**）而不是 `setStatus`：一个回合打 5 张就是 5 层。
+    //  ③ 门是 `hasStatus`（条目在不在），而巨头开局层数恰好是 0 —— 写成 `> 0` 它永远涨不起来。
+    if (m0 !== undefined && hasPower(m0.powers, "slow")) {
+      addPower(m0.powers, "slow", 1);
+    }
+    // TODO(后续PR): 时间扭曲（TIME_WARP，时间吞噬者）与死亡节拍（BEAT_OF_DEATH，腐化之心）
+    //   ——两者都还没有对应的怪登记。顺序照参考：时间扭曲 → 缓慢 → 死亡节拍。
+  }
   if (purgeOnUse) {
     return;
   }
@@ -9171,12 +9547,19 @@ function actionFromDesc(desc: ActionDesc): Action {
       const exhaustOnUse = desc.exhaustOnUse;
       // 老档没有 purgeOnUse（第九批新增），按 false 回填——它当时恒为假。
       const purgeOnUse = desc.purgeOnUse ?? false;
-      return makeAction((c) => onAfterUseCard(c, card, exhaustOnUse, purgeOnUse), false, {
-        kind: "after_use_card",
-        card,
-        exhaustOnUse,
-        purgeOnUse,
-      });
+      // 老档没有 triggerOnUse（第三十五批新增），按 true 回填——参考的默认值就是 true。
+      const triggerOnUse = desc.triggerOnUse ?? true;
+      return makeAction(
+        (c) => onAfterUseCard(c, card, exhaustOnUse, purgeOnUse, triggerOnUse),
+        false,
+        {
+          kind: "after_use_card",
+          card,
+          exhaustOnUse,
+          purgeOnUse,
+          triggerOnUse,
+        },
+      );
     }
     case "draw_cards": {
       const count = desc.count;
@@ -10244,12 +10627,23 @@ function takeTurn(bc: BattleContext, m: CombatMonster): string | null {
       //   ⚠ `ascAmount` 只覆盖起点那个数，步长是常数——参考把 `asc? :` 写在加号左边。
       //   ⚠ 它与大嘴吞噬的 `times: "monsterTurnHalf"` 读的是**同一个**全局回合计数，
       //     但一个改伤害、一个改段数，别互相顶替。
+      // ⚠ `deal_damage` 的 `monsterTurnRamp`（第三十五批）：**封顶**的回合成长，
+      //   `amount + min(getMonsterTurnNumber() - subtract, cap) * scale`，对齐巨头的
+      //   `const auto t = std::min(bc.getMonsterTurnNumber()-5, 6) * 5;`（MonsterSpecific.cpp:1578）。
+      //   ⚠⚠ `t` **可以为负**（第 4 个怪物回合是 `min(-1, 6) * 5 = -5`），不能夹到 0。
+      //   ⚠ 它与 `perMonsterTurn`（无上限线性，复形怪）互斥，两者都只加在 `amount` 上。
       const base =
         eff.kind === "deal_damage_rolled"
           ? m.miscInfo + ascValue(bc, 0, eff.ascAdd)
           : ascValue(bc, eff.amount, eff.ascAmount) +
             (eff.kind === "deal_damage" && eff.perMonsterTurn !== undefined
               ? eff.perMonsterTurn * (getMonsterTurnNumber(bc) - 1)
+              : 0) +
+            (eff.kind === "deal_damage" && eff.monsterTurnRamp !== undefined
+              ? Math.min(
+                  getMonsterTurnNumber(bc) - eff.monsterTurnRamp.subtract,
+                  eff.monsterTurnRamp.cap,
+                ) * eff.monsterTurnRamp.scale
               : 0);
       // ⚠⚠ `times` 从第三十三批起还可以是 **`"monsterTurnHalf"`**：大嘴的吞噬写的是
       //   `const auto t = (bc.getMonsterTurnNumber() + 1) / 2; attackPlayerHelper(bc, 5, t);`
@@ -10611,6 +11005,21 @@ function takeTurn(bc: BattleContext, m: CombatMonster): string | null {
       //  ② 是 C++ 的**整数除法**（向零截断），不是四舍五入；
       //  ③ 它是**同步**语句（整条 case 里没有任何 addToBot），所以紧随其后的收尾看得见它。
       m.miscInfo = Math.trunc(bc.player.hp / eff.divisor) + eff.add;
+    } else if (eff.kind === "set_misc_info") {
+      // 把 `miscInfo` 覆盖成一个常数（蠕动血块的植入，MonsterSpecific.cpp:1540
+      // `miscInfo = true;`，第三十五批）。
+      // ⚠ 三处照抄：
+      //  ① **同步**（那一句不在任何 addToBot 里），所以紧随其后的同步 `rollMove` 读得到它
+      //     ——这正是「植入一场仗只出一次」的实现（出招规则的 `haveUsedImplant`）。
+      //  ② 覆盖而不是自增：参考写的是 `= true`，再植入一次也还是 1。
+      //  ③ ⚠ 那条 case 里紧跟着的是两个遗物的分支：
+      //         if (!hasRelic<OMAMORI>()) { if (hasRelic<DARKSTONE_PERIAPT>()) increaseMaxHp(6); }
+      //     TODO(后续PR): 御守（OMAMORI）与暗石护符（DARKSTONE_PERIAPT）都**不在** harness
+      //     的八个遗物轮换里，这一支结构性不可达；现在写了也没有 trace 走得到，
+      //     与贤者之石那几条同族。等「遗物轮换扩容」那一批。
+      //  ⚠ 参考**不建模那张寄生虫诅咒**（真实游戏往牌组塞一张，属于 run 层），
+      //    所以这一招在战斗内除了这个标志位之外**什么都不做**。
+      m.miscInfo = eff.amount;
     } else if (eff.kind === "split") {
       // 分裂：**同步**执行，不入队——参考的那条 case 就是一句裸的
       // `largeSlimeSplit(bc, ...)`（MonsterSpecific.cpp:365 / :1221），
@@ -10834,6 +11243,17 @@ function applyEndOfRoundPowers(bc: BattleContext): void {
       }
     }
     // 顺序对齐参考：仪式 → 缓慢 → 锁定 → 虚弱 → 易伤 → 通用力量增长。
+    // 缓慢清零（巨头，第三十五批）：`if (hasStatus<MS::SLOW>()) setStatus<MS::SLOW>(0);`
+    // （Monster.cpp:79-81）——这个函数的**第二句**，紧跟仪式之后。
+    // ⚠ 三处照抄：
+    //  ① 是**清零**而不是递减：玩家下个回合从 0 重新攒，所以「回合内越打越疼」不会跨回合累积。
+    //  ② 走 `setStatus`（只写数值、**不清 statusBits**），所以条目永不摘除——下个回合
+    //     `onAfterUseCard` 里那道 `hasStatus` 照样成立。写成 `removeStatus`（整条摘掉）
+    //     会让缓慢在第一个回合末永久失效。
+    //  ③ 位置在虚弱 / 易伤递减**之前**。当前没有一只怪同时带缓慢与那两者，故不可观察；照抄。
+    if (hasPower(m.powers, "slow")) {
+      setPower(m.powers, "slow", 0);
+    }
     decrementDebuff(m, "weak");
     decrementDebuff(m, "vulnerable");
     // 通用力量增长（暗球游荡者，第三十三批）：`Monster::applyEndOfRoundPowers` 的
@@ -10852,7 +11272,7 @@ function applyEndOfRoundPowers(bc: BattleContext): void {
       addPower(m.powers, "strength", strengthUp);
     }
   }
-  // TODO(后续PR): 缓慢清零、锁定递减。
+  // TODO(后续PR): 锁定递减（`decrementStatus<MS::LOCK_ON>()`，机器人的靶心，尚无产出者）。
 }
 
 function addPower(powers: PowerInstance[], id: string, amount: number): void {
@@ -10889,9 +11309,11 @@ function removePower(powers: PowerInstance[], id: string): void {
  *
  * ⚠ 与 `addPower`（= 参考的 `buff`）的差别是承重的：`setStatus` **只写数值、不碰
  * statusBits**，所以它只能用在「这个 Power 已经在身上」的地方——守卫者的形态切换
- * （`setStatus<MODE_SHIFT>(newAmount)`，Monster.cpp:527）就是唯一的用户，
- * 而那一支的前置条件正是 `hasStatus<MODE_SHIFT>()`。
- * 参考在层数归零时走的是另一支（`removeStatus`），所以这里不会被传 0。
+ * （`setStatus<MODE_SHIFT>(newAmount)`，Monster.cpp:527）与巨头的缓慢清零
+ * （`setStatus<SLOW>(0)`，Monster.cpp:79-81）都满足这一点。
+ * ⚠ **它会被传 0**（第三十五批起）：缓慢每个回合末归零，而条目要留着——这正是
+ * `setStatus` 与 `removeStatus` 的分水岭，别把「层数 0」当成「摘掉」。
+ * 层数 0 的条目在两边的快照里都被折叠掉，所以留着不会多出幽灵条目。
  *
  * ⚠ 这里也**故意**用裸 `find`（同 `addPower`）：`setStatus` 写的是数值字段、与 bit 无关，
  * 所以 `cleared` 的条目照样该被写到。当前唯一的用户（守卫者的形态切换）永远不会遇到
@@ -11536,6 +11958,23 @@ export const SUPPORTED_ENCOUNTERS: readonly string[] = [
   //   ⚠ 两个编队**只有 asc0 的背书**：两只新怪的 `ascCalibrated` 一只都没置。
   "three_darklings",
   "transient",
+  // —— 第三十五批：`attackedUnblockedHelper` 那一格的**另一半**（反应）与第一条
+  //   「按出牌数放大受伤」的 Power（缓慢）。走 harness 新追加的 variant 35
+  //   （variant 34 的 encounters 一个字没动，那两个文件逐字节不变）。牌组沿用
+  //   `BATCH_1 + SPOT_WEAKNESS`、40 种子、asc0、目标策略 0。
+  //   ⚠ `writhing_mass` 是**全参考项目唯一同时带易塑与反应的怪**——而那两条 Power 在
+  //     `attackedUnblockedHelper` 的 else-if 链上**共用同一格**
+  //     （`hasStatus<MALLEABLE>() || hasStatus<REACTIVE>()`，Monster.cpp:369-383）。
+  //     第二十三批装食蛇草时只写了易塑那一半并留了账，本批结清。
+  //     反应还带来本项目**第一条「挨打就重滚意图」**的动作（`Actions::ReactiveRollMove`）。
+  //     它的出招规则是全参考项目最复杂的一个：`while(true)` + 五段并列的 if + 两处 `continue`，
+  //     单次 rollMove 的 aiRng 消耗从 1 到七八次不等。
+  //   ⚠ `giant_head` 带来 **SLOW**：三处协同（出牌 +1 / 伤害 ×(1+0.1N) / 回合末清零），
+  //     而且是本项目第一条挂在 `onAfterUseCard` 那条共享路径上的怪物侧 Power。
+  //     它的「时候到了」还是第一条**封顶回合成长**的伤害（`monsterTurnRamp`，且首击为负偏移）。
+  //   ⚠ 两个编队**只有 asc0 的背书**：两只新怪的 `ascCalibrated` 一只都没置。
+  "writhing_mass",
+  "giant_head",
 ];
 
 export function isEncounterSupported(encounterId: string): boolean {

@@ -428,6 +428,11 @@ const ENCOUNTER: Record<string, string> = {
   //     与 `MAW` / `THE_MAW` 那一对正相反——两张表各查各的，别想当然。
   THREE_DARKLINGS: "three_darklings",
   TRANSIENT: "transient",
+  // —— 第三十五批：走 harness 新追加的 variant 35（variant 34 的 encounters 一个字没动）。
+  //   ⚠ 两个编队都**与它们建的怪同名**（`WRITHING_MASS` / `GIANT_HEAD`），
+  //     与 `MAW` / `THE_MAW` 那一对正相反——两张表各查各的，别想当然。
+  WRITHING_MASS: "writhing_mass",
+  GIANT_HEAD: "giant_head",
 };
 const MONSTER: Record<string, string> = {
   CULTIST: "cultist",
@@ -521,6 +526,13 @@ const MONSTER: Record<string, string> = {
   //     是同一格被 `DARKLING_REINCARNATE` 复活了。
   DARKLING: "darkling",
   TRANSIENT: "transient",
+  // —— 第三十五批：蠕动血块（单怪，易塑 + 反应）与巨头（单怪，缓慢）。
+  //   ⚠ 蠕动血块的快照里会看到 `MALLEABLE` 一路涨（3 → 4 → 5…、回合末回 3），
+  //     而 `REACTIVE` **平时不出现**（层数 0 被折叠）——只有「挨了打、ReactiveRollMove
+  //     还没出队」的那几帧，以及被打死的最后一帧（那条动作被胜利清扫掉）才看得见。
+  //   ⚠ 巨头开局快照里**一个 power 都没有**：缓慢的层数同样从 0 起步。
+  WRITHING_MASS: "writhing_mass",
+  GIANT_HEAD: "giant_head",
   // ⚠ **分裂留下的空格**。参考的 `MonsterGroup::arr` 是定长 5 的数组，`monsterCount` 只是
   // 「dump 到第几格」；史莱姆王分裂时 `arr[0]` 与 `arr[2]` 被写、`monsterCount = 3`，
   // 于是 1 号格那只**从没被构造过**的默认 `Monster` 也被 dump 出来
@@ -739,6 +751,19 @@ const MOVE: Record<string, string> = {
   DARKLING_REGROW: "darkling_regrow",
   DARKLING_REINCARNATE: "darkling_reincarnate",
   TRANSIENT_ATTACK: "transient_slam",
+  // —— 第三十五批：蠕动血块五条 + 巨头三条 ——
+  // ⚠ 蠕动血块的**植入**一场仗最多出一次（出招规则的 `haveUsedImplant`），它在战斗内
+  //   除了置那个标志位之外什么都不做（那张寄生虫诅咒是 run 层的，参考不建模）。
+  // ⚠ 巨头的**时候到了**从第 4 个怪物回合起就锁死了：它的收尾是同步 `noOpRollMove`
+  //   （掷完丢掉、意图不变），所以此后每帧快照的 `move` 都是它。
+  WRITHING_MASS_IMPLANT: "wm_implant",
+  WRITHING_MASS_FLAIL: "wm_flail",
+  WRITHING_MASS_WITHER: "wm_wither",
+  WRITHING_MASS_MULTI_STRIKE: "wm_multi_strike",
+  WRITHING_MASS_STRONG_STRIKE: "wm_strong_strike",
+  GIANT_HEAD_COUNT: "gh_count",
+  GIANT_HEAD_GLARE: "gh_glare",
+  GIANT_HEAD_IT_IS_TIME: "gh_it_is_time",
   // 分裂留下的空格：那只默认 `Monster` 的 `moveHistory[0]` 是 `MMID::INVALID`
   // （`monsterMoveStrings[0] == "INVALID"`，MonsterMoves.h:215）。我们的空占位
   // `currentMove` 是空串。⚠ 这一条只有那个空格用得到——所有真怪在 `MonsterGroup::init`
@@ -939,6 +964,21 @@ const POWER: Record<string, string> = {
   // ⚠ **没有任何回合末的自动递减**：唯一的递减点是复形怪那条招式的最后一句，
   //   所以它在快照里是 5 → 4 → 3 …，归零那一次连条目一起消失、同时它自杀。
   FADING: "fading",
+  // —— 第三十五批 ——
+  // 反应：**怪物身上**，蠕动血块 preBattleAction 里 `setHasStatus(true); setStatus(0);`。
+  // ⚠ 层数 **0 时不进快照**（harness 的 `getStatusInternal` 返回 0 就被 `v == 0` 折叠），
+  //   所以它平时看不见。三种能看见它的局面：
+  //   ① 挨打之后、`ReactiveRollMove` 出队之前的那几帧（层数 = 这一波攒了几击）；
+  //   ② 打死蠕动血块的那一击——那条动作 `clearOnCombatVictory` 默认 true、被胜利清扫掉，
+  //      于是最后一帧留着 `REACTIVE: 1`；
+  //   ③ 玩家阵亡时队列没抽干的残留。
+  REACTIVE: "reactive",
+  // 缓慢：**怪物身上**，巨头 preBattleAction 里 `setHasStatus(true); setStatus(0);`。
+  // ⚠ 同样是「开局 0 层、不进快照」，玩家每打出一张牌 +1（`onAfterUseCard`），
+  //   回合末 `setStatus(0)` 清零——所以它在快照里是每个玩家回合 1、2、3… 然后消失。
+  // ⚠ 它**只挂在 0 号位**（参考 `onAfterUseCard` 读的是 `monsters.arr[0]`），
+  //   巨头是单怪编队，当前无分歧。
+  SLOW: "slow",
 };
 
 const mapPotion = (p: string): string | null => (p in POTION ? POTION[p]! : p);

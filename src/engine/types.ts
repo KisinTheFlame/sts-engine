@@ -212,6 +212,30 @@ export type PowerId =
   //   `Actions::SuicideAction(idx, **false**)` 走的是 `Monster::suicideAction`
   //   ——**不是**死亡链（见 Effect 的 `suicide`）。
   | "fading"
+  // 反应（蠕动血块，第三十五批）：**怪物身上**，`uniquePower1` 后端（与无敌 / 尖锐外壳同族）。
+  // ⚠⚠ 开局是 `setHasStatus<MS::REACTIVE>(true); setStatus<MS::REACTIVE>(0);`
+  //   （MonsterSpecific.cpp:210-214）——**bit 置上、层数是 0**，不是 `buff(1)`。
+  //   所以它在快照里**平时不出现**（harness 的 `getStatusInternal` 返回 0 就被折叠掉），
+  //   只有「挨了打、`ReactiveRollMove` 还没出队」的那几帧才看得见 `REACTIVE: n`。
+  //   我们这边因此把它建模成「条目一直在、`amount` 可以是 0」（同飞行那一族）。
+  // ⚠ 它与易塑**共用** `attackedUnblockedHelper` 那条 else-if 链的**同一格**
+  //   （`else if (hasStatus<MALLEABLE>() || hasStatus<REACTIVE>())`，Monster.cpp:369-383），
+  //   进去之后两个 if 各判各的。全参考项目只有蠕动血块两者都带。
+  // ⚠ 语义：每挨一次**未被格挡**的攻击，层数为 0 时置 1 并**入队**一条
+  //   `Actions::ReactiveRollMove`，否则 +1；那条动作按层数**连滚 N 次意图**再把层数置 0。
+  | "reactive"
+  // 缓慢（巨头，第三十五批）：**怪物身上**，`uniquePower0` 后端（与易塑 / 荆棘同族）。
+  // ⚠ 开局同样是 `setHasStatus<MS::SLOW>(true); setStatus<MS::SLOW>(0);`
+  //   （MonsterSpecific.cpp:163-165）——bit 置上、层数 0，不是 `buff(n)`。
+  // ⚠ 三处协同，缺一处就静默错：
+  //   ① `BattleContext::onAfterUseCard` 顶部 `if (m.hasStatus<SLOW>()) m.buff<SLOW>(1);`
+  //      （BattleContext.cpp:1986-1988）——玩家**每打出一张牌** +1，而且**只看 0 号位**；
+  //   ② `calculateCardDamage` 的「敌人 AtDamageReceive」段
+  //      `damage *= 1 + static_cast<float>(getStatus<SLOW>()) * 0.1f;`（:2748-2750），
+  //      排在**易伤之前**；
+  //   ③ `Monster::applyEndOfRoundPowers` 的**第二句** `setStatus<SLOW>(0)`（Monster.cpp:79-81）
+  //      ——**每个回合末清零**（不是递减、也不摘除 bit）。
+  | "slow"
   // —— 玩家能力牌触发型 power（在对应触发点由 combat 结算，玩家专属）——
   | "combust" // 燃烧：每个玩家回合结束，失 1 生命并对所有敌人造成 = 层数的伤害
   | "feel_no_pain" // 无痛：每消耗一张牌，获得 = 层数的格挡
@@ -315,12 +339,23 @@ export type Effect =
   // ⚠ 它读的是**全局回合计数**（`bc.turn + 1`），与这只怪自己的状态无关——与大嘴吞噬的
   //   `times: "monsterTurnHalf"` 同源、与 `deal_damage_rolled` 的 `miscInfo` 无关。
   // ⚠ `ascAmount` 只覆盖 `amount`（那个 `asc2 ? 40 : 30`），成长步长 10 是常数。
+  // monsterTurnRamp：敌人专用的**封顶回合成长**（第三十五批）。伤害是
+  //   `amount + min(getMonsterTurnNumber() - subtract, cap) * scale`，对齐巨头「时候到了」的
+  //   `const auto t = std::min(bc.getMonsterTurnNumber()-5, 6) * 5;`
+  //   `const auto damage = (asc3 ? 40 : 30) + t;`（MonsterSpecific.cpp:1578-1580）。
+  // ⚠ 它与 `perMonsterTurn` 是**两种不同的成长**，别互相顶替：那条是无上限的线性
+  //   `step * (turnNo - 1)`（复形怪的重殴），这条先减一个偏移、再**封顶**、最后乘步长。
+  // ⚠⚠ `t` **可以是负数**（`std::min` 不夹下界）：巨头的第一次「时候到了」出在第 4 个怪物
+  //   回合，`min(4-5, 6) * 5 = -5`，伤害是 30-5 = **25**，比第 5 回合的 30 还低。
+  //   写成 `max(0, …)` 会让第一击多打 5 点。
+  // ⚠ `ascAmount` 只覆盖 `amount`（那个 `asc3 ? 40 : 30`），三个成长参数都是常数。
   | {
       kind: "deal_damage";
       amount: number;
       strengthMultiplier?: number;
       ascAmount?: AscTier[];
       perMonsterTurn?: number;
+      monsterTurnRamp?: { subtract: number; cap: number; scale: number };
     }
   | { kind: "deal_damage_all"; amount: number }
   // 敌人用：**非攻击伤害**打在玩家身上（爆破怪的自爆 30 点，第三十二批）。对齐
@@ -414,6 +449,15 @@ export type Effect =
   | { kind: "deal_damage_rolled"; times?: number; ascAdd?: AscTier[] }
   // 敌人用：按玩家当前生命锁定一个每击伤害存入 miscInfo（六火幽魂激活：floor(hp/divisor)+add）。
   | { kind: "store_hp_scaled_damage"; divisor: number; add: number }
+  // 敌人用：**直接把 `miscInfo` 覆盖成一个常数**（第三十五批）。唯一的用户是蠕动血块的
+  // 「植入」——参考那条 case 的第一句就是 `miscInfo = true;`（MonsterSpecific.cpp:1540），
+  // 即「这场仗已经植入过了」的标志位，读点在 `getMoveForRoll` 的 `haveUsedImplant`。
+  // ⚠ `miscInfo` 是**一个 int、含义逐怪种不同**（见 `CombatMonster.miscInfo`），所以这条
+  //   原语只管「写进去」，语义由宿主自己的出招规则决定；别按用途拆成新字段。
+  // ⚠ 与 `store_hp_scaled_damage` 的差别：那条要算（读玩家血量），这条是字面量覆盖。
+  // ⚠ **同步**（参考那一句不在任何 `addToBot` 里），而且排在紧随其后那次同步 `rollMove`
+  //   之前——出招规则读的正是它，顺序错了「植入」会连出两次。
+  | { kind: "set_misc_info"; amount: number }
   // sync：敌人专用。参考的怪物加格挡有**两种写法并存**——绝大多数是**同步** `addBlock(n)`
   // （拾荒者烟雾弹 MonsterSpecific.cpp:937 等 20 余处），少数是 `addToBot(MonsterGainBlock)`
   // （颚虫的猛击/咆哮 :858/:865 等 6 处）。省略 = 入队（既有怪都是这一种）。

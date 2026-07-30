@@ -109,25 +109,20 @@ describe("sts-combat 非法动作的拒绝路径", () => {
     expect(bc.drawPile).toHaveLength(2);
   });
 
-  // 样本编队选 `giant_head` 巨头（第三幕精英，单怪）。判据与「未迁移卡牌」那条的 `seek`
-  // 同源：**它不在 harness 的 20 个第一幕编队里**（trace_dump.cpp:438-457），而 WORKFLOW
-  // 明令不许增删那个列表（`traceIdx` 一移，遗物/药水轮换整体错位、已提交数据全线作废），
-  // 要覆盖第二/三幕得在现有双重循环**之后**再追加一遍循环。所以它在可预见的将来都不会有
-  // 预言机，也就不会被下一批铺量顶掉。
-  // ⚠ 原先用的是 `three_sentries`，第十八批把它登记了，故换掉。别换成 `the_guardian` /
-  //   `hexaghost` / `slime_boss` 那三个——它们就在 harness 的列表里，第十九/二十批已登记。
-  // ⚠ 第二十批之后那 20 个编队**全部**登记完毕：此后「未迁移编队」的样本只能来自
-  //   第二/三幕，而那要先给 harness 追加一遍循环。第二十九批装满了第二幕，
-  //   **第三十二批开了第三幕的乘积**——所以这个样本现在随时会被顶掉。
-  // ⚠⚠ **装 `giant_head` 那一批必须先换掉它**（判据与换法见 sts-combat-wiring.test.ts
-  //   里那条同源注释：挑第四幕或事件编队）。
+  // 样本编队选 `donu_deca`（第三幕最后一个 Boss，两只怪都还没登记 `MOVE_RULES`）。
+  // ⚠⚠ **编队样本没有永久解**：参考实现了全部编队，铺量的终点就是全部登记，
+  //   所以这个样本每隔几批就得换一次（与「未迁移卡牌」的 `seek` 不同，那张牌参考压根没实现）。
+  //   判据是「挑最晚才会被登记的那个」——`donu_and_deca` 按 TODOS 的批次计划排在第三幕
+  //   **最后一批（第四十批）**，当下余量最大。完整理由与换法见 sts-combat-wiring.test.ts
+  //   里那条同源注释，以及 WORKFLOW 的「附：踩过的坑」。
+  // ⚠ 历史：`three_sentries`（第十八批顶掉）→ `giant_head`（**第三十五批**顶掉）→ 现在这个。
   it("未登记的怪物会显式抛错，不会静默错配 RNG", () => {
     expect(() =>
       initCombat({
         seedLong: 1n,
         floorNum: 1,
         ascension: 0,
-        encounterId: "giant_head",
+        encounterId: "donu_deca",
         deck: IRONCLAD_STARTER_DECK.map((defId) => ({ defId, upgraded: false })),
         playerHp: 80,
         playerMaxHp: 80,
