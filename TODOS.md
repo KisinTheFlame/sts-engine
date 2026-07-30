@@ -6037,6 +6037,31 @@ addToBot(DebuffPlayer<VULNERABLE>(2,true));`（`MonsterSpecific.cpp:1280-1286`�
 
 ### 待裁定
 
+- ⚠ **`WRITHING_MASS_WITHER` 走攻击路却不在 `isMoveAttack` 白名单里。裁定：打补丁。**
+
+  第三十五批发现它，并正确指出这与爆破怪那条**方向相反**。复核方全表扫了一遍，
+  结论比报告更强：
+
+  > **它是整个参考里唯一一个「伤害走 `attackPlayerHelper` 却不在白名单」的招式。**
+
+  （反方向看着有 9 个例外，实测是正则漏掉带大括号 case 块的假象——逐个核过之后，
+  除 `SHELLED_PARASITE_SUCK` 走 `VampireAttack` 外全都调 `attackPlayerHelper`。）
+
+  旁证同向：同族的「攻击 + 减益」招式 `CHOSEN_DEBILITATE` /
+  `SPHERIC_GUARDIAN_ATTACK_DEBUFF` / `MYSTIC_ATTACK_DEBUFF` / `SNECKO_TAIL_WHIP`
+  **全在表里**，只有它例外。
+
+  **三条判据都成立**：① 分歧真实（**24 例**钉着）；② 有预言机（打完重新生成即可重放，
+  与缠绕 / `REACTIVE` 错位 / 酸液 M-L / `roll2` 四次同源）；③ 修法唯一（表里加一行）。
+
+  ⚠ **与爆破怪那条的差别正是判据的分水岭**：爆破怪是**参考在自己的规则下自洽**
+  （非攻击伤害路 → 不在表里）；萎缩是**参考跟自己不自洽**（攻击路 → 却不在表里，
+  且是全表唯一）。「隔壁那个是这样」不是证据，**「全表只有它一个例外」才是**。
+
+  执行要求：① 补丁只加一行、不动别的；② 只影响 `writhing_mass.jsonl` 一个已冻结文件，
+  走 `ALLOW_CHANGED="writhing_mass"`，必须确认没有别的文件变；
+  ③ 第三十五批量到的 24 例必须重量并更新。
+
 - ⚠ **`Monster::resetAllStatusEffects()` 只清一半，留下一个「不自洽」的状态。裁定：不打补丁。**
 
   ```cpp
@@ -6088,8 +6113,13 @@ addToBot(DebuffPlayer<VULNERABLE>(2,true));`（`MonsterSpecific.cpp:1280-1286`�
   | `DAGGER_EXPLODE`   | `attackPlayerHelper(bc, 25)`          | **在**（`MonsterMoves.h:448`） |
   | `EXPLODER_EXPLODE` | `addToBot(Actions::DamagePlayer(30))` | **不在**                       |
 
-  白名单的判据就是「**走没走 `attackPlayerHelper`**」，而爆破怪的自爆刻意走的是
-  非攻击伤害路。所以它的缺席**符合参考自己的规则**，不是漏写。
+  白名单的判据是「**伤害走不走攻击路**（`Player::attacked`）」，而爆破怪的自爆刻意走的是
+  非攻击伤害路（`Actions::DamagePlayer`）。所以它的缺席**符合参考自己的规则**，不是漏写。
+
+  ⚠ **措辞修正（第三十五批复核时）**：这条先前写的是「走没走 `attackPlayerHelper`」，
+  那太窄了——`SHELLED_PARASITE_SUCK` 走的是 `Actions::VampireAttack`，同样在白名单里。
+  判据是**攻击路**这个语义，`attackPlayerHelper` 只是它最常见的一种实现。
+  爆破怪这条裁定本身不受影响（它两种实现都不走）。
 
   ⚠ **这条要和「兄弟表不一致」那一族的证据严格区分开**（`monsterStatusEnumStrings` 的
   `REACTIVE` 错位、酸液史莱姆大的 M/L 枚举）——那两条是**参考自己跟自己矛盾**，
