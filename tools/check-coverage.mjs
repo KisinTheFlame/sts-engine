@@ -11,9 +11,10 @@ import path from "node:path";
 // 怪物那一侧同理，而且更容易出事：一只怪的某个招式可能因为「战斗结束得太早」而
 // 一次都轮不到——例如需要连续几回合才触发的、或者血量阈值才触发的。所以分两栏：
 //
-//   出现  它在某一帧里是某只活怪的当前意图。验证的是**意图选择规则**（getMoveForRoll）。
-//         注意这是**帧数**不是掷出次数——一个意图会在它那一回合的每一帧里重复出现，
-//         所以绝对值只用来判「是不是 0」，不同招式之间不可比。
+//   出现  它在某一帧里是**某只怪**的当前意图（死怪也算，理由见 countMoves 的注释）。
+//         验证的是**意图选择规则**（getMoveForRoll）。注意这是**帧数**不是掷出次数——
+//         一个意图会在它那一回合的每一帧里重复出现，所以绝对值只用来判「是不是 0」，
+//         不同招式之间不可比。
 //   执行  它在某个玩家回合结束的那一帧里是某只活怪的当前意图 → 紧接着的怪物阶段执行它。
 //         验证的是**招式效果**（takeTurn）。
 //
@@ -68,11 +69,24 @@ const executed = new Map();
 const moveOwner = new Map();
 const bump = (m, k) => m.set(k, (m.get(k) ?? 0) + 1);
 
-/** 记下这一帧里每只活着的怪的当前意图。 */
-const countMoves = (snap, target) => {
+/**
+ * 记下这一帧里各只怪的当前意图。
+ *
+ * `aliveOnly` 的取值对两栏是**不同**的，这一点第二十六批踩过：
+ *
+ *  * 「出现」栏 `aliveOnly = false` —— 意图**只要进了快照就被逐帧比对**，死怪身上那个
+ *    残留意图同样是 `getMoveForRoll` 真的返回过它，同样能钉住出招规则。早先这里对两栏
+ *    一律跳过死怪，于是「只在死怪身上出现过的招式」被报成「出现 0 / 执行 0」，
+ *    看上去像完全没有背书——而实际上它的**出招规则那一半是有背书的**。
+ *    第二十六批的 `CENTURION_FURY` 就是这样：它作为意图出现 88 次，**全在一具已死的
+ *    百夫长身上**（青铜鳞片的荆棘走 `addToTop`，插在百夫长自己那条入队 RollMove 之前，
+ *    于是它先被打死、RollMove 在尸体上执行）。报成 0 会让下一批以为整招没背书，
+ *    甚至误把 `--moves` 的断言当成「这招不可达」。
+ *  * 「执行」栏 `aliveOnly = true` —— 死怪不会行动，它的意图不会被 `takeTurn` 跑到。
+ */
+const countMoves = (snap, target, aliveOnly) => {
   for (const m of snap.monsters) {
-    // 死了/逃了的怪不会行动，它残留的意图不该算成背书。
-    if (!m.alive) continue;
+    if (aliveOnly && !m.alive) continue;
     // 参考给某些编队预置的哨兵意图（如颚虫军团借用的 DARKLING_REGROW）不是真招式。
     if (m.move === "INVALID") continue;
     bump(target, m.move);
@@ -88,7 +102,7 @@ for (const f of fs.readdirSync(dir).filter((n) => n.endsWith(".jsonl"))) {
     // 但 variant 级的归属就够用了——那正是区分一条规则两个分支的东西。
     const upgradedVariant = t.deckUpgraded !== undefined;
     let hand = t.initial.hand;
-    countMoves(t.initial, appeared);
+    countMoves(t.initial, appeared, false);
     let prev = t.initial;
     for (const step of t.steps) {
       if (step.action.type === "card") {
@@ -97,8 +111,8 @@ for (const f of fs.readdirSync(dir).filter((n) => n.endsWith(".jsonl"))) {
       }
       // 「执行」看的是**结束回合那一刻**的意图：紧跟其后的就是怪物阶段。
       // 用动作**之前**的快照，因为 end_turn 之后的快照里意图已经滚成下一个了。
-      if (step.action.type === "end_turn") countMoves(prev, executed);
-      countMoves(step.after, appeared);
+      if (step.action.type === "end_turn") countMoves(prev, executed, true);
+      countMoves(step.after, appeared, false);
       hand = step.after.hand;
       prev = step.after;
     }
@@ -170,7 +184,8 @@ if (requiredMoves.length > 0) {
     console.error("\n✗ 有怪物招式已登记却没有出现过——等于没有预言机背书，不接受。");
     console.error("  出现为 0：这个编队没进策略表（ENC_V0），或 getMoveForRoll 那条分支不可达。");
     console.error("  只有出现、执行为 0：意图选出来了但从没轮到执行——多半是战斗提前结束");
-    console.error("  （玩家死得太快 / 怪被秒），招式效果那段代码因此没有背书。");
+    console.error("  （玩家死得太快 / 怪被秒，或那只怪只在死后才滚到这个意图），");
+    console.error("  招式效果那段代码因此没有背书，但出招规则那一半是有的。");
     bad = true;
   } else {
     console.log("✓ 全部要求的怪物招式都出现且执行过");
