@@ -114,6 +114,18 @@
   （`attacked` / `damage`）末尾各有一处，且**只在这一击没打死它时**才跑。
   登记表在 `MONSTER_ON_HP_LOST`。写法上还有个坑：参考在这里是裸的
   `moveHistory[0] = X`（**不前移历史**），不是 `setMove`——同一个 switch 里两种写法并存。
+  ⚠⚠ **反过来也成立：「血量阈值触发一次性事件」不一定在 `onHpLost` 里。** 第二十九批的
+  冠军二阶段就**不在**——`Monster::onHpLost` 那个 switch（`Monster.cpp:499-535`）**压根没有
+  `THE_CHAMP` 这一格**，只有三种大史莱姆的分裂与守卫者的模式切换。它整条住在
+  `getMoveForRoll`（`MonsterSpecific.cpp:2900-2918`）：
+  `if (monsterData & 0x4) … else if (curHp < maxHp/2) { monsterData |= 0x4; return ANGER; }`。
+  **差别是可观察的**：守卫者在挨打那一瞬间改意图，冠军要等到**下一次 rollMove**（自己回合的
+  收尾）才发现过了半血。实测给冠军补一条守卫者式的 `onHpLost` 红 **213 例**。
+  **判据：装一只带「半血变身」的怪时，先 grep 一遍它在 `onHpLost` 里有没有 case，
+  没有就去 `getMoveForRoll` 里找那个锁存位——别按「守卫者是这么写的」推。**
+  ⚠ 锁存位可以与别的东西**共用同一个 `miscInfo`**：冠军的 bit 0~1 是防御姿态的已用次数、
+  bit 2 才是二阶段标志，而出防御姿态时是 `++monsterData`（**整数自增**，不是按位或）。
+  两个用途各自都有背书（不锁存红 158、bit 位置抄错红 158、`++` 改成 `|= 1` 红 31）。
 - ⚠ **`getMoveForRoll` 可以完全不看 `roll`**。酸液史莱姆小（asc<17）直接
   `bc.aiRng.randomBoolean()` 二选一，顶部那次 `random(99)` 照掷但结果被丢掉——
   于是它一次 rollMove 消耗 **2** 次 aiRng。别以为「不追加 RNG」等于「只消耗 1 次」。
@@ -207,6 +219,31 @@
   （`MonsterSpecific.cpp:1247`）。改成入队红 **5 例**——抽打打死玩家时主循环跳出，
   入队那次 noOp 永远轮不到，而同步那次已经掷过。**所以「效果入队 + 收尾同步」这个组合
   一定要照抄**，它是这一族里唯一真的有可观察面的形状。
+  ⚠⚠ **第二十九批把这条判据的例数量到了顶：把冠军三条「效果入队」的 case 的收尾从入队改成
+  同步，红 375 例**（= 那个文件的全部）。机理与工头那 5 例完全相同（攻击打死玩家 → 主循环
+  跳出 → 入队那次 RollMove 永远轮不到），差别只在分母：`champ.jsonl` 的 **375 条全部以玩家
+  阵亡收场**，而工头那个编队大多是玩家赢。**所以这一族的例数薄不薄，看的是「玩家死得多不多」。**
+  ⚠ 同一只怪身上另外四条 case（效果**全是同步的**）的「同步 ↔ 入队」照旧是 **0 例 = 等价改写**
+  ——**一只怪身上两族并存**，判据仍然是那句：先问「这条 case 自己排了队列动作吗」。
+- ⚠ **「给玩家上减益」有第三种写法：裸的 `bc.player.debuff<PS::X>(n, true)`。** 第二十九批
+  冠军的嘲讽（`MonsterSpecific.cpp:1301-1307`）连 `Actions::DebuffPlayer` 都没经过。它与
+  拉加维林那种 `Actions::DebuffPlayer<...>(n).actFunc(bc)` **逐位等价**（那个 Action 的函数体
+  就是 `bc.player.debuff<s>(amount, isSourceMonster)`，`BattleContext.h:229-234`），
+  所以用同一个 `sync` 开关表达即可——**但要认得出它是同一族**，别以为「没走 Actions 就是别的东西」。
+- ⚠ **`lastMoveBefore` 不是 `lastTwoMoves`。** 冠军二阶段的门是
+  `!lastMove(EXECUTE) && !lastMoveBefore(EXECUTE)`（「最近两格里都没有处决」），
+  而 `lastTwoMoves` 是「两格**都**是」。抄成 `lastTwoMoves` 会让处决连出（红 9 例）、
+  只留 `lastMove` 会让处决多出一次（红 4 例）。⚠ 例数都很薄，**必须两个方向各量一次**。
+  参考在 `Monster.cpp:609-626` 并排放了四个谓词（`firstTurn` / `lastMove` / `lastMoveBefore` /
+  `lastTwoMoves` / `eitherLastTwo`），登记时逐字看清用的是哪一个。
+- ⚠⚠ **`monsterHpRange[id]` 永远是「两组」，别把它读成一个区间。** 第二十九批连撞两只：
+  `{{420,420},{440,440}}`（冠军）与 `{{282,282},{300,300}}`（收藏家），旧近似表写的是
+  `420~440` / `282~300`——**上界取的是高档那一组的值**。这不是「差一点」：
+  `Random::random(a,b)` 的取值依赖上下界，抄错会让此后每一次 `monsterHpRng` 整体错位
+  （实测各红 355 / 349 例）。同一处错法在第二十八批的青铜自动机上出现过一次。
+  **判据：抄的时候先数大括号有几层。** ⚠ 顺带：**阈值不能按「是不是随从」猜**——
+  火炬头是收藏家的随从，血量档却是 **Boss 的 asc>=9**（`MonsterSpecific.cpp:76-89` 里
+  真的有 `TORCH_HEAD`）。
 - ⚠⚠ **`Monster::initHp` 的第四种形态：先白掷一次、结果丢弃，再正常掷。**
   `ORB_WALKER` / `REPTOMANCER` / `BRONZE_ORB` / `TASKMASTER` 四只走它
   （参考只在 `ORB_WALKER` 那条注了 `// first call is discarded by game`），
@@ -228,22 +265,39 @@ monsterCount = 4;`，**0 号位从没被构造过**（`MonsterGroup.cpp:248-259`
   ⚠ 「开局就留空位」意味着 `monstersAlive` **不能再写成「数组长度」**（`monsterCount`
   才是数组长度）。同一个坑还牵着 `MonsterGroup::init` 的两个循环：它们的门是
   `if (arr[i].idx != -1)`，从没构造过的那一格既不 rollMove 也不 preBattleAction。
-- ⚠⚠ **「召唤」这一族里，「怎么预留空位」与「怎么往里填」各有两种写法，两两都不同源。**
-  第二十八批装上第二个宿主（青铜自动机）之后可以并排看了，**照抄邻居必错**：
-  | 维度                                                                                      | 地精首领（第二十七批）                                                                                         | 青铜自动机（第二十八批）                                                                            |
-  | ----------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
-  | 预留                                                                                      | 建 1/2/3 三格，**手动赋值** `monstersAlive=3; monsterCount=4`（`MonsterGroup.cpp:248-259`）                    | `monsterCount = 1; createMonster(...); ++monsterCount;`（`:173-177`）——**先推游标、建怪、再空一格** |
-  | 空格在哪                                                                                  | 只有 0 号位                                                                                                    | **0 号位与 2 号位都空**，宿主在**中间的 1 号位**                                                    |
-  | 填空位的东西                                                                              | `Actions::SummonGremlins`（一个 **Action**）                                                                   | `Monster::spawnBronzeOrbs`（一个**成员函数**）                                                      |
-  | 同步 / 入队                                                                               | `addToBot(Actions::SummonGremlins())`                                                                          | **裸的同步调用**（`MonsterSpecific.cpp:503`，没有 addToBot）                                        |
-  | 找空位                                                                                    | 按 **1, 2, 0** 搜索 + `isDying()` 判空                                                                         | **下标写死 0 与 2**，不搜索、不判空                                                                 |
-  | 挑种类                                                                                    | `getGremlin(bc.aiRng)`，两只各消耗一次 **aiRng**                                                               | 种类**固定**，为此**一次 aiRng 都不掷**                                                             |
-  | `= Monster()`                                                                             | **有**（整只重建）                                                                                             | **没有**（那两格从没被构造过，故当前等价）                                                          |
-  | 游标                                                                                      | 不动                                                                                                           | 末尾 **`++bc.monsterTurnIdx`**，于是 2 号位那只**本回合不行动**                                     |
-  | 共同点                                                                                    | `buff<MS::MINION>()`、各自 `rollMove`、`monstersAlive += 2`、`monsterCount` 不动、**不重跑 `preBattleAction`** |                                                                                                     |
-  | ⚠ 第三族在第二十九批（收藏家的 `SpawnTorchHeads`）：它按 `3 - monstersAlive` 决定召几只、 |
-  | **额外单独调 `initHp`**、用 `setMove` 而不是 `rollMove`、末尾按只数补 `noOpRollMove`。    |
-  | 三族一个都不能复用另一个。                                                                |
+- ⚠⚠ **「召唤」这一族里，「怎么预留空位」与「怎么往里填」各有三种写法，两两都不同源。**
+  第二十九批装上第三个宿主（收藏家）之后三族可以并排看了，**照抄邻居必错**——
+  下面 11 个维度里，**没有任何一个是三族一致的**（除最后一行的共同点）：
+
+  | 维度             | 地精首领（第二十七批）                                                                      | 青铜自动机（第二十八批）                                                                            | 收藏家（第二十九批）                                                                       |
+  | ---------------- | ------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+  | 预留             | 建 1/2/3 三格，**手动赋值** `monstersAlive=3; monsterCount=4`（`MonsterGroup.cpp:248-259`） | `monsterCount = 1; createMonster(...); ++monsterCount;`（`:173-177`）——先推游标、建怪、**再空一格** | `monsterCount = 2; createMonster(...);`（`:198-201`）——**只推游标，末尾没有 `++`**         |
+  | 空格在哪         | 只有 0 号位                                                                                 | **0 与 2 号位都空**，宿主在**中间的 1 号位**                                                        | **0 与 1 号位都空**，宿主在**最后一格（2 号位）**                                          |
+  | 开局 alive/count | 3 / 4                                                                                       | 1 / 3                                                                                               | 1 / 3                                                                                      |
+  | 填空位的东西     | `Actions::SummonGremlins`（一个 **Action**）                                                | `Monster::spawnBronzeOrbs`（一个**成员函数**）                                                      | `Actions::SpawnTorchHeads`（又是一个 **Action**，但与地精那条无关）                        |
+  | 同步 / 入队      | `addToBot(...)`                                                                             | **裸的同步调用**（`MonsterSpecific.cpp:503`）                                                       | `addToBot(...)`                                                                            |
+  | 召几只           | **恒 2**                                                                                    | **恒 2**                                                                                            | ⚠⚠ **`3 - bc.monsters.monstersAlive`**（全参考项目唯一按这个数定只数的地方）               |
+  | 找空位           | 按 **1, 2, 0** 搜索 + `isDying()` 判空                                                      | **下标写死 0 与 2**，不搜索、不判空                                                                 | **落位表** `{arr[1].isDying() ? 1 : 0, 0}`——第二格**恒是 0**，表在循环前一次算好           |
+  | 挑种类           | `getGremlin(bc.aiRng)`，两只各一次 **aiRng**                                                | 固定，**不掷 aiRng**                                                                                | 固定，**不掷 aiRng**                                                                       |
+  | `= Monster()`    | **有**（整只重建）                                                                          | **没有**                                                                                            | **有**                                                                                     |
+  | 血量             | `construct` 里掷一次                                                                        | `construct` 里掷，青铜球带 `hpDiscardRoll` → **每只 2 次**                                          | ⚠⚠ `construct` 之后**又显式 `initHp` 一次** → **每只 2 次**、**保留第二次**                |
+  | 定意图           | 各自 `rollMove`（每只一次 aiRng）                                                           | 各自 `rollMove`                                                                                     | ⚠⚠ **`setMove(TORCH_HEAD_TACKLE)`**，召唤本身**不掷 aiRng**；末尾按**只数** `noOpRollMove` |
+  | `monstersAlive`  | 末尾 `+= 2`                                                                                 | 末尾 `+= 2`（排在两次 rollMove 之后）                                                               | **循环内每只 `++`**                                                                        |
+  | 游标             | 不动                                                                                        | 末尾 **`++bc.monsterTurnIdx`**，2 号位那只本回合不行动                                              | **不动**（宿主在最后一格，新来的本来就轮不到）                                             |
+  | 共同点           | `buff<MS::MINION>()`、`monsterCount` 一动不动、**都不重跑 `preBattleAction`**               |                                                                                                     |                                                                                            |
+
+  ⚠ 第二十九批的三处新教训：
+  ① **「召几只」也可以是算出来的**，而且那是「预留空位不算活怪」这件事唯一的预言机
+  （第二十七批那条盲区因此关门，实测把开局 `monstersAlive` 写成数组长度红 375 例）。
+  ② **`initHp` 有第二个调用点**（`Actions.cpp:513`，参考注着 `// bug somewhere in game`）。
+  它**不是** `hpDiscardRoll` 那一族——那一族的白掷在 `initHp` **内部**、恒用低档区间，
+  这里是整个 `initHp` 跑两遍（asc>=N 时两次都用高档）。所以要把「掷血量」单独拆成一个函数，
+  不能拿 `hpDiscardRoll` 顶替（实测去掉第二次红 375、保留错的那一次红 345）。
+  ③ **「不重跑 `preBattleAction`」这条在有的宿主身上测不出来**：火炬头在
+  `Monster::preBattleAction` 的 switch 里压根没有 case，所以「重跑一遍」是**空操作**
+  ——那种变异要标成**「探针无效」**而不是 0 例（判据同第二十八批青铜球那条）。
+  真正有背书的是地精首领那条（召唤出来的狂暴小鬼没有狂怒，补上红 300 例）。
+
 - ⚠ **多段攻击的「段数」可以是状态，不只是字面量。** 突刺之书的乱刺是
   `attackPlayerHelper(bc, asc3 ? 7 : 6, miscInfo)`（`MonsterSpecific.cpp:458`）——段数从 1 起步
   （`preBattleAction` 里 `++miscInfo`，**跑在开局那次 rollMove 之后**），出招规则每发一次乱刺
@@ -467,8 +521,9 @@ emitProduct(act2Variants, act2Encounters);  // 第二幕，必须排在最后
 - **每批只追加一个新 variant**、filter 到本批的编队。第二十三批是 variant 23
   （BATCH_1 牌组 / 125 种子 / asc 0，三个单怪编队），第二十四批是 variant 24
   （牌组改成 **`BATCH_1 + SPOT_WEAKNESS`**，理由见上方 `isMonsterAttacking` 那条），
-  第二十五批是 variant 25、第二十六批是 variant 26、第二十七批是 variant 27
-  （牌组都与 24 **逐字节相同**）。
+  第二十五~~二十九批依次是 variant 25~~29（牌组都与 24 **逐字节相同**）。
+  ✅ **第二十九批把第二幕 19 个编队装满了**，所以下一个第二幕 variant 只可能是别的轴
+  （爬升度 / 目标策略），不会再有「新编队」那种。
   ⚠⚠ **牌组与前一个 variant 完全相同时，两者的 `encounters` 必须互不相交。**
   `split-traces.mjs` / `variant0-rows.mjs` 用**整副牌组的内容**做 variant 指纹，
   所以牌组相同 = 指纹相同：只要某个编队同时出现在两个 variant 的列表里，
@@ -701,7 +756,7 @@ tools/regen-traces.sh --install UPPERCUT DEMON_FORM --moves SENTRY_BOLT SENTRY_B
 pnpm typecheck && pnpm lint && pnpm test && pnpm format
 ```
 
-全绿是**下限**，不是完成。`sts-combat-trace.test.ts` 现有 23206 例逐帧对拍（第二十七批），
+全绿是**下限**，不是完成。`sts-combat-trace.test.ts` 现有 24706 例逐帧对拍（第二十九批），
 其中一部分用**全升级牌组**——所以每条规则 `up ? x : y` 的两个分支都会被验证。
 
 改共享路径（`callEndOfTurnActions`、`drawCards`、`onTurnEnding`、`useCard` 之类）时，
