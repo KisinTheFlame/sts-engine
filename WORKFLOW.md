@@ -147,6 +147,30 @@
   **两句的顺序真的可观察**：`setMove(重击)` 先跑正是为了让紧接着的 `getMoveForRoll`
   读到「刚重击过」，从而点亮「roll < 20 且刚重击过」那一支。第二十五批实测顺序调换红 6 例。
   别把它与球状守卫者 / 拜鸟那种「同步 `setMove` + `noOpRollMove`」搞混——形状像、语义完全不同。
+- ⚠⚠ **`resetAllStatusEffects()` 与「逐个 `removeStatus`」不是同义词，差别当场可观察。**
+  第三十四批（暗影客的重生）撞上：参考把「有没有」与「几层」存在**两个地方**——
+  `statusBits` 一个位 + 一个具名 int 字段。`removeStatus` 是**先 `setStatus(0)` 再清 bit**
+  （`Monster.h:495-501`，两者一起归零），而 `resetAllStatusEffects` 只有三句
+  `statusBits = 0; setStatus<STRENGTH>(0); block = 0;`（`Monster.cpp:554-558`）
+  ——**那些 int 字段原样留着**。于是下一次 `buff` / `addDebuff`（都是 `field += n` 再置 bit）
+  会**从残留值继续加**。
+  ⚠ 实测：暗影客重生**之前**挨过 1 层虚弱，复活之后再吃一张衣领（+2），参考显示 **3** 层。
+  这不是「多一层」的小数字，它是**第一条红掉的 trace**（53 例）。
+  ⚠ 我们的 `powers` 数组把两件事合成了一个条目，所以必须显式建模这个中间态
+  （`PowerInstance.cleared` = 数值还在、bit 已清），并且**所有读点改走 `findPower`**，
+  只有 `buff` / `setStatus` 那两处**故意**保留裸 `find`（它们读的就是数值字段）。
+  ⚠ **纯 bool 的 Power 没有数值字段**（`buff` 只置 bit、`getStatusInternal` 恒 `return true`），
+  reset 时要**整条丢掉**而不是标 cleared——否则复活时那次 `buff<REGROW>()` 会变成「残留 +1」。
+  **判据：看那一处写的是 `removeStatus` 还是 `resetAllStatusEffects`，别看「Power 消失了」这个现象。**
+- ⚠⚠ **`isDeadOrEscaped()` 的第三位（`isHalfDead`）只在一个地方与另外两位分岔，找准那一处就够了。**
+  第三十四批装暗影客的重生时量清楚了：**`MonsterGroup::doMonsterTurn` 的门是
+  `(!m.isDeadOrEscaped() || m.isHalfDead())`**（`MonsterGroup.cpp:572`）——半死的怪**照样行动**。
+  而 `applyPreTurnLogic` 与 `BattleContext::applyEndOfRoundPowers` 的门是
+  `isDying() || isEscaping()`，**没有** halfDead 这一位；它们照样跳过半死的怪，
+  因为**半死必然伴随 `curHp == 0`**（`die` 只可能从「扣血到 ≤ 0」进来），`isDying()` 已经为真。
+  所以那两处写 `!alive` 与参考同解，**不用改**。实测「不放行半死的怪」红 120 例（= 整个文件）。
+  ⚠ 其余所有读 `isDeadOrEscaped` 的地方（能不能被指向 / 随机选敌 / 群伤 /
+  `Monster::attacked` 与 `damage` 的入口）都把半死的怪当死的，`alive` 直接同解。
 - ⚠⚠ **参考清一个 Power 的层数有两种写法，方向相反，抄串了两边都静默错。**
   `decrementStatus<s>()` 对「枚举值 <= WEAK」那一族会 `setHasStatus(newAmount)`，
   **归零时连 statusBits 一起清掉**（`Monster.h:299-303`）——镀甲走这一支，所以壳破之后
@@ -948,6 +972,20 @@ tools/regen-traces.sh --install UPPERCUT DEMON_FORM --moves SENTRY_BOLT SENTRY_B
 状态/诅咒牌参考侧 `canUpgrade` 恒假，永远不会出现在升级栏里，写进去就是必然失败、整批装不上。
 第十三批的黏液因此没进这个列表，只能靠肉眼看覆盖表——这是工具的一个已知缺口。
 
+⚠⚠ **第三个已知缺口（第三十四批发现并当场修掉）：「执行」栏也看不见半死的怪。**
+`countMoves` 的 `aliveOnly` 那一支只放行 `m.alive`，而 trace 里的 `alive` 是
+`!isDeadOrEscaped()`——三位或在一起。可 `MonsterGroup::doMonsterTurn` 的门是
+`(!isDeadOrEscaped() || isHalfDead())`，**半死的怪照样行动**。于是
+`DARKLING_REGROW` / `DARKLING_REINCARNATE` 这两条**只可能出现在半死怪身上**的招式被报成
+「执行 0」，`--install` 直接拒绝装。
+**修法不是把它们从 `--moves` 里拿掉**，而是让 harness 多输出一个 `halfDead`
+（**只在为真时输出**，故 107 个既有文件逐字节不变——`--install` 复核过零个 `M`），
+`check-coverage.mjs` 的门跟着改成与参考同形。顺带那个字段也进了对拍（`shape()` 与
+`shapeExpected()` 各加一行），于是半死这一位**自己也有了直接的预言机**。
+⚠ 教训：**覆盖表报 0 时先问「这个招式的宿主在快照里长什么样」**——第二十六批那次
+（`CENTURION_FURY`）是「死怪身上的残留意图」，这次是「半死的怪」，两次的根都是
+「`alive` 这一位承载的信息不够」。
+
 ⚠⚠ **第二个已知缺口（第二十六批发现）：覆盖表只数「活怪的当前意图」，死怪的意图看不见。**
 `check-coverage.mjs` 的 `countMoves` 里有一句 `if (!m.alive) continue;`，所以一个**只在死怪
 身上出现过**的意图会被报成「出现 0 / 执行 0」，看起来像完全没背书。第二十六批的
@@ -982,7 +1020,7 @@ tools/regen-traces.sh --install UPPERCUT DEMON_FORM --moves SENTRY_BOLT SENTRY_B
 pnpm typecheck && pnpm lint && pnpm test && pnpm format
 ```
 
-全绿是**下限**，不是完成。`sts-combat-trace.test.ts` 现有 30466 例逐帧对拍（第三十三批），
+全绿是**下限**，不是完成。`sts-combat-trace.test.ts` 现有 30706 例逐帧对拍（第三十四批），
 其中一部分用**全升级牌组**——所以每条规则 `up ? x : y` 的两个分支都会被验证。
 
 改共享路径（`callEndOfTurnActions`、`drawCards`、`onTurnEnding`、`useCard` 之类）时，
