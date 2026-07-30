@@ -865,11 +865,12 @@ const ENEMY_LIST: EnemyDef[] = [
       },
       {
         // MonsterSpecific.cpp:571-574 `attackPlayerHelper(bc, asc2 ? 7 : 6, 3)`（**三段 6**）。
-        // ⚠⚠ **这一招的效果在本批的 trace 里 0 例，是已知盲区**（它的**意图选择**另有 8 例
-        //   背书，那是荆棘打死百夫长之后在尸体上滚出来的——两件事分开看，
-        //   理由与关门条件见 sts-combat.ts 的 `MOVE_RULES.centurion`）。
-        //   要让活着的百夫长出这一招得让秘法师先死，而 harness 的策略恒打 0 号位、
-        //   百夫长恒在 0 号位——秘法师永远后死。
+        // ⚠⚠ **这一招的效果曾是第二十六~三十批最大的一条盲区（0 例）**，因为要让活着的
+        //   百夫长出它得让秘法师先死，而 harness 的策略当时恒打 0 号位、百夫长恒在 0 号位。
+        //   ✅ **第三十一批的目标策略轴关掉了**（`centurion_and_healer@tgt1`）：
+        //   每击伤害 6→7 红 **91 例**、段数 3→2 红 **96 例**、收尾红 **88 例**。
+        //   ⚠ **只剩下面那条 `ascAmount` 的 asc2 档还是 0**——`@tgt1` 只做了 asc0，
+        //   关门条件是 `asc19 × tgt1` 那个组合。详见 sts-combat.ts 的 `MOVE_RULES.centurion`。
         id: "cent_fury",
         name: "狂怒连斩",
         effects: [

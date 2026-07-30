@@ -593,19 +593,13 @@ ENC_V0="small_slimes lots_of_slimes large_slime blue_slaver red_slaver looter ex
 ——`MOVE_TURN_END` 那一格因此零背书，而且在**任何**第一幕编队上都救不回来。
 判据：一条分支要被看到，光有「够长的仗」不够，还得有**能让它在中途发生的场上局面**。
 
-⚠⚠ **有一整族盲区的根都是同一件事：`pickAction` 恒打 `firstAliveMonster`（0 号位）。**
+⚠⚠ **有一整族盲区的根曾经都是同一件事：`pickAction` 恒打 `firstAliveMonster`（0 号位）。**
 于是「同伴先死」这个局面**在任何编队、任何牌组下都不可能出现**——0 号位的怪总是先死。
 第二十六批撞上最纯的一例：百夫长的狂怒连斩只在**秘法师已死**时被选出，而
 `CENTURION_AND_HEALER` 是全参考项目唯一带百夫长的编队、百夫长恒在 0 号位，
 所以那一招的效果在这条路上**永远**没有预言机（换牌组不行，算过：单体伤害只落在 0 号位、
 群伤平摊、而秘法师每次治疗给两只各回 16 且自己血上限更低）。
-**关门条件是 harness 的一条新轴：目标策略。** 做法与爬升度轴同构、加起来不到 30 行：
-`DeckVariant` 加一个默认 0 的 `targetPolicy` → `pickAction` 按它选 `firstAlive` /
-`lastAlive` → trace 头部只在非 0 时输出 → `split-traces.mjs` 的分组键加 `@tgtN` 后缀 →
-`ENC_V0` 里加名字。⚠ 同样**必须分两步**：先只加管线、不加新 variant，跑 `--check`
-证明已提交数据逐字节复现，再加 variant。
-⚠ 这条轴还顺带能关掉别的「成员结构」盲区（例如「亡语触发时队列里还有动作」需要一击打死
-非 0 号位的怪），所以它的性价比不止一条。**这是第二/三幕之后最值得做的一条基础设施。**
+✅ **第三十一批开了「目标策略」这条轴，把这一族关掉了**——做法见下一节。
 
 ### 爬升度这条轴（第二十一批起）
 
@@ -763,6 +757,91 @@ trace 的 `initial` 快照取在 `BattleContext::init` **之后**，而 `init` �
   这与「未登记的编队/卡牌显式抛错」是同一条总纲：静默产出「看着合理、其实不是原版」的数值
   比开不了战危险得多。
 
+### 目标策略这条轴（第三十一批起）
+
+第二条与爬升度**同构**的轴：编队那一维上的另一个后缀，`centurion_and_healer@tgt1.jsonl`。
+它改的是 harness 的**策略打谁**——`targetPolicy = 0`（默认）是历来的
+`firstAliveMonster`（下标最小的活怪），`1` 是新的 `lastAliveMonster`（下标最大的活怪）。
+机制同样是四处、加起来不到 30 行，**引擎侧实现 0 行**：
+
+1. harness 的 `DeckVariant` 有个默认 0 的 `targetPolicy`，`pickAction` 按它取目标；
+   trace 头部**只在非 0 时**输出 `"targetPolicy":N`。
+2. `split-traces.mjs` 的分组键加后缀，`variant0-rows.mjs` 的指纹加一维。
+3. `regen-traces.sh` 的 `ENC_V0` 里加 `<编队>@tgtN`——一份文件里只有一个 variant，
+   于是 `variant0-rows.mjs` 返回整份长度 = 整份冻结。
+4. **重放侧一个字都不用改**：每一步的目标已经逐字记在 `steps[].action.target` 里
+   （与爬升度那条轴不同——那条要在 `initCombat` 里读 `ascension`）。
+
+⚠⚠ **分组键的后缀顺序是固定的：`<编队>[@ascN][@tgtN]`。** 文件名就是冻结数据的身份，
+顺序一换等于给已提交的文件改名。写在 `split-traces.mjs`、`sts-combat-trace.test.ts`
+（describe 分组）与 `sts-combat-wiring.test.ts`（剥后缀时**从右往左**：先 `@tgt` 再 `@asc`）
+三处，三处必须一致。当前还没有任何 `@asc19@tgt1` 的文件（第三十一批只做 asc0），
+但形状先定死，以后叠加不用再改。
+
+⚠⚠ **两步验证，第一步不能跳**（与爬升度轴、与「加 `isReplayableCard` 那道门」同一个套路）：
+先只加管线、**不加任何新 variant**，跑 `tools/regen-traces.sh --check`，已提交的文件必须
+**逐字节复现**；第三十一批实测 78 个文件全过。不过就停下来查。
+
+#### ⚠⚠ 新轴必须挂成**新的乘积**，不能往已有 variant 列表里追加
+
+这是这条轴最容易踩死的一处，而且**与第二十二批的做法正好相反**：
+
+`traceIdx` 按引用捕获、驱动遗物/药水轮换，而 `emitProduct` 是**按声明序依次调用**的。
+所以往**排在前面**那个乘积的 variant 列表里追加，会平移**其后所有乘积**发出的下标。
+第二十二批能往 `variants`（第一幕）里追加 variant 22，只因为**那时第一幕还是最后一个乘积**；
+第二十三批开了第二幕之后这条路就断了。第三十一批因此新开**第三个乘积**：
+
+```cpp
+emitProduct(variants, encounters);          // 第一幕，冻结
+emitProduct(act2Variants, act2Encounters);  // 第二幕
+emitProduct(tgtVariants, tgtEncounters);    // 目标策略，必须最后
+```
+
+⚠ **推论：从此往 `variants` / `act2Variants` 里追加 variant 都不再免费**——那会让第三个
+乘积的 23 个文件全部作废。新东西一律另开乘积挂到最后。
+⚠ 第三个乘积的编队列表是**第一幕的 ++ 第二幕的（39 个全列）**，安全性理由与
+`act2Encounters` 列全 19 个相同：variant 没点名的编队在种子循环之前 `continue`、**不消耗
+`traceIdx`**，所以往**乘积的**列表里加编队是免费的，往**variant 的**列表里加不是。
+
+#### 只覆盖多怪编队，而且「多怪」的判据不是「开局有几只」
+
+`lastAliveMonster` 与 `firstAliveMonster` 用的是**同一个谓词**（`isDeadOrEscaped`）与
+**同一个兜底**（`return 0`），所以场上只有一只怪时两者取到同一只——单怪编队跑出来的 trace
+会与已提交的那份**逐字节相同**，纯属白占体积。第三十一批因此只取 **23 个多怪编队**
+（第一幕 11 + 第二幕 12），筛掉 16 个单怪的。
+
+⚠ **判据是「场上会不会同时有两只可选目标」，不是「开局有几只」。** 有四个编队开局只有一只
+却必须算进来，而且它们恰恰是这条轴最想要的局面：`large_slime` / `slime_boss`（**分裂**）、
+`automaton`（青铜球）、`collector`（火炬头）。按「开局几只」筛会把它们漏掉。
+
+⚠ 预留但从没构造过的格子（地精首领的 0 号位、自动机的 0/2、收藏家的 0/1）里躺着一只
+默认构造的 `Monster`，`curHp` 是 0 → `isDeadOrEscaped()` 为真，所以**从两头扫都会跳过它**。
+这就是「倒着扫」不需要另加 `idx != -1` 判断的原因。
+
+#### 这条轴关掉了什么、没关掉什么（第三十一批实测）
+
+- ✅ **`CENTURION_FURY` 的效果与收尾**：`centurion_and_healer@tgt1` 里 **119 / 120** 条
+  trace 是秘法师先死（tgt0 下是 **0 / 375**），狂怒连斩执行 **127 帧 / 97 条**。
+  三条变异各红 91（每击伤害）/ 96（段数）/ 88（收尾），此前**全是 0**。
+  ✅ 装完这一批，**全语料里再也没有「执行 = 0」的招式**。
+- ✅ **百夫长防守的 `monstersAlive > 1` false 侧**：66 例。机理值得记——意图是在秘法师
+  **还活着**时滚出来的，执行时它已经死了，所以这道门的 false 侧要的是「**滚意图与执行
+  之间**同伴死掉」，比「同伴先死」更细一层。
+- ✅ **`MINION_LEADER` 那条判胜路径**从 4 例涨到 **21 例**（地精首领在 3 号位，
+  tgt1 直接打它：19 次胜利里 17 次是「首领死了但小鬼还站着」，tgt0 下是 55 次里 4 次）。
+- ✅ **秘法师鼓舞的连续限制**（`!lastTwoMoves`）从 0 例变成 **2 例**——薄，但关了。
+- ❌ **孢子云的 `addToTop ↔ addToBot` 仍然 0 例，而且这次把根因证死了。**
+  `shelled_parasite_and_fungi@tgt1` 里真菌兽「有同伴时死」是 **120 / 120**
+  （tgt0 下 83 / 375），亡语触发得比以前**频繁得多**，可插队顺序照旧不可观察。
+  **所以那条盲区卡的是「队列内容」而不是「成员结构」**，第二十五批的裁定成立。
+  ⚠ 教训：**换轴之前先判一条盲区卡在哪一维上**（回合数 / 场上局面 / 队列内容），
+  这条轴只能救第二类。
+- ❌ **激怒 / 尖锐外壳「只看 `arr[0]`」照旧 0 例**（重量过）。它们的根是
+  「带那个 Power 的怪不在 0 号位的编队」，与打谁无关——地精头目与守卫者都是单怪编队，
+  换目标策略碰不到。
+- ❌ **狂怒连斩的 asc2 伤害档仍然 0 例**：本批只做 asc0。关门条件从「结构性不可达」
+  变成了「需要 `asc19 × tgt1` 那个组合」——**这是一条真的可以做的路**，不再是死结。
+
 ### 生成并安装
 
 ```bash
@@ -818,7 +897,7 @@ tools/regen-traces.sh --install UPPERCUT DEMON_FORM --moves SENTRY_BOLT SENTRY_B
 pnpm typecheck && pnpm lint && pnpm test && pnpm format
 ```
 
-全绿是**下限**，不是完成。`sts-combat-trace.test.ts` 现有 26986 例逐帧对拍（第三十批），
+全绿是**下限**，不是完成。`sts-combat-trace.test.ts` 现有 29746 例逐帧对拍（第三十一批），
 其中一部分用**全升级牌组**——所以每条规则 `up ? x : y` 的两个分支都会被验证。
 
 改共享路径（`callEndOfTurnActions`、`drawCards`、`onTurnEnding`、`useCard` 之类）时，
