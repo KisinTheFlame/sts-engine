@@ -150,9 +150,22 @@ ENC_ALL="cultist jaw_worm jaw_worm_horde three_louse two_louse"
 #     （`miscInfo` bit 2；bit 0~1 兼作防御姿态的已用次数）。它的暴怒还带
 #     `Monster::removeDebuffs()`（本项目第一次怪物侧清减益），嘲讽是第一只**同步**
 #     给玩家上减益的怪。
+# 第三十批：**第二幕的爬升度**（19 个编队 × asc19，一个档位）。走**新追加的 variant 30**
+#   （variant 23~29 的 encounters 一个字没动，那 19 个 asc0 文件逐字节不变），
+#   牌组沿用 `BATCH_1 + SPOT_WEAKNESS`、40 个种子（与第一幕 asc19 同规格）。
+#   ⚠ 本批的 variant 的 `encounters` **允许**与 variant 24~29 重叠——`split-traces.mjs` 的
+#     variant 指纹是「整副牌组 + 爬升度」，分组键又带 `@asc19` 后缀，所以它的行落进 19 个
+#     **新**文件、不会与 asc0 那批混块。第二十四~二十九批之所以必须两两不相交，是因为它们的
+#     牌组**与爬升度**全都相同（指纹撞号）；这里爬升度不同，撞不上。
+#   ⚠ asc19 有两处**结构性后果**（0 例是「不可达」而不是「抄错了」）：青铜自动机的**眩晕**
+#     出不来了（超射线的收尾 `asc19 ? BOOST : STUNNED`），冠军的两族阈值
+#     （`getTriIdx(asc,9,19)` 与 `bossDiffIdx(4,19)`）在 19 下同解、分不开。
+#   ⚠ 「阈值恰好是 N」与「三档里的中间那一档」仍是盲区，关门条件是**跨两幕的 asc7 + asc16**
+#     那一批（见 TODOS），不在本批范围内。
 ENC_V0_ACT2="spheric_guardian chosen snake_plant three_byrds two_thieves chosen_and_byrds shell_parasite shelled_parasite_and_fungi snecko centurion_and_healer three_cultist cultist_and_chosen sentry_and_sphere gremlin_leader slavers book_of_stabbing automaton champ collector"
+ENC_V0_ACT2_ASC19="spheric_guardian@asc19 chosen@asc19 snake_plant@asc19 three_byrds@asc19 two_thieves@asc19 chosen_and_byrds@asc19 shell_parasite@asc19 shelled_parasite_and_fungi@asc19 snecko@asc19 centurion_and_healer@asc19 three_cultist@asc19 cultist_and_chosen@asc19 sentry_and_sphere@asc19 gremlin_leader@asc19 slavers@asc19 book_of_stabbing@asc19 automaton@asc19 champ@asc19 collector@asc19"
 ENC_V0_ASC0="small_slimes lots_of_slimes large_slime blue_slaver red_slaver looter exordium_thugs exordium_wildlife gremlin_gang gremlin_nob lagavulin three_sentries the_guardian slime_boss hexaghost $ENC_V0_ACT2"
-ENC_V0_ASC19="cultist@asc19 jaw_worm@asc19 jaw_worm_horde@asc19 two_louse@asc19 three_louse@asc19 small_slimes@asc19 lots_of_slimes@asc19 large_slime@asc19 blue_slaver@asc19 red_slaver@asc19 looter@asc19 exordium_thugs@asc19 exordium_wildlife@asc19 gremlin_gang@asc19 gremlin_nob@asc19 lagavulin@asc19 three_sentries@asc19 the_guardian@asc19 slime_boss@asc19 hexaghost@asc19"
+ENC_V0_ASC19="cultist@asc19 jaw_worm@asc19 jaw_worm_horde@asc19 two_louse@asc19 three_louse@asc19 small_slimes@asc19 lots_of_slimes@asc19 large_slime@asc19 blue_slaver@asc19 red_slaver@asc19 looter@asc19 exordium_thugs@asc19 exordium_wildlife@asc19 gremlin_gang@asc19 gremlin_nob@asc19 lagavulin@asc19 three_sentries@asc19 the_guardian@asc19 slime_boss@asc19 hexaghost@asc19 $ENC_V0_ACT2_ASC19"
 # ⚠ 必须拼成**单行**：policy_of 用 `case " $ENC_V0 " in *" $1 "*` 做匹配，中间夹一个换行会让
 #   两段接缝处的名字（hexaghost / cultist@asc19）匹配不上，静默失去校验。
 ENC_V0="$ENC_V0_ASC0 $ENC_V0_ASC19"
