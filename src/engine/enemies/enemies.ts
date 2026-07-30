@@ -2025,8 +2025,10 @@ const ENEMY_LIST: EnemyDef[] = [
     // preBattleAction 见 sts-combat.ts 的 `PRE_BATTLE_ACTION.dagger`：
     //   `buff<MS::MINION>()`（MonsterSpecific.cpp:148-150）。
     // ⚠ 召唤出来的那些**不重跑** preBattleAction，但 `reptomancerSummon` 自己手写了一句
-    //   同样的 `buff<MS::MINION>()`——所以这只怪身上「不重跑」是可证的空操作，
-    //   与火炬头那条（它压根没有 preBattleAction 的 case）同为「探针无效」。
+    //   同样的 `buff<MS::MINION>()`——在**参考里**两者净效果相同，所以这只怪身上
+    //   「不重跑」这条没有判别力（探针无效，理由与火炬头那条不同）。
+    //   ⚠ 详见 sts-combat.ts 的 `PRE_BATTLE_ACTION.dagger`：我们这边 `addPower` 会累加，
+    //   所以那个探针红 120 例量的是**我们的建模差异**、不是参考的语义。
     moves: [
       {
         // 突刺（MonsterSpecific.cpp:1625-1630）：

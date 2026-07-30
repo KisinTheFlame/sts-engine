@@ -4974,9 +4974,15 @@ const PRE_BATTLE_ACTION: Record<string, PreBattleAction> = {
   // **纯 bool**，不消耗 RNG，快照里是 `MINION: 1`。开局那两把匕首走这一条。
   // ⚠ 召唤出来的那些**不走这里**（召唤一律不重跑 `preBattleAction`），而是由
   //   `reptomancerSummon` 自己手写的那句 `dagger.buff<MS::MINION>()` 上——两处的净效果相同。
-  //   ⚠ 所以「不重跑 preBattleAction」这条在匕首身上是**可证的空操作**：即便重跑，
-  //   `buff` 对纯 bool 只是再置一次位。与火炬头那条（它压根没有 case）同为「探针无效」，
-  //   真正有背书的只有地精首领那条（召唤出来的狂暴小鬼没有狂怒）。
+  // ⚠⚠ **所以「不重跑 preBattleAction」这条在匕首身上没有判别力，但理由要说准**：
+  //   在**参考里**重跑一遍是严格的空操作（`Monster::buff` 对纯 bool 只 `setHasStatus(true)`，
+  //   不带层数）；在**我们这边**它不是——`addPower` 一律累加，重跑会把 `MINION` 变成 2 层，
+  //   于是快照当场不符（第三十六批实测那个探针红 120 例）。
+  //   **那 120 例量的是我们自己的建模差异，不是参考的语义**，所以它记成「探针无效」。
+  //   ⚠ 这处差异当前不可达（没有任何代码路径对同一只怪 `buff` 两次纯 bool Power），
+  //   但下一个「召唤 + 同种怪预置」的宿主要先回来看这一条。
+  //   与火炬头那条（它压根没有 `preBattleAction` 的 case）同为「探针无效」、理由不同；
+  //   真正有背书的只有地精首领那条（召唤出来的狂暴小鬼没有狂怒，红 300 例）。
   dagger: (_bc, m) => {
     addPower(m.powers, "minion", 1);
   },
