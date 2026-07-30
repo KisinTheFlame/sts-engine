@@ -1271,11 +1271,9 @@ const MOVE_RULES: Record<string, MoveForRoll> = {
 
   // —— 第二幕开张：三只单怪（第二十三批）——
   //
-  // ⚠ 三条都**只写 asc<17 那一支**。参考里选民与食蛇草各有一整块 `if (asc17) { … }`
-  //   （MonsterSpecific.cpp:2253-2272 / :2757-2769），但本批 `ascCalibrated` 没置，
-  //   `constructMonster` 在 `ascension > 0` 时直接抛错，所以那两块**走不到、也没有预言机**。
-  //   照第十八批对地精头目 asc18 出招块的先例：**留到给它们铺爬升度的那一批再转写**，
-  //   不提前写没人验证的代码。
+  // ✅ **第三十批补上了选民与食蛇草的 `if (asc17) { … }` 两整块**（第二十三批留的账）。
+  //   在此之前它们只写了 asc<17 那一支，理由是 `ascCalibrated` 没置、asc>0 开不了战，
+  //   所以那两块走不到也没有预言机；本批第二幕铺了 asc19，两块都有了背书。
 
   // 球状守卫者：对齐 MonsterSpecific.cpp:2806-2808 SPHERIC_GUARDIAN——**无条件**返回激活，
   // 参考自己在那行注了 `// called first turn only`（roll 照掷、结果丢弃）。
@@ -1288,8 +1286,8 @@ const MOVE_RULES: Record<string, MoveForRoll> = {
     return "sg_activate";
   },
 
-  // 选民：对齐 MonsterSpecific.cpp:2274-2291 CHOSEN（asc<17 那一段）。
-  // ⚠ 四处照抄：
+  // 选民：对齐 MonsterSpecific.cpp:2246-2291 CHOSEN（**两块**，asc17 一块、asc<17 一块）。
+  // ⚠ 四处照抄（asc<17 那一段）：
   //  ① 首回合（`firstTurn()`）必**戳刺**，roll 照掷但结果被丢掉；
   //  ② 第二段判的是 `lastMoveBefore(INVALID)`，也就是 `moveHistory[1] == INVALID`
   //     ——「上上步还不存在」＝**这是第二回合**，于是第二招恒为诅咒。⚠ 这是全项目
@@ -1298,7 +1296,25 @@ const MOVE_RULES: Record<string, MoveForRoll> = {
   //  ③ 「削弱 / 汲取」那一段的门是 `!lastMove(DEBILITATE) && !lastMove(DRAIN)`
   //     ——两条各自的连续限制是 1，而且**互相**也算（上一招是其中任一条就跳过整段）；
   //  ④ 电击的门是 `roll < 40`，戳刺是兜底。两者**都没有**连续限制。
-  chosen: (_bc, m, roll) => {
+  // ⚠⚠ **asc17 那一块与低档只差两处**（第三十批转写，MonsterSpecific.cpp:2252-2271）——
+  //   照抄整块、不要写成「低档 + 一个 if」：
+  //  ⑤ 首回合返回的是**诅咒**而不是戳刺（`firstTurn()` → `CHOSEN_HEX`）；
+  //  ⑥ **没有那条 `lastMoveBefore(INVALID)` 的第二段**——于是第二回合直接进「削弱 / 汲取」
+  //     那一段。可观察面很大：低档的前两招恒是「戳刺 → 诅咒」，asc17 是「诅咒 → 削弱/汲取」。
+  //   其余三段（阈值 50 / 40、两条 `lastMove` 的门、兜底戳刺）两块逐字相同。
+  chosen: (bc, m, roll) => {
+    if (bc.ascension >= 17) {
+      if (firstTurn(m)) {
+        return "hex";
+      }
+      if (!lastMove(m, "debilitate") && !lastMove(m, "drain")) {
+        return roll < 50 ? "debilitate" : "drain";
+      }
+      if (roll < 40) {
+        return "zap";
+      }
+      return "poke";
+    }
     if (firstTurn(m)) {
       return "poke";
     }
@@ -1316,16 +1332,25 @@ const MOVE_RULES: Record<string, MoveForRoll> = {
     return "poke";
   },
 
-  // 食蛇草：对齐 MonsterSpecific.cpp:2771-2782 SNAKE_PLANT（asc<17 那一段）。
-  // ⚠ 三处照抄：
+  // 食蛇草：对齐 MonsterSpecific.cpp:2763-2793 SNAKE_PLANT（**两块**，asc17 一块、asc<17 一块）。
+  // ⚠ 三处照抄（asc<17 那一段）：
   //  ① **没有 `firstTurn()` 特例**——开局那次 rollMove 就走 roll 分支（历史全空，
   //     `lastTwoMoves` 恒假，于是 `roll < 65` 必出撕咬、否则必出孢子）；
   //  ② 高位那一支（`roll >= 65`）判的是 **`lastMove`**（连续 1 次），而低位那一支
   //     （`roll < 65`）判的是 **`lastTwoMoves`**（连续 2 次）——两个谓词不一样，
-  //     照抄不要统一。⚠ asc17 那一块把高位那支也换成了 `lastTwoMoves`，正是这一点
-  //     构成两块的唯一差别（本批不转写，见上）；
+  //     照抄不要统一；
   //  ③ 两支的兜底方向相反：低位兜底撕咬、高位兜底孢子。
-  snake_plant: (_bc, m, roll) => {
+  // ⚠⚠ **asc17 那一块只差一处**（第三十批转写）：高位那支的门从 `lastMove(SPORES)` 换成了
+  //   **`!lastTwoMoves(SPORES)`**——注意**连谓词的方向都反了**（低档写「刚放过孢子就改撕咬」，
+  //   高档写「没连放两次孢子就再放孢子」），所以孢子在 asc17 能连出两次。
+  //   两块的低位那一支逐字相同。照抄整块，别写成「低档 + 一个三元」。
+  snake_plant: (bc, m, roll) => {
+    if (bc.ascension >= 17) {
+      if (roll < 65) {
+        return lastTwoMoves(m, "sp_chomp") ? "sp_spores" : "sp_chomp";
+      }
+      return !lastTwoMoves(m, "sp_spores") ? "sp_spores" : "sp_chomp";
+    }
     if (roll < 65) {
       return lastTwoMoves(m, "sp_chomp") ? "sp_spores" : "sp_chomp";
     }
@@ -9316,13 +9341,30 @@ function takeTurn(bc: BattleContext, m: CombatMonster): string | null {
     // `addToBot(Actions::...)`。差别看得见——荆棘伤害走 addToTop 会插到排队的
     // 加格挡之前，若格挡改成同步就会把荆棘吃掉。
     if (eff.kind === "apply_power" && eff.on === "self") {
-      addPower(m.powers, eff.power, ascValue(bc, eff.amount, eff.ascAmount));
-      if (eff.power === "ritual") {
-        // 仪式当回合不结算（skipFirst），回合末只清标志。
-        const ritual = m.powers.find((p) => p.id === "ritual");
-        if (ritual !== undefined) {
-          ritual.justApplied = true;
+      // ⚠⚠ `sync` 在这一族里**省略 = 同步**（与 `on: "target"` 那族相反，理由见 types.ts
+      //   的注释）：参考的自身 buff 全部是同步的 `buff<MS::X>(n)`，唯一的例外是工头 asc18 的
+      //   `addToBot(Actions::BuffEnemy<MS::STRENGTH>(idx, 1))`（MonsterSpecific.cpp:1237）。
+      // ⚠ 层数在**排队那一刻**按当下爬升度算好（爬升度整场不变，只是形式上的讲究），
+      //   与 `on: "target"` 那条一致。
+      // ⚠ `Actions::BuffEnemy` 走的是 `Action(ActionFunction)` 单参构造
+      //   （BattleContext.h:250-256），所以 `clearOnCombatVictory` 取默认的 **true**
+      //   ——与 `addToBot` 的默认值一致，这里不用显式传。
+      const power = eff.power;
+      const amount = ascValue(bc, eff.amount, eff.ascAmount);
+      const applySelfPower = (): void => {
+        addPower(m.powers, power, amount);
+        if (power === "ritual") {
+          // 仪式当回合不结算（skipFirst），回合末只清标志。
+          const ritual = m.powers.find((p) => p.id === "ritual");
+          if (ritual !== undefined) {
+            ritual.justApplied = true;
+          }
         }
+      };
+      if (eff.sync === false) {
+        addToBot(bc, applySelfPower);
+      } else {
+        applySelfPower();
       }
     } else if (
       eff.kind === "deal_damage" ||
@@ -9342,10 +9384,15 @@ function takeTurn(bc: BattleContext, m: CombatMonster): string | null {
       //   deal_damage_multi 才多段」。第二十批修：漏掉它时六重打击只打一段。
       // ⚠ `deal_damage_rolled` 的 asc 分档不在这里：它的值是**出生时掷定**的
       //   （虱子的咬击区间 `asc2 ? random(6,8) : random(5,7)`，见 constructMonster）。
-      // ⚠ `deal_damage_multi` 的 `ascAmount` 覆盖的是**每一击的伤害**，`times` 没有分档
-      //   ——参考写的是 `attackPlayerHelper(bc, asc4 ? 3 : 2, 6)`（六火幽魂地狱之火
-      //   MonsterSpecific.cpp:808）与 `(bc, asc4 ? 6 : 5, 2)`（冲撞 :841），第二个实参恒定。
+      // ⚠ `deal_damage_multi` 的 `ascAmount` 覆盖的是**每一击的伤害**——参考写的是
+      //   `attackPlayerHelper(bc, asc4 ? 3 : 2, 6)`（六火幽魂地狱之火 MonsterSpecific.cpp:808）
+      //   与 `(bc, asc4 ? 6 : 5, 2)`（冲撞 :841），第二个实参恒定。
       //   第二十二批加的字段：在此之前没有一只已登记的怪用到多段攻击的 asc 分档。
+      // ⚠⚠ **段数也能分档**（`ascTimes`，第三十批）：拜鸟的啄击写的是
+      //   `attackPlayerHelper(bc, 1, asc2 ? 6 : 5)`（MonsterSpecific.cpp:548）——每击伤害是
+      //   常数 1，`asc? :` 落在**第三个**实参位上。两者正交，判据只有一条：**看参考把
+      //   `asc? :` 写在哪个实参位上**。抄反了不是「总伤害差一点」，而是段数错 →
+      //   玩家侧格挡 / 荆棘 / 火焰屏障各自触发的**次数**都错。
       // ⚠⚠ `deal_damage_multi` 的 `times` 从第二十八批起还可以是 **`"miscInfo"`**：突刺之书的
       //   乱刺写的是 `attackPlayerHelper(bc, asc3 ? 7 : 6, miscInfo)`（MonsterSpecific.cpp:458）
       //   ——段数是**状态**，整场随出招规则递增。它与 `deal_damage_rolled` 读的是**同一个字段**
@@ -9355,7 +9402,10 @@ function takeTurn(bc: BattleContext, m: CombatMonster): string | null {
       const base =
         eff.kind === "deal_damage_rolled" ? m.miscInfo : ascValue(bc, eff.amount, eff.ascAmount);
       const rawTimes = eff.kind === "deal_damage" ? 1 : (eff.times ?? 1);
-      const times = rawTimes === "miscInfo" ? m.miscInfo : rawTimes;
+      const times =
+        rawTimes === "miscInfo"
+          ? m.miscInfo
+          : ascValue(bc, rawTimes, eff.kind === "deal_damage_multi" ? eff.ascTimes : undefined);
       const dmg = calculateDamageToPlayer(bc, m, base);
       const idx = bc.monsters.indexOf(m);
       for (let i = 0; i < times; i += 1) {
@@ -10337,14 +10387,14 @@ export const SUPPORTED_ENCOUNTERS: readonly string[] = [
   "hexaghost",
   // —— 第二十三批：**第二幕开张**。harness 的编队循环从此有两个（第一幕那个一个字没动，
   //   traceIdx 接着往下走），本批先装三个单怪、无召唤、无塞牌的编队。
-  //   ⚠ 它们**只有 asc0 的背书**：三只怪的 `ascCalibrated` 都没置，
-  //   所以不在 `ASC_SUPPORTED_ENCOUNTERS` 里，`ascension > 0` 时显式抛错。
+  //   ✅ 第三十批补上了 asc19（三只怪的 `ascCalibrated` 已置，选民与食蛇草 `getMoveForRoll`
+  //     里那两整块 asc17 也一并转写了）。
   "spheric_guardian",
   "chosen",
   "snake_plant",
   // —— 第二十四批：飞行（拜鸟）+ 劫匪。三个编队走 harness 新追加的 variant 24，
   //   牌组是 `BATCH_1 + SPOT_WEAKNESS`——多的那一张让 `isMonsterAttacking` 第一次有预言机。
-  //   ⚠ 同样**只有 asc0 的背书**（两只新怪的 `ascCalibrated` 都没置）。
+  //   ✅ 第三十批补上了 asc19（拜鸟与劫匪的 `ascCalibrated` 已置）。
   "three_byrds",
   "two_thieves",
   "chosen_and_byrds",
@@ -10352,7 +10402,7 @@ export const SUPPORTED_ENCOUNTERS: readonly string[] = [
   //   variant 25，牌组同样是 `BATCH_1 + SPOT_WEAKNESS`（`isMonsterAttacking` 的背书）。
   //   ⚠ 编队 id 是 `shell_parasite`（没有 ED），对齐参考的 `MonsterEncounter::SHELL_PARASITE`
   //     ——它建的怪才叫 `SHELLED_PARASITE`。
-  //   ⚠ 同样**只有 asc0 的背书**（两只新怪的 `ascCalibrated` 都没置）。
+  //   ✅ 第三十批补上了 asc19（带壳寄生虫与史尼克的 `ascCalibrated` 已置）。
   "shell_parasite",
   "shelled_parasite_and_fungi",
   "snecko",
@@ -10360,7 +10410,7 @@ export const SUPPORTED_ENCOUNTERS: readonly string[] = [
   //   追加的 variant 26，牌组同样是 `BATCH_1 + SPOT_WEAKNESS`。
   //   ⚠ 两个编队 id 跟着参考枚举名改过：`centurion_and_healer`（原 `centurion_mystic`）、
   //     `three_cultist`（**单数**，原 `three_cultists`）。
-  //   ⚠ 同样**只有 asc0 的背书**（百夫长与秘法师的 `ascCalibrated` 都没置）。
+  //   ✅ 第三十批补上了 asc19（百夫长与秘法师的 `ascCalibrated` 已置）。
   "centurion_and_healer",
   "three_cultist",
   "cultist_and_chosen",
@@ -10369,7 +10419,8 @@ export const SUPPORTED_ENCOUNTERS: readonly string[] = [
   //   variant 27，牌组同样是 `BATCH_1 + SPOT_WEAKNESS`。
   //   ⚠ `gremlin_leader` 是第一个**开局就留空位**的编队（0 号位空、`monsterCount = 4`），
   //     `slavers` 的顺序是**蓝奴隶主 / 工头 / 红奴隶主**（工头在中间）。
-  //   ⚠ 同样**只有 asc0 的背书**（地精首领与工头的 `ascCalibrated` 都没置）。
+  //   ✅ 第三十批补上了 asc19（地精首领与工头的 `ascCalibrated` 已置；工头 asc18 那条
+  //     入队自身 buff 也一并补上了）。
   "gremlin_leader",
   "slavers",
   // —— 第二十八批：突刺之书（第二幕最后一个精英）+ 青铜自动机（第二个召唤宿主）。
@@ -10377,7 +10428,7 @@ export const SUPPORTED_ENCOUNTERS: readonly string[] = [
   //   ⚠ `automaton` 是**编队** id（对齐 `MonsterEncounter::AUTOMATON`），它建的**怪**
   //     才叫 `bronze_automaton`；0 号位与 2 号位都是预留空位（`monsterCount = 3`、
   //     `monstersAlive = 1`），由 `spawnBronzeOrbs` 往里填。
-  //   ⚠ 同样**只有 asc0 的背书**（三只新怪的 `ascCalibrated` 都没置）。
+  //   ✅ 第三十批补上了 asc19（三只新怪的 `ascCalibrated` 已置）。
   "book_of_stabbing",
   "automaton",
   // —— 第二十九批：第二幕最后两个 Boss（**第二幕 19 / 19 收官**）。走 harness 新追加的
@@ -10385,7 +10436,7 @@ export const SUPPORTED_ENCOUNTERS: readonly string[] = [
   //   ⚠ `collector` 是**编队** id（对齐 `MonsterEncounter::COLLECTOR`），它建的**怪**
   //     才叫 `the_collector`；0 号位与 1 号位都是预留空位、收藏家在**2 号位**
   //     （`monsterCount = 3` / `monstersAlive = 1`），由 `summonTorchHeads` 往里填。
-  //   ⚠ 同样**只有 asc0 的背书**（冠军 / 收藏家 / 火炬头的 `ascCalibrated` 都没置）。
+  //   ✅ 第三十批补上了 asc19（冠军 / 收藏家 / 火炬头的 `ascCalibrated` 已置）。
   "champ",
   "collector",
 ];
@@ -10396,11 +10447,15 @@ export function isEncounterSupported(encounterId: string): boolean {
 
 /**
  * 爬升度分档**已有 trace 背书**的编队（第二十一批 14 个普通编队 + 第二十二批
- * 三精英 + 三 Boss = 第一幕 20 个编队全覆盖）。
+ * 三精英 + 三 Boss = 第一幕 20 个编队；**第三十批把第二幕 19 个全铺上**）。
  *
  * ⚠ 与 `SUPPORTED_ENCOUNTERS` 是两条独立的轴：一个编队可以「asc0 有背书」而
- * 「asc>0 没有」。两张表现在恰好同集合，但**不要合并**——第二幕的编队装进
+ * 「asc>0 没有」。两张表现在恰好同集合，但**不要合并**——第三幕的编队装进
  * `SUPPORTED_ENCOUNTERS` 时，它的 asc 分档仍然要单独一批才有预言机。
+ *
+ * ⚠ 「有背书」只到「每条 `asc >= N` 的高侧」这一层：档位是 `{0, 19}` 这一对，
+ * 所以「分界恰好在 N」与「三档里的中间那一档」都还是盲区，关门条件见 TODOS
+ * （跨两幕的 `asc7 + asc16` 那一批）。
  *
  * 真正的兜底在 `constructMonster`（按**怪**查 `EnemyDef.ascCalibrated`，直接抛错）：
  * 这里是编队粒度的**事前**判断，好让 run 层能在开战前就说「这场打不了」。
@@ -10429,6 +10484,29 @@ export const ASC_SUPPORTED_ENCOUNTERS: readonly string[] = [
   "the_guardian",
   "slime_boss",
   "hexaghost",
+  // —— 第三十批：**第二幕 19 个编队全部铺上 asc19**（harness 的 variant 30，一个档位）——
+  //   17 只怪的 `ascCalibrated` 同批置起，三族阈值各自校准：普通怪血量 asc>=7 /
+  //   精英 asc>=8 / Boss asc>=9，数值档 `getTriIdx(asc,2,17)` / `(3,18)` / `(4,19)`。
+  //   ⚠ 顺序照 `act2Encounters`（5 weak + 8 strong + 3 elite + 3 boss）。
+  "spheric_guardian",
+  "chosen",
+  "shell_parasite",
+  "three_byrds",
+  "two_thieves",
+  "chosen_and_byrds",
+  "sentry_and_sphere",
+  "cultist_and_chosen",
+  "three_cultist",
+  "shelled_parasite_and_fungi",
+  "snecko",
+  "snake_plant",
+  "centurion_and_healer",
+  "gremlin_leader",
+  "slavers",
+  "book_of_stabbing",
+  "champ",
+  "collector",
+  "automaton",
 ];
 
 /** 这个编队在这个爬升度下有没有背书。asc0 恒等于 `isEncounterSupported`。 */

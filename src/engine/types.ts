@@ -239,7 +239,7 @@ export type Effect =
   // ascAmount：敌人专用的爬升度分档，覆盖 `amount`（见 AscTier）。
   | { kind: "deal_damage"; amount: number; strengthMultiplier?: number; ascAmount?: AscTier[] }
   | { kind: "deal_damage_all"; amount: number }
-  // ascAmount 覆盖**每一击**的 amount，`times` 没有分档——参考写的是
+  // ascAmount 覆盖**每一击**的 amount。绝大多数多段攻击的段数是恒定的——参考写的是
   // `attackPlayerHelper(bc, asc4 ? 6 : 5, 2)`（六火幽魂冲撞 MonsterSpecific.cpp:841），
   // 分档挂在那个伤害数上，段数是第二个实参、恒定。
   //
@@ -249,11 +249,22 @@ export type Effect =
   // `miscInfo` 从 1 起步（`preBattleAction` 里 `++miscInfo`），出招规则每发一次乱刺再 +1，
   // 于是整场单调递增。⚠ **别把它写成 `deal_damage_rolled`**：那一条读 `miscInfo` 当**伤害**
   // （虱子的咬击），这一条读它当**段数**，两者的宿主都在用同一个字段但含义相反。
+  //
+  // ⚠⚠ `ascTimes`（第三十批）：**爬升度挂在段数上**，而不是每击伤害上。全参考项目只有三处
+  // 把 `asc? :` 写在 `attackPlayerHelper` 的**第三个**实参位上，第二幕里只有一处——
+  // 拜鸟的啄击 `attackPlayerHelper(bc, 1, asc2 ? 6 : 5)`（MonsterSpecific.cpp:548）；
+  // 另两处是 `SPIRE_SPEAR_SKEWER`（:1824，`10, asc3 ? 4 : 3`）与 `CORRUPT_HEART_BLOOD_SHOTS`
+  //（:1829，`2, asc4 ? 15 : 12`），都在第三 / 四幕。
+  // ⚠ 它与 `ascAmount` **正交**：判据只有一条——**看参考把 `asc? :` 写在哪个实参位上**。
+  //   啄击的每击伤害是常数 1、段数才分档；冲撞正相反。两者写反的代价不是「总伤害差一点」，
+  //   而是段数错 → 玩家侧格挡 / 荆棘 / 火焰屏障各自触发的**次数**都错。
+  // ⚠ `ascTimes` 与 `times: "miscInfo"` 互斥（参考里没有任何一招同时用状态段数与分档段数）。
   | {
       kind: "deal_damage_multi";
       amount: number;
       times: number | "miscInfo";
       ascAmount?: AscTier[];
+      ascTimes?: AscTier[];
     }
   // 每次命中随机挑一个存活敌人（剑刃回旋镖：3 点 ×3，逐次随机目标）。
   | { kind: "deal_damage_random"; amount: number; times: number }
@@ -302,11 +313,24 @@ export type Effect =
       ascAmount?: AscTier[];
       noAliveGate?: boolean;
     }
-  // sync：敌人专用，且**只对 `on: "target"` 有意义**（`on: "self"` 在参考里一律是同步的
-  // `buff<MS::X>()`）。给玩家上减益同样有两种写法并存：绝大多数是
+  // sync：敌人专用。给玩家上减益有两种写法并存：绝大多数是
   // `addToBot(Actions::DebuffPlayer<...>)`，而拉加维林的吸取灵魂写的是
   // `Actions::DebuffPlayer<PS::DEXTERITY>(-1).actFunc(bc)`（MonsterSpecific.cpp:882-883）
-  // ——**当场执行**。省略 = 入队（绝大多数怪都是这一种）。与 `gain_block` 的 sync 同族。
+  // ——**当场执行**。与 `gain_block` 的 sync 同族。
+  //
+  // ⚠⚠ **省略时的含义逐 `on` 不同，因为参考的两族各有各的多数写法**（第三十批）：
+  //   * `on: "target"` 省略 = **入队**（`addToBot(Actions::DebuffPlayer<...>)`，绝大多数怪）；
+  //   * `on: "self"`   省略 = **同步**（`buff<MS::X>(n)`，全部 40 余处自身 buff 都是这一种）。
+  //   这个不对称是故意的：它让**已登记的每一只怪都不必回填任何一位**，而参考侧的形状
+  //   仍然逐位可表达。反过来（统一成「省略 = 入队」+ 给所有既有怪补 `sync: true`）需要
+  //   回填 40 余处，漏一处就是静默改变一只已冻结怪的行为——那是这个项目最不能容忍的失败模式。
+  // ⚠ `on: "self"` 侧的唯一例外、也是加这一位的**唯一理由**：工头 asc18 那条
+  //   `addToBot(Actions::BuffEnemy<MS::STRENGTH>(idx, 1))`（MonsterSpecific.cpp:1237）
+  //   ——**入队**的自身 buff，写 `sync: false`。它排在伤害之后、塞伤口之前，所以那 1 点力量
+  //   要等动作出队才出现在快照里，本回合这一鞭的伤害吃不到它。
+  //   ⚠ 同族的先例是守卫者的双重猛击（`addToBot(Actions::BuffEnemy<MODE_SHIFT>(idx, miscInfo))`，
+  //     :1371），但那一条走的是 `MOVE_TURN_END` 里的手写函数（实参要在建动作那一刻求值），
+  //     不是数据表里的一条效果。
   // ⚠ 第二十九批多了**第三种写法**：冠军的嘲讽写的是裸的
   //   `bc.player.debuff<PS::WEAK>(2, true);`（MonsterSpecific.cpp:1302-1303）
   //   ——连 `Actions::DebuffPlayer` 都没经过，直接调 `Player::debuff`。它与拉加维林那种
