@@ -750,6 +750,17 @@ export type BattleContext = {
    */
   strikeCount: number;
 
+  /**
+   * 被青铜球「停滞」扣住的牌（对齐 `CardManager::stasisCards`，CardManager.h:32）。
+   *
+   * ⚠ 定长 **2** 格，索引是 `min(1, 怪物下标)`（`MonsterSpecific.cpp:3540` / `:3553`）——
+   * 青铜自动机的两颗球落在 0 号位与 2 号位，于是各占一格。参考的注释就写着
+   * `// for bronze automaton fight`，全项目只有这一个用户。
+   * ⚠ 它**不在** harness 的快照里，但两头都可观察：取走那一刻抽/弃牌堆少一张，
+   * 那颗球死掉时手牌（或弃牌堆）多一张。
+   */
+  stasisCards: (CombatCard | null)[];
+
   /** 怪物回合游标：>= monsters.length 表示当前不在怪物回合（对齐 monsterTurnIdx，游戏初值 6）。 */
   monsterTurnIdx: number;
   endTurnQueued: boolean;
@@ -4129,6 +4140,8 @@ export function initCombat(input: CombatInitInput): BattleContext {
     exhaustPile: [],
     // 对齐 `CardManager::init` 顶部的 `strikeCount = 0`——下面建大牌组实例时逐张加回来。
     strikeCount: 0,
+    // 对齐 `CardManager::stasisCards` 的初值 `{INVALID, INVALID}`（CardManager.h:32）。
+    stasisCards: [null, null],
     monsterTurnIdx: 6, // 对齐游戏初值（>= monsterCount 即「非怪物回合」）
     endTurnQueued: false,
     turnHasEnded: false,
@@ -8456,9 +8469,16 @@ function takeTurn(bc: BattleContext, m: CombatMonster): string | null {
       //   ——参考写的是 `attackPlayerHelper(bc, asc4 ? 3 : 2, 6)`（六火幽魂地狱之火
       //   MonsterSpecific.cpp:808）与 `(bc, asc4 ? 6 : 5, 2)`（冲撞 :841），第二个实参恒定。
       //   第二十二批加的字段：在此之前没有一只已登记的怪用到多段攻击的 asc 分档。
+      // ⚠⚠ `deal_damage_multi` 的 `times` 从第二十八批起还可以是 **`"miscInfo"`**：突刺之书的
+      //   乱刺写的是 `attackPlayerHelper(bc, asc3 ? 7 : 6, miscInfo)`（MonsterSpecific.cpp:458）
+      //   ——段数是**状态**，整场随出招规则递增。它与 `deal_damage_rolled` 读的是**同一个字段**
+      //   但含义相反（那条读它当每击伤害），所以两条不能互相顶替。
+      //   ⚠ 段数在**排队那一刻**读一次就定了（参考的 `for` 循环在 `attackPlayerHelper` 里、
+      //     早于任何一段落地），中途 `miscInfo` 再变也不影响这一轮的段数。
       const base =
         eff.kind === "deal_damage_rolled" ? m.miscInfo : ascValue(bc, eff.amount, eff.ascAmount);
-      const times = eff.kind === "deal_damage" ? 1 : (eff.times ?? 1);
+      const rawTimes = eff.kind === "deal_damage" ? 1 : (eff.times ?? 1);
+      const times = rawTimes === "miscInfo" ? m.miscInfo : rawTimes;
       const dmg = calculateDamageToPlayer(bc, m, base);
       const idx = bc.monsters.indexOf(m);
       for (let i = 0; i < times; i += 1) {
@@ -9159,6 +9179,13 @@ export type StsCombatState = {
    * **不能**在 importState 里派生：它算上「已离开手牌、还没进弃牌堆」的在飞牌。
    */
   strikeCount: number;
+  /**
+   * 被青铜球停滞扣住的两张牌（第二十八批新增，老档由 migrate 回填 `[null, null]`）。
+   *
+   * 回填是**无损**的：唯一的写入点是青铜球的停滞，而那只怪本批才登记——
+   * 在此之前任何老档里这两格都必然是空的（参考的初值同样是两个 `CardId::INVALID`）。
+   */
+  stasisCards: (CombatCard | null)[];
   monsterTurnIdx: number;
   endTurnQueued: boolean;
   turnHasEnded: boolean;
@@ -9176,6 +9203,9 @@ const copyCardSelect = (info: CardSelectInfo | null): CardSelectInfo | null =>
     ? null
     : { ...info, ...(info.cards === undefined ? {} : { cards: [...info.cards] }) };
 const copyCards = (cards: CombatCard[]): CombatCard[] => cards.map((c) => ({ ...c }));
+/** 深拷贝停滞槽（第二十八批）：定长 2 格，每格是一张牌或空。 */
+const copyStasisCards = (cards: (CombatCard | null)[]): (CombatCard | null)[] =>
+  cards.map((c) => (c === null ? null : { ...c }));
 /** 深拷贝出牌队列项（`card` 是对象，浅拷贝会让快照与实例共享同一张牌）。 */
 const copyCardQueueItems = (items: CardQueueItem[]): CardQueueItem[] =>
   items.map((it) => ({ ...it, card: it.card === null ? null : { ...it.card } }));
@@ -9224,6 +9254,7 @@ export function exportState(bc: BattleContext): StsCombatState {
     discardPile: copyCards(bc.discardPile),
     exhaustPile: copyCards(bc.exhaustPile),
     strikeCount: bc.strikeCount,
+    stasisCards: copyStasisCards(bc.stasisCards),
     monsterTurnIdx: bc.monsterTurnIdx,
     endTurnQueued: bc.endTurnQueued,
     turnHasEnded: bc.turnHasEnded,
@@ -9283,6 +9314,7 @@ export function importState(s: StsCombatState): BattleContext {
     discardPile: copyCards(s.discardPile),
     exhaustPile: copyCards(s.exhaustPile),
     strikeCount: s.strikeCount,
+    stasisCards: copyStasisCards(s.stasisCards),
     monsterTurnIdx: s.monsterTurnIdx,
     endTurnQueued: s.endTurnQueued,
     turnHasEnded: s.turnHasEnded,

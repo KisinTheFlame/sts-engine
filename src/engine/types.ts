@@ -123,9 +123,24 @@ export type PowerId =
   //   `if (monstersAlive == 0 || hasStatus<MS::MINION_LEADER>()) { outcome = 胜利; return; }`
   //   （Monster.cpp:293-297）——首领一死**当场判胜**，小鬼还站着也算赢，
   //   而且那条 `return` 让后面的亡语一概不跑。
-  // ⚠ 参考里另有四个宿主（青铜机器人 / 时间吞噬者旁的 REPTOMANCER / 收藏家 / 觉醒者二阶段），
-  //   一个都还没登记。
+  // ⚠ 参考里另有四个宿主（青铜自动机 / 蜥蜴法师 / 收藏家 / 觉醒者二阶段），
+  //   第二十八批装上了青铜自动机，剩下三只还没登记。
   | "minion_leader"
+  // 痛苦突刺（第二十八批）：突刺之书开局自带的纯 bool 标记（`isBooleanPower` 为真，
+  // MonsterStatusEffects.h:188 那张名单里），harness 恒输出 `PAINFUL_STABS: 1`。
+  // ⚠ 读点在**玩家侧**：`Player::attacked` 的 `damage > 0` 分支里
+  //   `addToBot(Actions::MakeTempCardInDiscard({CardId::WOUND}))`（Player.cpp:250-252）
+  //   ——**每一次「打穿了格挡」的攻击**塞一张伤口，所以多段攻击每段各塞一张，
+  //   而被完全挡住的那一段一张都不塞。
+  // ⚠ 位置逐位对齐：它排在**镀甲递减之后、`hpWasLost` 之前**（同一个 `if (damage > 0)` 块）。
+  | "painful_stabs"
+  // 停滞（第二十八批）：青铜球用过停滞后自带的纯 bool 标记（`isBooleanPower` 为真）。
+  // ⚠ 唯一的读点是 `Monster::die` 的 else-if 链（Monster.cpp:308-309）：带这一位的怪死掉时
+  //   把它扣住的那张牌还回手牌。⚠ 它与孢子云 / 重生**在同一条 else-if 链上**，
+  //   所以顺序照抄（当前没有一只怪同时带两位）。
+  // ⚠ 「已经用过停滞」这件事**另有一份记录**：出招规则读的是 `miscInfo`，不是这一位
+  //   （MonsterSpecific.cpp:2110）。两者由两条独立的语句维护，别合成一处。
+  | "stasis"
   // —— 玩家能力牌触发型 power（在对应触发点由 combat 结算，玩家专属）——
   | "combust" // 燃烧：每个玩家回合结束，失 1 生命并对所有敌人造成 = 层数的伤害
   | "feel_no_pain" // 无痛：每消耗一张牌，获得 = 层数的格挡
@@ -227,7 +242,19 @@ export type Effect =
   // ascAmount 覆盖**每一击**的 amount，`times` 没有分档——参考写的是
   // `attackPlayerHelper(bc, asc4 ? 6 : 5, 2)`（六火幽魂冲撞 MonsterSpecific.cpp:841），
   // 分档挂在那个伤害数上，段数是第二个实参、恒定。
-  | { kind: "deal_damage_multi"; amount: number; times: number; ascAmount?: AscTier[] }
+  //
+  // ⚠ `times: "miscInfo"`（第二十八批）：段数取本敌人的 `miscInfo`，而不是一个字面量。
+  // 唯一的用户是突刺之书的乱刺——`attackPlayerHelper(bc, asc3 ? 7 : 6, miscInfo)`
+  //（MonsterSpecific.cpp:457-460）。它是本项目第一条「段数由状态决定」的多段攻击：
+  // `miscInfo` 从 1 起步（`preBattleAction` 里 `++miscInfo`），出招规则每发一次乱刺再 +1，
+  // 于是整场单调递增。⚠ **别把它写成 `deal_damage_rolled`**：那一条读 `miscInfo` 当**伤害**
+  // （虱子的咬击），这一条读它当**段数**，两者的宿主都在用同一个字段但含义相反。
+  | {
+      kind: "deal_damage_multi";
+      amount: number;
+      times: number | "miscInfo";
+      ascAmount?: AscTier[];
+    }
   // 每次命中随机挑一个存活敌人（剑刃回旋镖：3 点 ×3，逐次随机目标）。
   | { kind: "deal_damage_random"; amount: number; times: number }
   | { kind: "deal_damage_equal_to_block" }
@@ -260,7 +287,21 @@ export type Effect =
   // ⚠ 百夫长自己**一点格挡都不加**——这一招是纯粹「护住奶妈」。它与出招规则是配套的：
   //   秘法师死了之后 `getMoveForRoll` 就不再返回防守（改出狂怒连斩），所以「场上只剩自己
   //   还出防守」这个局面在参考的内容集合里压根不存在。
-  | { kind: "gain_block_ally_fixed"; amount: number; ascAmount?: AscTier[] }
+  //
+  // noAliveGate（第二十八批）：**连那道 `monstersAlive > 1` 的门都没有**。青铜球的支援光束
+  //   整条 case 就是 `bc.monsters.arr[1].addBlock(12);`（MonsterSpecific.cpp:524-527）——
+  //   一个 if 都不带。省略 = 百夫长那种带门的形状。
+  //   ⚠ 在**当前的内容集合**里两者同解，而且是可以证明的：出这一招要求这颗球活着
+  //   （`doMonsterTurn` 的门），而自动机一死战斗当场就结束（它带 `MINION_LEADER`，
+  //   `Monster::die` 命中即写 `outcome` 并 `return`）——于是「球活着」蕴含「自动机也活着」，
+  //   `monstersAlive >= 2` 恒成立。所以这一位是**等价改写**、不是盲区，仍然照抄形状：
+  //   参考真的没写那道门，补上去就是第二份真相。
+  | {
+      kind: "gain_block_ally_fixed";
+      amount: number;
+      ascAmount?: AscTier[];
+      noAliveGate?: boolean;
+    }
   // sync：敌人专用，且**只对 `on: "target"` 有意义**（`on: "self"` 在参考里一律是同步的
   // `buff<MS::X>()`）。给玩家上减益同样有两种写法并存：绝大多数是
   // `addToBot(Actions::DebuffPlayer<...>)`，而拉加维林的吸取灵魂写的是
@@ -348,6 +389,37 @@ export type Effect =
   //   ② 挑种类走 **aiRng**，而建怪时（`MonsterGroup::createMonsters`）走的是 **miscRng**；
   //   ③ **不重跑 `preBattleAction`** —— 召唤出来的狂暴小鬼因此没有狂怒。
   | { kind: "summon_gremlins" }
+  // 敌人用：**青铜自动机的召唤**（第二十八批）。对齐 `Monster::spawnBronzeOrbs`
+  //（MonsterSpecific.cpp:3443-3464）。
+  //
+  // ⚠⚠ **它与 `summon_gremlins` 不共用任何东西，五处形状都不同**（照搬地精那条必错）：
+  //   ① 参考不是一个 `Action`，而是 `takeTurn` 里的**同步**函数调用（`:503` 没有 addToBot）；
+  //      地精那条是 `addToBot(Actions::SummonGremlins())`。
+  //   ② 落位下标**写死 0 与 2**，没有「按 1,2,0 找空位」那套搜索、也不判 `isDying()`；
+  //   ③ 怪种是**固定的** `BRONZE_ORB`，所以**一次 aiRng 都不为「挑种类」而掷**
+  //      （地精那条走 `getGremlin(bc.aiRng)`，两只各一次）；
+  //   ④ **没有 `= Monster()` 重建**（地精那条有）——那两格从没被构造过，所以当前等价；
+  //   ⑤ 末尾多一句 **`++bc.monsterTurnIdx`**，于是 2 号位那颗球**本回合不行动**
+  //      （与 `largeSlimeSplit` 里那次同源，地精那条没有）。
+  // 相同的只有两件事：`buff<MS::MINION>()`、以及每只各自 `rollMove`（各一次 aiRng 起）。
+  // ⚠ 每颗球照样在 `construct` 里掷血量，而青铜球带 `hpDiscardRoll` → 每颗 **2 次** monsterHpRng。
+  | { kind: "summon_bronze_orbs" }
+  // 敌人用：**停滞**——把玩家的一张牌从牌堆里扣住（青铜球，第二十八批）。对齐
+  // `Monster::stasisAction`（MonsterSpecific.cpp:3515-3549）。不带参数：取哪一张、扣到哪里、
+  // 什么时候还回来全写在 sts-combat.ts 的 `stasisAction` / `returnStasisCard` 里。
+  //
+  // ⚠ 逐条形状（每一条都有可观测面，因为牌堆快照逐帧比对）：
+  //  ① 抽牌堆与弃牌堆**都空**时直接 return，**一次 RNG 都不掷**、也不上 STASIS；
+  //  ② 抽牌堆空则从**弃牌堆**取，否则从**抽牌堆**取（不是「两堆合起来」）；
+  //  ③ 挑哪一张走 `stasisHelper`：先按**稀有度**筛（RARE > UNCOMMON > COMMON），
+  //     三种都没有才退化成 `cardRandomRng.random(n-1)` 平均挑；筛出来之后按参考的
+  //     `cardSortedIdx` **稳定排序**再 `cardRandomRng.random(size-1)` 取一个。
+  //     ⚠ 两条路径都**恰好掷一次** cardRandomRng。
+  //  ④ 取走之后 `notifyRemoveFromCombat`（会减 `strikeCount`），然后存进
+  //     `stasisCards[min(1, idx)]` —— 0 号位的球存槽 0、2 号位的球存槽 1；
+  //  ⑤ 上 `MS::STASIS`（进怪物快照）。这颗球**死的时候**（`Monster::die` 的 else-if 链，
+  //     Monster.cpp:308-309）把牌**还进手牌**（走 `moveToHandHelper`，满 10 张改进弃牌堆）。
+  | { kind: "stasis" }
   // 敌人用：**给「随从」们加 Power 与格挡，然后给自己加同样的 Power**（地精首领的鼓舞，
   // 第二十七批）。对齐 `MonsterSpecific.cpp:710-727`：
   //   ```cpp
@@ -705,9 +777,14 @@ export type EnemyDef = {
    *     hpRng.random(54, 60);                    // 参考在 ORB_WALKER 那条注了
    *     setRandomHp(hpRng, ascension >= 8);      // "first call is discarded by game"
    * ```
-   * ⚠ **区间要单独写，不能复用 `hpMin` / `hpMax`。** 工头这里两组恰好相同（都是 54~60），
-   * 但青铜球是先掷 `(52,58)` 再按 `{50,56}` / `{54,60}` 取值，两组数不一样——
-   * `Random::random(a,b)` 的取值依赖上下界，抄成同一组会让此后每一次 monsterHpRng 错位。
+   * ⚠ **区间要单独写，不能复用「本场实际用的那一组」。** 白掷那次的上下界在参考里恒是
+   * `monsterHpRange[id][0]`（低档那一组），而正式那次在 `ascension >= N` 时用的是**高档**：
+   * 青铜球是先掷 `(52,58)`、再按 `{52,58}`（asc<9）或 `{54,60}`（asc>=9）取值。
+   * 所以 asc>=N 时两次的上下界**真的不同**，而 `Random::random(a,b)` 的取值依赖上下界——
+   * 拿 `range` 顶替会让此后每一次 monsterHpRng 错位。
+   * ⚠ 第二十七批这里曾把青铜球的低档写成 `{50,56}`，与 `MonsterIds.h:160` 不符，
+   *   第二十八批登记它时校正。四只宿主的白掷区间都等于自己的低档组（工头 54~60、
+   *   暗球游荡者 90~96、蜥蜴法师 180~190、青铜球 52~58）。
    * ⚠ 它与 `hpNoRoll` 互斥（一个掷两次、一个一次都不掷）。
    */
   hpDiscardRoll?: { min: number; max: number };

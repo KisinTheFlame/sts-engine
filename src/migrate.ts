@@ -76,6 +76,10 @@ export function migrateLoadedState(raw: unknown): GameState {
     // 混乱排的第二张牌），而那三张牌是第九批才登记的——在此之前出牌队列在任何可取档
     // 时点都必空，当时的 exportState 甚至会为此显式抛错。
     backfill(live, "pendingCardQueue", []);
+    // 停滞槽（第二十八批，对齐 `CardManager::stasisCards`）。回填 `[null, null]` 是**无损**的：
+    // 唯一的写入点是青铜球的停滞，而那只怪本批才登记——在此之前任何老档里这两格都必然是空的，
+    // 参考的初值同样是两个 `CardId::INVALID`（CardManager.h:32）。
+    backfill(live, "stasisCards", [null, null]);
     migrateCombatCards(live);
     migrateCombatBatch11(live, state);
     migrateMonsterMiscInfo(live);

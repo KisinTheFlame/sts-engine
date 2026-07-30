@@ -1214,33 +1214,52 @@ const ENEMY_LIST: EnemyDef[] = [
     intentRule: { scripted: [], weighted: [] },
   },
 
-  // —— 第二幕精英：穿刺之书（多段攻击）——
+  // —— 第二幕精英：突刺之书（第二十八批）——
+  //
+  // `monsterHpRange[BOOK_OF_STABBING] = {{160,164},{168,172}}`（MonsterIds.h:158）。
+  // ⚠ 旧近似表写的 `160~162` 与参考不符（上界差 2），本批校正。
+  // ⚠ 阈值是**精英档 asc>=8**（MonsterSpecific.cpp:91-102 那一组 case），不是普通怪的 7。
+  //   本批不校准爬升度（`ascCalibrated` 不置），所以 `hpHigh` 也不能填——两者必须同进同退。
+  //
+  // ⚠⚠ 开局 Power 是 `PAINFUL_STABS` + `++miscInfo`（MonsterSpecific.cpp:177-180），
+  //   两句都在 `PRE_BATTLE_ACTION.book_of_stabbing`。`miscInfo` 就是乱刺的**段数**。
   {
     id: "book_of_stabbing",
-    name: "穿刺之书",
+    name: "突刺之书",
     hpMin: 160,
-    hpMax: 162,
+    hpMax: 164,
     moves: [
       {
+        // 乱刺：`attackPlayerHelper(bc, asc3 ? 7 : 6, miscInfo)`（MonsterSpecific.cpp:457-460）。
+        // ⚠⚠ **段数是 `miscInfo`，不是字面量**——本项目第一条「段数由状态决定」的多段攻击。
+        //   `times: "miscInfo"` 表达它；`ascAmount` 覆盖的仍是**每一击的伤害**。
+        // ⚠ 每一段各自触发 `PAINFUL_STABS`（伤口在 `Player::attacked` 里按「这一击有没有
+        //   打穿格挡」逐段判，见 `MONSTER_ATTACK_WOUND` 那段注释），所以 3 段可以塞 0~3 张伤口。
         id: "multi_stab",
         name: "乱刺",
-        effects: [{ kind: "deal_damage_multi", amount: 6, times: 3 }],
+        effects: [
+          {
+            kind: "deal_damage_multi",
+            amount: 6,
+            times: "miscInfo",
+            ascAmount: [{ atLeast: 3, amount: 7 }],
+          },
+        ],
         intent: "attack",
       },
       {
+        // 重刺：`attackPlayerHelper(bc, asc3 ? 24 : 21)`（MonsterSpecific.cpp:462-465）。
+        // ⚠ 旧近似表只有 21，没有 asc3 那一档。
         id: "big_stab",
         name: "重刺",
-        effects: [{ kind: "deal_damage", amount: 21 }],
+        effects: [{ kind: "deal_damage", amount: 21, ascAmount: [{ atLeast: 3, amount: 24 }] }],
         intent: "attack",
       },
     ],
-    intentRule: {
-      scripted: [],
-      weighted: [
-        { move: "multi_stab", weight: 70, maxInARow: 99 },
-        { move: "big_stab", weight: 30, maxInARow: 1 },
-      ],
-    },
+    // 出招规则见 sts-combat.ts 的 `MOVE_RULES.book_of_stabbing`——阈值 15、连续限制靠
+    // `lastTwoMoves(MULTI_STAB)`，而且**规则本身会改 `miscInfo`**（每发一次乱刺就 +1）。
+    // 旧近似表那份 70/30 加权与参考完全不同，本批弃用。
+    intentRule: { scripted: [], weighted: [] },
   },
 
   // —— 第二幕 Boss：冠军（半血暴怒）——
@@ -1307,7 +1326,19 @@ const ENEMY_LIST: EnemyDef[] = [
     },
   },
 
-  // —— 第二幕 Boss：青铜自动机（召唤青铜球 + 超射线）——
+  // —— 第二幕 Boss：青铜自动机（第二十八批）——
+  //
+  // `monsterHpRange[BRONZE_AUTOMATON] = {{300,300},{320,320}}`（MonsterIds.h:159）。
+  // ⚠ 上下界相同**照样掷一次** monsterHpRng（`Random::random(300,300)` 无条件 `++counter`）
+  //   ——所以它**不**带 `hpNoRoll`，判据见 `EnemyDef.hpNoRoll` 的注释（守卫者同族）。
+  // ⚠ 阈值是 **Boss 档 asc>=9**（MonsterSpecific.cpp:76-89），本批不校准，故不填 `hpHigh`。
+  //
+  // ⚠⚠ 它的意图链**一次 roll 都不看**：`getMoveForRoll` 无条件返回召唤青铜球
+  //   （MonsterSpecific.cpp:2101-2104），其后五条 case 全是「同步 setMove + 同步
+  //   noOpRollMove」（:471-511）。分岔靠 `miscInfo`（参考在那里起名 `lastBoostWasFlail`）：
+  //     召唤 → 连枷 → 增益(miscInfo:0→1, 出连枷) → 连枷 → 增益(1→0, 出超射线)
+  //           → 超射线 → 眩晕 → 连枷 → …
+  //   ——即「连枷、增益」两轮之后来一发超射线，然后**自己进眩晕**（asc19 直接回增益）。
   {
     id: "bronze_automaton",
     name: "青铜自动机",
@@ -1315,69 +1346,113 @@ const ENEMY_LIST: EnemyDef[] = [
     hpMax: 300,
     moves: [
       {
+        // 召唤青铜球：`spawnBronzeOrbs(bc)`（MonsterSpecific.cpp:502-506）——**同步**调用。
+        // ⚠ 与地精首领的集结**不是同一条路径**（那条是 `addToBot(Actions::SummonGremlins())`）。
+        //   逐条差别见 `spawnBronzeOrbs` 的注释与 `Effect` 里 `summon_bronze_orbs` 的说明。
         id: "spawn_orbs",
         name: "召唤青铜球",
-        effects: [{ kind: "summon", defIds: ["bronze_orb", "bronze_orb"] }],
+        effects: [{ kind: "summon_bronze_orbs" }],
         intent: "unknown",
       },
       {
+        // 连枷：`attackPlayerHelper(bc, asc4 ? 8 : 7, 2)`（MonsterSpecific.cpp:486-490）
+        // ——两段各 7 点，段数是字面量 2（与突刺之书那条的 `miscInfo` 不同）。
         id: "flail",
         name: "连枷",
-        effects: [{ kind: "deal_damage_multi", amount: 7, times: 2 }],
+        effects: [
+          { kind: "deal_damage_multi", amount: 7, times: 2, ascAmount: [{ atLeast: 4, amount: 8 }] },
+        ],
         intent: "attack",
       },
       {
+        // 增益：`buff<STRENGTH>(asc4 ? 4 : 3)` **同步**，`addBlock(asc9 ? 12 : 9)` **也同步**
+        //（MonsterSpecific.cpp:471-484）。⚠ 两处照抄：
+        //  ① 顺序是**先力量再格挡**（旧近似表写反了）；
+        //  ② 格挡是**裸的 `addBlock`**，不是 `addToBot(MonsterGainBlock)` → `sync: true`；
+        //  ③ 两个数是**两个独立的 asc 分档**（力量 asc4、格挡 asc9），别合成一个。
+        // ⚠ `miscInfo` 的翻转与 setMove 都在 `MOVE_TURN_END`，不是效果。
         id: "boost",
         name: "增益",
         effects: [
-          { kind: "gain_block", amount: 9 },
-          { kind: "apply_power", power: "strength", amount: 3, on: "self" },
+          {
+            kind: "apply_power",
+            power: "strength",
+            amount: 3,
+            on: "self",
+            ascAmount: [{ atLeast: 4, amount: 4 }],
+          },
+          { kind: "gain_block", amount: 9, sync: true, ascAmount: [{ atLeast: 9, amount: 12 }] },
         ],
         intent: "buff",
       },
       {
+        // 超射线：`attackPlayerHelper(bc, asc4 ? 50 : 45)`（MonsterSpecific.cpp:492-500）。
         id: "hyperbeam",
         name: "超射线",
-        effects: [{ kind: "deal_damage", amount: 45 }],
+        effects: [{ kind: "deal_damage", amount: 45, ascAmount: [{ atLeast: 4, amount: 50 }] }],
         intent: "attack",
       },
+      {
+        // 眩晕：整条 case 只有 `setMove(FLAIL); bc.noOpRollMove();`（MonsterSpecific.cpp:508-511）
+        // ——**一个效果都没有**（超射线之后它自己歇一回合）。两句都在 `MOVE_TURN_END`。
+        // ⚠ 与拜鸟 / 带壳寄生虫那两个 `stunned` 不同：那两个是**受击时**被写进去的，
+        //   这一个是**上一招的收尾**自己 setMove 出来的（asc<19 那一支）。
+        id: "stunned",
+        name: "眩晕",
+        effects: [],
+        intent: "unknown",
+      },
     ],
-    // 首招召唤两颗青铜球，之后 连枷/增益/超射线。
-    intentRule: {
-      scripted: ["spawn_orbs"],
-      weighted: [
-        { move: "flail", weight: 40, maxInARow: 2 },
-        { move: "boost", weight: 35, maxInARow: 1 },
-        { move: "hyperbeam", weight: 25, maxInARow: 1 },
-      ],
-    },
+    // 出招规则见 sts-combat.ts 的 `MOVE_RULES.bronze_automaton`——恒返回召唤，
+    // 且「第二次被调用就抛错」（整场只在开局的 `MonsterGroup::init` 里跑一次）。
+    // 旧近似表那份 scripted + 加权与参考完全不同，本批弃用。
+    intentRule: { scripted: [], weighted: [] },
   },
+  // 青铜球（第二十八批）：`monsterHpRange[BRONZE_ORB] = {{52,58},{54,60}}`（MonsterIds.h:160）。
+  // ⚠⚠ 它走 `Monster::initHp` 里「**先白掷一次再掷**」那一族（MonsterSpecific.cpp:109-112）：
+  //   `hpRng.random(52,58); setRandomHp(hpRng, asc >= 9);` ——一次建怪消耗 **2 次** monsterHpRng。
+  //   见 `hpDiscardRoll`。⚠ 白掷那次的上下界恒是**低档**那一组，与正式那次在 asc>=9 时不同。
+  // ⚠ 它不在 `MonsterGroup.cpp` 的任何建怪列表里——唯一来源是青铜自动机的召唤。
   {
     id: "bronze_orb",
     name: "青铜球",
     hpMin: 52,
-    hpMax: 52,
+    hpMax: 58,
+    hpDiscardRoll: { min: 52, max: 58 },
     moves: [
       {
+        // 光束：`attackPlayerHelper(bc, 8)`（MonsterSpecific.cpp:513-516）。**没有 asc 分档。**
+        // ⚠ 收尾是**入队**的 `addToBot(Actions::RollMove(idx))`（这只怪三条 case 里唯一一条），
+        //   另两条是同步的真 rollMove。见 `MOVE_TURN_END`。
         id: "orb_beam",
         name: "光束",
         effects: [{ kind: "deal_damage", amount: 8 }],
         intent: "attack",
       },
       {
+        // 支援光束：`bc.monsters.arr[1].addBlock(12)`（MonsterSpecific.cpp:524-527）。
+        // ⚠⚠ **目标写死 1 号位**（青铜自动机恒在那一格），而且它自己**一点格挡都不加**
+        //   ——与百夫长的防守（`gain_block_ally_fixed`）逐字同形，故复用那个原语。
+        // ⚠ 旧近似表写的「获得 6 点格挡」两处都错（数值 6 vs 12、给自己 vs 给 1 号位）。
+        // ⚠ 参考在这里**没有** `monstersAlive > 1` 那道门（百夫长那条有），
+        //   所以要 `noAliveGate: true`。抄成带门的会在自动机已死时少加一次格挡。
         id: "orb_support",
-        name: "支援",
-        effects: [{ kind: "gain_block", amount: 6 }],
+        name: "支援光束",
+        effects: [{ kind: "gain_block_ally_fixed", amount: 12, noAliveGate: true }],
         intent: "defend",
       },
+      {
+        // 停滞：`stasisAction(bc); miscInfo = 1; rollMove(bc);`（MonsterSpecific.cpp:518-522）。
+        // ⚠ 只有第一句是效果，后两句在 `MOVE_TURN_END`（`miscInfo = 1` 是「已经用过停滞」，
+        //   出招规则读它；`rollMove` 是**同步的真 rollMove**）。
+        id: "stasis",
+        name: "停滞",
+        effects: [{ kind: "stasis" }],
+        intent: "debuff",
+      },
     ],
-    intentRule: {
-      scripted: [],
-      weighted: [
-        { move: "orb_beam", weight: 70, maxInARow: 2 },
-        { move: "orb_support", weight: 30, maxInARow: 1 },
-      ],
-    },
+    // 出招规则见 sts-combat.ts 的 `MOVE_RULES.bronze_orb`（MonsterSpecific.cpp:2106-2124）。
+    intentRule: { scripted: [], weighted: [] },
   },
 
   // —— 第二幕 Boss：收藏家（召唤火把头 + 群体减益）——
@@ -2970,7 +3045,12 @@ const ENCOUNTERS: Record<string, EncounterDef> = {
   the_maw: { id: "the_maw", enemies: ["the_maw"], isBoss: false },
   writhing_mass: { id: "writhing_mass", enemies: ["writhing_mass"], isBoss: false },
   champ: { id: "champ", enemies: ["champ"], isBoss: true },
-  bronze_automaton: { id: "bronze_automaton", enemies: ["bronze_automaton"], isBoss: true },
+  // ⚠ 第二十八批把它从 `bronze_automaton` 改名成 `automaton`：编队 id 必须与参考的
+  //   `MonsterEncounter::AUTOMATON` 同名（trace 文件名就是它，`SUPPORTED_ENCOUNTERS`
+  //   与 wiring 测试按文件名双向对齐）。**怪**的 id 仍然是 `bronze_automaton`
+  //   （对齐 `MonsterId::BRONZE_AUTOMATON`）——编队与怪同名只是别的编队的巧合。
+  //   同族的先例：第十九批 `guardian`→`the_guardian`、第二十五批 `shell_parasite`。
+  automaton: { id: "automaton", enemies: ["bronze_automaton"], isBoss: true },
   the_collector: { id: "the_collector", enemies: ["the_collector"], isBoss: true },
   // 第三幕
   exploder: { id: "exploder", enemies: ["exploder"], isBoss: false },
@@ -3157,7 +3237,7 @@ const BOSS_ENCOUNTER_POOL: readonly WeightedEncounter[] = [
 // Act2 Boss 池（切片：冠军；后续补 青铜自动机 / 收藏家）。
 const ACT2_BOSS_POOL: readonly WeightedEncounter[] = [
   { id: "champ", weight: 1 },
-  { id: "bronze_automaton", weight: 1 },
+  { id: "automaton", weight: 1 },
   { id: "the_collector", weight: 1 },
 ];
 
