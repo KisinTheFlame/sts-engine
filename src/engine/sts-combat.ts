@@ -1848,6 +1848,85 @@ const MOVE_RULES: Record<string, MoveForRoll> = {
     }
     return "spk_spike";
   },
+
+  // —— 第三十三批：三只第三幕单怪 ——
+
+  // 暗球游荡者：对齐 MonsterSpecific.cpp:2609-2620。
+  //     if (roll < 40) {
+  //         if (!lastTwoMoves(CLAW)) return CLAW; else return LASER;
+  //     } else if (!lastTwoMoves(LASER)) {
+  //         return LASER;
+  //     } else {
+  //         return CLAW;
+  //     }
+  // ⚠ 两道门都是 **`lastTwoMoves`**（连出两次才封），不是 `lastMove`——两招各自都能连出两次。
+  // ⚠ 不追加 aiRng（一次 rollMove 恒消耗 1 次）。
+  // ⚠ 分界是 **40**（低位出利爪、高位出激光），与「50/50」那种直觉相反：利爪的窗口更窄。
+  orb_walker: (_bc, m, roll) => {
+    if (roll < 40) {
+      return lastTwoMoves(m, "ow_claw") ? "ow_laser" : "ow_claw";
+    }
+    return lastTwoMoves(m, "ow_laser") ? "ow_claw" : "ow_laser";
+  },
+
+  // 尖塔增生：对齐 MonsterSpecific.cpp:3097-3113。
+  //     const auto useConstrict = !bc.player.hasStatus<PS::CONSTRICTED>()
+  //                               && !lastMove(SPIRE_GROWTH_CONSTRICT)
+  //                               && (asc17 || roll >= 50);
+  //     if (useConstrict) return CONSTRICT;
+  //     else if (roll < 50 && !lastTwoMoves(QUICK_TACKLE)) return QUICK_TACKLE;
+  //     else if (!lastTwoMoves(SMASH)) return SMASH;
+  //     else return QUICK_TACKLE;
+  // ⚠ 四处照抄：
+  //  ① 第一道门读的是**玩家**身上的束缚，而束缚**永不递减、永不摘除**（见 PowerId 那条）
+  //     ——所以缠绕一场仗最多出一次。这与「连续限制」是两回事，两个条件同时挂在那里。
+  //  ② `asc17 || roll >= 50`：高层数时**不看 roll**，缠绕的窗口从一半变成全部。
+  //     当前 trace 全是 asc0，那一支走不到但照抄。
+  //  ③ 后两道门是 `lastTwoMoves`，而第一道是 `lastMove`——**三道门两种谓词**，别统一。
+  //  ④ 兜底是急冲（不是重砸）。
+  spire_growth: (bc, m, roll) => {
+    const useConstrict =
+      !hasPower(bc.player.powers, "constricted") &&
+      !lastMove(m, "sg_constrict") &&
+      (bc.ascension >= 17 || roll >= 50);
+    if (useConstrict) {
+      return "sg_constrict";
+    }
+    if (roll < 50 && !lastTwoMoves(m, "sg_quick_tackle")) {
+      return "sg_quick_tackle";
+    }
+    if (!lastTwoMoves(m, "sg_smash")) {
+      return "sg_smash";
+    }
+    return "sg_quick_tackle";
+  },
+
+  // 大嘴：对齐 MonsterSpecific.cpp:3035-3050。
+  //     if (firstTurn()) return ROAR;
+  //     else if (roll < 50 && !lastMove(NOM)) return NOM;
+  //     else if (!lastMove(SLAM)) return SLAM;   // 参考在这里注了
+  //     else return DROOL;                       // "dont include not last move nom condition,
+  //                                              //  because it can't be, we handle in the move logic"
+  // ⚠ 三处照抄：
+  //  ① 三道门全是 **`lastMove`**（只看上一格），一个 `lastTwoMoves` 都没有——与暗球游荡者
+  //     和尖塔增生都不同，别照搬邻居。
+  //  ② 流涎只在「roll >= 50（或刚吞噬过）且刚重击过」时才由**这条规则**滚出来；
+  //     另一条更常走的路是吞噬的收尾 `setMove(THE_MAW_DROOL)`（见 `MOVE_TURN_END`）
+  //     ——参考那句注释说的就是这件事：吞噬之后意图已被写死成流涎，所以这里的第二道门
+  //     不必再排除「刚吞噬过」。
+  //  ③ 首回合恒咆哮，`roll` 照掷但不看。
+  the_maw: (_bc, m, roll) => {
+    if (firstTurn(m)) {
+      return "maw_roar";
+    }
+    if (roll < 50 && !lastMove(m, "maw_nom")) {
+      return "maw_nom";
+    }
+    if (!lastMove(m, "maw_slam")) {
+      return "maw_slam";
+    }
+    return "maw_drool";
+  },
 };
 
 // ============================================================================
@@ -2577,6 +2656,41 @@ const MOVE_TURN_END: Record<string, MoveTurnEnd> = {
   // ⚠ 切割那条是裸的 `addToBot(Actions::RollMove(idx))`（`:1422`），即默认值，不写进来。
   "spiker/spk_spike": (bc, m) => {
     rollMove(bc, m); // ★ 消耗一次 aiRng（同步的真 rollMove）
+  },
+
+  // —— 第三十三批：三只第三幕单怪 ——
+  //
+  // 暗球游荡者（激光 / 利爪）与尖塔增生（急冲 / 重砸 / 缠绕）**五条 case 的收尾全是**
+  // 裸的 `addToBot(Actions::RollMove(idx))`（MonsterSpecific.cpp:992 / :999 /
+  // :1505 / :1510 / :1515），即这张表的默认值 `"roll"`，所以两只怪一条都不写进来。
+  //
+  // 大嘴不同：四条 case **三种形态并存**（MonsterSpecific.cpp:1434-1457），照抄别统一。
+  //   咆哮   `rollMove(bc);`                      —— 第六形态：**同步的真 rollMove**（`:1452`）
+  //   流涎   `rollMove(bc);`                      —— 同上（`:1436`）
+  //   吞噬   `setMove(DROOL); bc.noOpRollMove();` —— 第五形态：同步 setMove + **同步** noOp
+  //   重击   `addToBot(Actions::RollMove(idx));`  —— 默认值 `"roll"`，不写进来（`:1456`）
+
+  // 咆哮：整条 case 是「两句同步 debuff + 同步 rollMove」（MonsterSpecific.cpp:1447-1453）。
+  // ⚠ 顺序可观察：两个减益**先**上身，紧接着的 `getMoveForRoll` 才跑——不过大嘴的出招规则
+  //   不读玩家状态，所以这一处目前观察不到；形状照抄。
+  "the_maw/maw_roar": (bc, m) => {
+    rollMove(bc, m); // ★ 消耗一次 aiRng（同步的真 rollMove，不是 no_op）
+  },
+  // 流涎：`buff<MS::STRENGTH>(asc17 ? 5 : 3); rollMove(bc);`（MonsterSpecific.cpp:1434-1437）。
+  // ⚠ 力量是**同步**加的（`on: "self"` 的默认），排在 rollMove 之前——但出招规则同样不读力量。
+  "the_maw/maw_drool": (bc, m) => {
+    rollMove(bc, m); // ★ 消耗一次 aiRng（同步的真 rollMove）
+  },
+  // 吞噬：`setMove(MMID::THE_MAW_DROOL); bc.noOpRollMove();`（MonsterSpecific.cpp:1442-1443）。
+  // ⚠⚠ **这是「同步 setMove + 同步 noOpRollMove」那一族**（与球状守卫者 / 拜鸟 / 青铜自动机
+  //   同形），不是第六形态：`noOpRollMove` 掷完就丢，意图由前一句写死成流涎。
+  //   写成 `"roll"` 会让流涎失去它唯一的强制来源、意图链整个走样；写成 `{setMove:"maw_drool"}`
+  //   则会少掷一次 aiRng，`rng.ai` 计数器当场对不上。
+  // ⚠ **「效果入队 + 收尾同步」这个组合真的可观察**（工头 / 爆破怪那一族）：吞噬的伤害是
+  //   `addToBot`，而这两句已经跑完。这一轮若打死玩家，主循环跳出，但 aiRng 已经掷过。
+  "the_maw/maw_nom": (bc, m) => {
+    setMove(m, "maw_drool");
+    bc.rng.aiRng.random(99); // ★ 消耗一次 aiRng（noOpRollMove，**同步**，意图不变）
   },
 };
 
@@ -4031,6 +4145,28 @@ const PRE_BATTLE_ACTION: Record<string, PreBattleAction> = {
     const thorns = bc.ascension >= 17 ? 7 : bc.ascension >= 2 ? 4 : 3;
     addPower(m.powers, "thorns", thorns);
   },
+
+  // —— 第三十三批 ——
+
+  // 暗球游荡者的通用力量增长（对齐 MonsterSpecific.cpp:200-202）：
+  //     case MonsterId::ORB_WALKER:
+  //         buff<MS::GENERIC_STRENGTH_UP>(asc17 ? 5 : 3);
+  //         break;
+  // **不消耗 RNG。** 分档是**两档**（asc17），不是走廊小怪那种三档 `getTriIdx`——
+  // 别照搬尖刺客那条荆棘的写法。
+  // ⚠ 效果在 `applyEndOfRoundPowers`：**每个回合末** `buff<STRENGTH>(层数)`，
+  //   而它自己一层都不掉（Monster.cpp:103-105）。所以整场力量是 3、6、9…线性涨。
+  // ⚠ 它与仪式（RITUAL）**不是一回事**，两处差别都要照抄：仪式带 skipFirst（施加当回合
+  //   不结算）、排在 `applyEndOfRoundPowers` 的**第一句**；这一条**没有** skipFirst、
+  //   排在**最后一句**。参考自己在枚举那行注了 `// todo just merge this with orb walker
+  //   strength up`，说明它清楚两者像但**没有**合并。
+  // ⚠ `GENERIC_STRENGTH_UP` 会进 trace 的怪物 powers 快照（`GENERIC_STRENGTH_UP: 3`），
+  //   漏了当场抛「未映射的 power」。
+  // ⚠ 尖塔增生与大嘴**都没有** preBattleAction（`Monster::preBattleAction` 的 switch 里
+  //   两者都没有 case），开局身上一个 Power 都没有。
+  orb_walker: (bc, m) => {
+    addPower(m.powers, "generic_strength_up", bc.ascension >= 17 ? 5 : 3);
+  },
 };
 
 type EncounterSetup = (bc: BattleContext) => void;
@@ -4234,6 +4370,25 @@ function overwriteMove(m: CombatMonster, move: string): void {
  *     （打人 + `SuicideAction`），一条在一条不在，差别只在用了哪个 Action。
  *     ⚠ **真实游戏这里显示的是攻击意图**，所以这一格是「参考与真实游戏可能分歧」的候选，
  *     已如实写进 TODOS「待裁定」——照抄参考，不打补丁（补丁没有预言机）。
+ *   * **第三十三批的三只**（逐条核对 `MonsterMoves.h:478-479` / `:506-507` / `:522-523`）：
+ *     | 参考招式                                 | 在白名单？ | 我们的键                      | 数据表 intent |
+ *     | ---------------------------------------- | ---------- | ----------------------------- | ------------- |
+ *     | `ORB_WALKER_LASER` (`:478`)              | **是**     | `orb_walker/ow_laser`         | attack        |
+ *     | `ORB_WALKER_CLAW` (`:479`)               | **是**     | `orb_walker/ow_claw`          | attack        |
+ *     | `SPIRE_GROWTH_QUICK_TACKLE` (`:506`)     | **是**     | `spire_growth/sg_quick_tackle`| attack        |
+ *     | `SPIRE_GROWTH_SMASH` (`:507`)            | **是**     | `spire_growth/sg_smash`       | attack        |
+ *     | `SPIRE_GROWTH_CONSTRICT`                 | 否         | —                             | debuff        |
+ *     | `THE_MAW_SLAM` (`:522`)                  | **是**     | `the_maw/maw_slam`            | attack        |
+ *     | `THE_MAW_NOM` (`:523`)                   | **是**     | `the_maw/maw_nom`             | attack        |
+ *     | `THE_MAW_ROAR`                           | 否         | —                             | debuff        |
+ *     | `THE_MAW_DROOL`                          | 否         | —                             | buff          |
+ *     ⚠ 本批**七条全部**与「走没走 `attackPlayerHelper`」这条判据一致，一个反例都没有：
+ *     缠绕 / 咆哮是裸的 `bc.player.debuff<...>`、流涎是 `buff<MS::STRENGTH>`，
+ *     三条都不经过那个函数。⚠ 而吞噬每击才 5 点却**在**列——判据是**函数**不是伤害量，
+ *     与爆破怪那一格恰好是同一条判据的两个方向。
+ *   * ⚠ 参考的白名单里 `THE_MAW_SLAM` / `THE_MAW_NOM` 紧挨着守卫者四条之后（`:518-523`），
+ *     而 `ORB_WALKER_*` 在 `NEMESIS_*` 与 `POINTY_ATTACK` 之间——**它整张表按怪名字母序、
+ *     不按枚举序**，抄的时候按名字找、别按位置数（与第二十四 / 二十五批同一条教训）。
  *
  * ⚠⚠ **第二十四批起这张表第一次有预言机**：`isMonsterAttacking` 的唯一读者是觅敌之弱，
  * 而第十三批之后的编队都走 `ENC_V0`（只有 variant 0 那副 21 张牌组，里面没有它）。
@@ -4368,6 +4523,21 @@ const MONSTER_ATTACK_MOVES: ReadonlySet<string> = new Set([
   "the_guardian/whirlwind",
   "the_guardian/roll_attack",
   "the_guardian/twin_slam",
+  // 暗球游荡者（`:478-479`，第三十三批）。它只有这两招，**两条都在**。
+  "orb_walker/ow_laser",
+  "orb_walker/ow_claw",
+  // 尖塔增生（`:506-507`，第三十三批）。⚠ **三招里只有两条在**：急冲 / 重砸 → 在；
+  //   缠绕 → **不在**（它走的是裸的 `bc.player.debuff<PS::CONSTRICTED>`，不带任何伤害，
+  //   自然不经过 `attackPlayerHelper`）。
+  "spire_growth/sg_quick_tackle",
+  "spire_growth/sg_smash",
+  // 大嘴（`:522-523`，第三十三批）。⚠ **四招里只有两条在**：重击 / 吞噬 → 在；
+  //   咆哮（裸 debuff）/ 流涎（自身 buff）→ **不在**。
+  //   ⚠ 吞噬在列这件事值得记一笔：它每击才 5 点、段数还从 1 起步，可它走的是
+  //     `attackPlayerHelper(bc, 5, t)`——判据是**函数**不是伤害量，与第三十二批
+  //     「爆破怪自爆 30 点却不在」正好是同一条判据的两个方向。
+  "the_maw/maw_slam",
+  "the_maw/maw_nom",
 ]);
 
 /**
@@ -9322,8 +9492,8 @@ function callEndOfTurnActions(bc: BattleContext): void {
  * ⚠ 参考遍历的是 `std::map<PlayerStatus, int16_t> statusMap`，即按
  * `PlayerStatusEffects.h` 的**枚举值升序**，与「先获得哪个 Power」无关。我们的 powers
  * 是获得顺序的数组，所以这里按枚举顺序**逐项显式判断**，不能改成遍历数组。
- * 命中项的枚举序：ENTANGLED(10) → LOSE_STRENGTH(14) → NO_DRAW(16) → DOUBLE_TAP(30) →
- * COMBUST(41) → RAGE(71)。
+ * 命中项的枚举序：CONSTRICTED(9) → ENTANGLED(10) → LOSE_STRENGTH(14) → NO_DRAW(16) →
+ * DOUBLE_TAP(30) → COMBUST(41) → RAGE(71)。
  */
 function applyEndOfTurnPowers(bc: BattleContext): void {
   // 炸弹（对齐 Player.cpp:350-355）：排在遍历 statusMap 的循环**之前**，与枚举序无关
@@ -9345,6 +9515,23 @@ function applyEndOfTurnPowers(bc: BattleContext): void {
   bc.player.bomb1 = bc.player.bomb2;
   bc.player.bomb2 = bc.player.bomb3;
   bc.player.bomb3 = 0;
+
+  // 束缚（CONSTRICTED=9，第三十三批的尖塔增生）：**这个循环里第一个命中的**
+  // （枚举序排在 ENTANGLED=10 之前）。对齐 Player.cpp:374-376：
+  //     case PS::CONSTRICTED:
+  //         bc.addToBot(Actions::DamagePlayer(pair.second));
+  //         break;
+  // ⚠ 四处照抄：
+  //  ① 那条 case **只有伤害一句**——既不递减也不摘除，所以束缚跟到战斗结束
+  //     （与紧随其后的缠绕「整条清除」正相反）；
+  //  ② 伤害走 `Actions::DamagePlayer` = **非攻击伤害**（不吃怪物力量、不吃玩家易伤），
+  //     但**照样被格挡吸收**；
+  //  ③ `selfDamage` 取默认的 **false**，所以不触发破裂（与灼伤的 `true` 相反）；
+  //  ④ `clearOnCombatVictory` 是 **false**（Actions.cpp:91-95 第二个参数）。
+  const constricted = getPower(bc.player.powers, "constricted");
+  if (constricted > 0) {
+    addToBot(bc, (c) => damagePlayerNonAttack(c, constricted, false), false);
+  }
 
   // 缠绕（ENTANGLED=10，枚举序排在 LOSE_STRENGTH=14 之前）：本回合结束即**整条清除**。
   // ⚠ 是 `addToBot(RemoveStatus<ENTANGLED>)` 而不是递减（Player.cpp:382），所以红色奴隶主
@@ -9711,11 +9898,18 @@ function takeTurn(bc: BattleContext, m: CombatMonster): string | null {
       //     早于任何一段落地），中途 `miscInfo` 再变也不影响这一轮的段数。
       const base =
         eff.kind === "deal_damage_rolled" ? m.miscInfo : ascValue(bc, eff.amount, eff.ascAmount);
+      // ⚠⚠ `times` 从第三十三批起还可以是 **`"monsterTurnHalf"`**：大嘴的吞噬写的是
+      //   `const auto t = (bc.getMonsterTurnNumber() + 1) / 2; attackPlayerHelper(bc, 5, t);`
+      //   （MonsterSpecific.cpp:1440-1441）——段数取自**全局回合计数**，与这只怪的状态无关。
+      //   `Math.trunc` 对应 C++ 的整数除法（回合数恒正，向零截断 = 向下取整）。
+      //   ⚠ 别与 `"miscInfo"` 混：那条读的是**这只怪的字段**（出招规则会改写它）。
       const rawTimes = eff.kind === "deal_damage" ? 1 : (eff.times ?? 1);
       const times =
         rawTimes === "miscInfo"
           ? m.miscInfo
-          : ascValue(bc, rawTimes, eff.kind === "deal_damage_multi" ? eff.ascTimes : undefined);
+          : rawTimes === "monsterTurnHalf"
+            ? Math.trunc((getMonsterTurnNumber(bc) + 1) / 2)
+            : ascValue(bc, rawTimes, eff.kind === "deal_damage_multi" ? eff.ascTimes : undefined);
       const dmg = calculateDamageToPlayer(bc, m, base);
       const idx = bc.monsters.indexOf(m);
       for (let i = 0; i < times; i += 1) {
@@ -10231,9 +10425,24 @@ function applyEndOfRoundPowers(bc: BattleContext): void {
         addPower(m.powers, "strength", ritual.amount);
       }
     }
-    // 顺序对齐参考：仪式 → 缓慢 → 锁定 → 虚弱 → 易伤。
+    // 顺序对齐参考：仪式 → 缓慢 → 锁定 → 虚弱 → 易伤 → 通用力量增长。
     decrementDebuff(m, "weak");
     decrementDebuff(m, "vulnerable");
+    // 通用力量增长（暗球游荡者，第三十三批）：`Monster::applyEndOfRoundPowers` 的
+    // **最后一句**（Monster.cpp:103-105）：
+    //     if (hasStatus<MS::GENERIC_STRENGTH_UP>()) {
+    //         buff<MS::STRENGTH>(getStatus<MS::GENERIC_STRENGTH_UP>());
+    //     }
+    // ⚠ 三处照抄：
+    //  ① **没有 skipFirst**——与紧邻的仪式正相反：开局 preBattleAction 上的 3 层在
+    //     **第一个回合末**就结算，不像仪式要跳过施加的那一回合。
+    //  ② **自己一层都不掉**（既不递减也不摘除），所以力量是 3、6、9… 线性涨。
+    //  ③ 位置是这个循环的**最后**，排在虚弱 / 易伤递减之后。当前没有一只怪同时带它与
+    //     仪式，所以「排第一还是排最后」观察不到；照抄。
+    const strengthUp = getPower(m.powers, "generic_strength_up");
+    if (strengthUp > 0) {
+      addPower(m.powers, "strength", strengthUp);
+    }
   }
   // TODO(后续PR): 缓慢清零、锁定递减。
 }
@@ -10827,6 +11036,21 @@ export const SUPPORTED_ENCOUNTERS: readonly string[] = [
   "three_shapes",
   "four_shapes",
   "sphere_and_two_shapes",
+  // —— 第三十三批：第三幕三个**单怪**编队（走 harness 新追加的 variant 33，variant 32 的
+  //   encounters 一个字没动，那三个文件逐字节不变）。牌组沿用 `BATCH_1 + SPOT_WEAKNESS`、
+  //   40 种子、asc0、目标策略 0。
+  //   选它们是因为三只怪**全由已登记的原语拼成**，一个新机制都不带：
+  //   ⚠ `orb_walker` 是 `hpDiscardRoll` 的**正主**（建怪掷 2 次 monsterHpRng）+
+  //     `GENERIC_STRENGTH_UP` 的**唯一宿主**（回合末 +3 力量）；它的激光同时往**抽牌堆**
+  //     与**弃牌堆**各塞一张灼伤。
+  //   ⚠ `spire_growth` 带来 **CONSTRICTED**（玩家回合末非攻击伤害，不递减不摘除）。
+  //   ⚠ `maw` 是**编队** id（对齐 `MonsterEncounter::MAW`），它建的**怪**才叫 `the_maw`；
+  //     它是 `hpNoRoll` 的**第二个宿主**，一次 monsterHpRng 都不掷，吞噬的段数是
+  //     `(怪物回合数 + 1) / 2`。
+  //   ⚠ 三个编队**只有 asc0 的背书**：三只新怪的 `ascCalibrated` 一只都没置。
+  "orb_walker",
+  "spire_growth",
+  "maw",
 ];
 
 export function isEncounterSupported(encounterId: string): boolean {

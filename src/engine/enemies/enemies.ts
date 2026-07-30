@@ -1890,35 +1890,61 @@ const ENEMY_LIST: EnemyDef[] = [
     // 旧近似表那份加权（60/40）与参考完全不同，本批弃用。
     intentRule: { scripted: [], weighted: [] },
   },
+  // 暗球游荡者（第三十三批按参考逐位校准）。
   {
     id: "orb_walker",
     name: "球行者",
+    // MonsterIds.h:186 `{{90,96},{92,102}}`（asc<7 取前者）。
     hpMin: 90,
     hpMax: 96,
+    // ⚠⚠ **它是 `hpDiscardRoll` 的正主**：`Monster::initHp` 里那条 case 是
+    //     hpRng.random(90, 96);                 // 参考只在这里注了
+    //     setRandomHp(hpRng, ascension >= 7);   // "first call is discarded by game"
+    //   （MonsterSpecific.cpp:32-35）——一次建怪消耗 **2 次** monsterHpRng。
+    //   白掷那次的上下界恒是低档那一组（90~96），与正式那次在 asc<7 时恰好相同；
+    //   asc>=7 时正式那次用的是 `{92,102}`，两次就真的不同了。
+    //   ⚠ 白掷那次的**取值**永远验证不了（第二十七批实测 0 例：取值被丢弃，而
+    //     `Random::nextLong(n)` 的前进步数与 n 无关），有背书的只是**次数**。
+    hpDiscardRoll: { min: 90, max: 96 },
+    // ⚠ 开局的 **GENERIC_STRENGTH_UP** 在 `PRE_BATTLE_ACTION.orb_walker` 里
+    //   （`buff<MS::GENERIC_STRENGTH_UP>(asc17 ? 5 : 3)`，MonsterSpecific.cpp:200-202）：
+    //   全参考项目**只有它一个宿主**，效果是**每个回合末 +3 力量**且自己一层不掉。
+    //   它会进 trace 的怪物快照（`GENERIC_STRENGTH_UP: 3`）。
     moves: [
       {
+        // 激光：`attackPlayerHelper(bc, asc2 ? 11 : 10)` + **两条塞牌**
+        //（MonsterSpecific.cpp:995-1001）：
+        //     bc.addToBot( Actions::ShuffleTempCardIntoDrawPile(CardId::BURN, 1) );
+        //     bc.addToBot( Actions::MakeTempCardInDiscard({CardId::BURN}) );
+        // ⚠ 三处照抄：
+        //  ① **两张灼伤去的是两个不同的牌堆**（先抽牌堆、后弃牌堆），不是同一堆两张；
+        //  ② 洗进抽牌堆那张**掷一次 `cardRandomRng`** 选插入位（抽牌堆为空时 idx=0、不掷），
+        //     进弃牌堆那张**不掷**；
+        //  ③ 三条效果全是 `addToBot`（省略 `sync`），顺序就是这里的书写顺序。
+        // ⚠ 灼伤**打不出**，但它会被抽进手牌 → 回合末结算 2 点自伤（`useNoTriggerCard`），
+        //   所以「洗进抽牌堆」这一路是真的可观察的，不只是牌堆快照。
         id: "ow_laser",
         name: "激光",
         effects: [
-          { kind: "deal_damage", amount: 10 },
+          { kind: "deal_damage", amount: 10, ascAmount: [{ atLeast: 2, amount: 11 }] },
+          { kind: "add_card", cardId: "burn", pile: "draw", count: 1 },
           { kind: "add_card", cardId: "burn", pile: "discard", count: 1 },
         ],
         intent: "attack",
       },
       {
+        // 利爪：`attackPlayerHelper(bc, asc2 ? 16 : 15)`（MonsterSpecific.cpp:991）。
+        // ⚠ 旧近似表写的 16 是**高档**那个数，asc0 应当是 15。
         id: "ow_claw",
         name: "利爪",
-        effects: [{ kind: "deal_damage", amount: 16 }],
+        effects: [{ kind: "deal_damage", amount: 15, ascAmount: [{ atLeast: 2, amount: 16 }] }],
         intent: "attack",
       },
     ],
-    intentRule: {
-      scripted: [],
-      weighted: [
-        { move: "ow_laser", weight: 50, maxInARow: 2 },
-        { move: "ow_claw", weight: 50, maxInARow: 1 },
-      ],
-    },
+    // 出招规则见 sts-combat.ts 的 `MOVE_RULES.orb_walker`（MonsterSpecific.cpp:2609-2620）。
+    // 两条 case 的收尾都是裸的 `addToBot(Actions::RollMove(idx))`，即 `MOVE_TURN_END` 的默认值。
+    // 旧近似表那份加权（50/50）与参考完全不同，本批弃用。
+    intentRule: { scripted: [], weighted: [] },
   },
 
   // —— 第三幕精英：蛇法师（召唤匕首）——
@@ -3046,71 +3072,149 @@ const ENEMY_LIST: EnemyDef[] = [
       ],
     },
   },
+  // 尖塔增生（第三十三批按参考逐位校准）。
   {
     id: "spire_growth",
     name: "尖塔幼体",
+    // MonsterIds.h:206 `{{170,170},{190,190}}`（asc<7 取前者）。⚠ **两组**，不是一个区间。
+    // 走普通的 `setRandomHp`（掷一次）——上下界相同**照样掷**，别与 `hpNoRoll` 混。
     hpMin: 170,
     hpMax: 170,
+    // ⚠ 它**没有** preBattleAction（`Monster::preBattleAction` 的 switch 里没有它的 case），
+    //   开局身上一个 Power 都没有。
     moves: [
       {
+        // 急冲：`attackPlayerHelper(bc, asc2 ? 18 : 16)`（MonsterSpecific.cpp:1504）。
         id: "sg_quick_tackle",
         name: "急冲",
-        effects: [{ kind: "deal_damage", amount: 16 }],
+        effects: [{ kind: "deal_damage", amount: 16, ascAmount: [{ atLeast: 2, amount: 18 }] }],
         intent: "attack",
       },
       {
+        // 重砸：`attackPlayerHelper(bc, asc2 ? 25 : 22)`（MonsterSpecific.cpp:1509）。
+        // ⚠ 旧近似表在这里多挂了一层虚弱——参考那条 case **只有攻击一句**，本批删掉。
         id: "sg_smash",
         name: "重砸",
-        effects: [
-          { kind: "deal_damage", amount: 22 },
-          { kind: "apply_power", power: "weak", amount: 1, on: "target" },
-        ],
+        effects: [{ kind: "deal_damage", amount: 22, ascAmount: [{ atLeast: 2, amount: 25 }] }],
         intent: "attack",
       },
+      {
+        // 缠绕：`bc.player.debuff<PS::CONSTRICTED>(asc17 ? 12 : 10);`
+        //（MonsterSpecific.cpp:1514）——**裸的 `player.debuff`**，即第二十九批冠军嘲讽
+        //  那一族的写法：与 `Actions::DebuffPlayer<...>(n).actFunc(bc)` 逐位等价，
+        //  用同一个 `sync: true` 表达。
+        // ⚠ 三处照抄：
+        //  ① `sync: true`——它不入队，紧随其后那条 `addToBot(RollMove)` 执行时已经生效；
+        //  ② **没有第二个实参**，取默认 `isSourceMonster = true`（对束缚无影响，
+        //     那道 justApplied 只对虚弱/易伤/脆弱/抽牌削减生效）；
+        //  ③ 分档是 **asc17**（走廊小怪那一族的高档），不是 asc2。
+        // ⚠ 束缚**不递减也不摘除**，而出招规则里有一道 `!player.hasStatus<CONSTRICTED>()`
+        //   的门 → **这一招一场仗最多出一次**。
+        id: "sg_constrict",
+        name: "缠绕",
+        effects: [
+          {
+            kind: "apply_power",
+            power: "constricted",
+            amount: 10,
+            on: "target",
+            sync: true,
+            ascAmount: [{ atLeast: 17, amount: 12 }],
+          },
+        ],
+        intent: "debuff",
+      },
     ],
-    intentRule: {
-      scripted: [],
-      weighted: [
-        { move: "sg_quick_tackle", weight: 50, maxInARow: 2 },
-        { move: "sg_smash", weight: 50, maxInARow: 1 },
-      ],
-    },
+    // 出招规则见 sts-combat.ts 的 `MOVE_RULES.spire_growth`（MonsterSpecific.cpp:3097-3112）。
+    // 三条 case 的收尾都是裸的 `addToBot(Actions::RollMove(idx))`，即 `MOVE_TURN_END` 的默认值。
+    // 旧近似表那份加权（50/50、只有两招）与参考完全不同，本批弃用。
+    intentRule: { scripted: [], weighted: [] },
   },
+  // 大嘴（第三十三批按参考逐位校准）。
   {
     id: "the_maw",
     name: "巨口",
+    // MonsterIds.h:216 `{{300,300},{300,300}}`。
     hpMin: 300,
     hpMax: 300,
+    // ⚠⚠ **`hpNoRoll` 的第二个宿主**（第一个是第二十三批的球状守卫者）：`Monster::initHp`
+    //   给它的是 `curHp = monsterHpRange[id][0][0];`，**连 `setRandomHp` 都不调**
+    //   （MonsterSpecific.cpp:119-124）。写成「上下界相同的普通怪」会多掷一次 monsterHpRng，
+    //   此后每一次取值整体错位。⚠ 反例就在隔壁：守卫者的 `{240,240}` 照样掷一次。
+    hpNoRoll: true,
+    // ⚠ 它**没有** preBattleAction（switch 里没有 `THE_MAW`）。
     moves: [
       {
+        // 咆哮：两句**裸的** `bc.player.debuff<...>(asc17 ? 5 : 3, true)`
+        //（MonsterSpecific.cpp:1448-1449），与尖塔增生的缠绕同族 → `sync: true`。
+        // ⚠ 这里**显式**传了第二个实参 `true`（`isSourceMonster`），所以虚弱与脆弱都走
+        //   justApplied：**施加的那个回合末不递减**。
+        // ⚠ 顺序照抄：先虚弱、后脆弱。
         id: "maw_roar",
         name: "咆哮",
         effects: [
-          { kind: "apply_power", power: "weak", amount: 3, on: "target" },
-          { kind: "apply_power", power: "frail", amount: 3, on: "target" },
+          {
+            kind: "apply_power",
+            power: "weak",
+            amount: 3,
+            on: "target",
+            sync: true,
+            ascAmount: [{ atLeast: 17, amount: 5 }],
+          },
+          {
+            kind: "apply_power",
+            power: "frail",
+            amount: 3,
+            on: "target",
+            sync: true,
+            ascAmount: [{ atLeast: 17, amount: 5 }],
+          },
         ],
         intent: "debuff",
       },
       {
+        // 流涎：`buff<MS::STRENGTH>(asc17 ? 5 : 3);`（MonsterSpecific.cpp:1435）——
+        // **同步**的自身 buff（`on: "self"` 省略 `sync` 即同步，与参考一致）。
+        // ⚠ 旧近似表**根本没有这一招**（只列了咆哮 / 重击 / 吞噬），本批补上。
+        //   它由吞噬的收尾 `setMove(THE_MAW_DROOL)` 强制排定，见 `MOVE_TURN_END`。
+        id: "maw_drool",
+        name: "流涎",
+        effects: [
+          {
+            kind: "apply_power",
+            power: "strength",
+            amount: 3,
+            on: "self",
+            ascAmount: [{ atLeast: 17, amount: 5 }],
+          },
+        ],
+        intent: "buff",
+      },
+      {
+        // 重击：`attackPlayerHelper(bc, asc2 ? 30 : 25)`（MonsterSpecific.cpp:1455）。
+        // 收尾是裸的 `addToBot(Actions::RollMove(idx))`，即默认值。
         id: "maw_slam",
         name: "重击",
-        effects: [{ kind: "deal_damage", amount: 25 }],
+        effects: [{ kind: "deal_damage", amount: 25, ascAmount: [{ atLeast: 2, amount: 30 }] }],
         intent: "attack",
       },
       {
+        // 吞噬：`const auto t = (bc.getMonsterTurnNumber() + 1) / 2;
+        //        attackPlayerHelper(bc, 5, t);`（MonsterSpecific.cpp:1440-1441）。
+        // ⚠⚠ **段数由回合数算出来**，是本项目第一条这样的多段攻击（`times:
+        //   "monsterTurnHalf"`）：1,1,2,2,3,3,… 随怪物回合单调不减。
+        // ⚠ 每击伤害是**裸的 5**，参考那里一个 `asc? :` 都没有——别按邻居补分档。
+        // ⚠ 旧近似表写死 3 段，与参考无关。
         id: "maw_nom",
         name: "吞噬",
-        effects: [{ kind: "deal_damage_multi", amount: 5, times: 3 }],
+        effects: [{ kind: "deal_damage_multi", amount: 5, times: "monsterTurnHalf" }],
         intent: "attack",
       },
     ],
-    intentRule: {
-      scripted: ["maw_roar"],
-      weighted: [
-        { move: "maw_slam", weight: 50, maxInARow: 1 },
-        { move: "maw_nom", weight: 50, maxInARow: 1 },
-      ],
-    },
+    // 出招规则见 sts-combat.ts 的 `MOVE_RULES.the_maw`（MonsterSpecific.cpp:3035-3049）。
+    // 四条 case 的收尾**三种形态并存**，见 `MOVE_TURN_END`。
+    // 旧近似表那份 `scripted: ["maw_roar"] + 50/50` 与参考完全不同，本批弃用。
+    intentRule: { scripted: [], weighted: [] },
   },
   {
     id: "writhing_mass",
@@ -3402,8 +3506,14 @@ const ENCOUNTERS: Record<string, EncounterDef> = {
     enemies: ["darkling", "darkling", "darkling"],
     isBoss: false,
   },
+  // 尖塔增生（MonsterGroup.cpp:380-382）：单怪。
   spire_growth: { id: "spire_growth", enemies: ["spire_growth"], isBoss: false },
-  the_maw: { id: "the_maw", enemies: ["the_maw"], isBoss: false },
+  // ⚠ 第三十三批把它从 `the_maw` 改名成 `maw`：编队 id 必须与参考的
+  //   `MonsterEncounter::MAW` 同名（trace 文件名就是它，`SUPPORTED_ENCOUNTERS` 与
+  //   wiring 测试按文件名双向对齐）。**怪**的 id 仍然是 `the_maw`
+  //   （对齐 `MonsterId::THE_MAW`）。同族的先例：第二十五批 `shell_parasite`、
+  //   第二十八批 `automaton`、第二十九批 `collector`。
+  maw: { id: "maw", enemies: ["the_maw"], isBoss: false },
   writhing_mass: { id: "writhing_mass", enemies: ["writhing_mass"], isBoss: false },
   champ: { id: "champ", enemies: ["champ"], isBoss: true },
   // ⚠ 第二十八批把它从 `bronze_automaton` 改名成 `automaton`：编队 id 必须与参考的
@@ -3539,7 +3649,7 @@ const ACT3_STRONG_POOL: readonly WeightedEncounter[] = [
   { id: "jaw_worm_horde", weight: 1 },
   { id: "three_darklings", weight: 2 },
   { id: "spire_growth", weight: 1 },
-  { id: "the_maw", weight: 1 },
+  { id: "maw", weight: 1 },
   { id: "writhing_mass", weight: 1 },
 ];
 

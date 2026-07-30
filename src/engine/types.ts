@@ -50,6 +50,21 @@ export type PowerId =
   // ⚠ 与腐化/疯狂那类「只改 `costForTurn`」的降费不是一族：它改的是 `cost` 本身，
   //   所以回合末 `resetAttributesAtEndOfTurn` 复位过去也还是新费用。
   | "confused"
+  // 束缚（尖塔幼体的缠绕，第三十三批）：**玩家身上**，每个玩家回合结束受到 = 层数的伤害。
+  // 对齐 `Player::applyEndOfTurnPowers` 的 `case PS::CONSTRICTED: addToBot(DamagePlayer(层数))`
+  // （Player.cpp:374-376）——就这一句，整条 Power 没有别的读点。
+  // ⚠ 三处照抄：
+  //  ① **不递减、不摘除**：那条 case 只有伤害、没有 `decrementStatus` 也没有 `RemoveStatus`
+  //     （与缠绕 / 二连击那种「回合末整条清掉」正相反）。所以一旦上身就跟到战斗结束，
+  //     而尖塔幼体的出招规则里有一道 `!player.hasStatus<CONSTRICTED>()` 的门 →
+  //     **它那一招一场仗最多出一次**。
+  //  ② 伤害走 `Actions::DamagePlayer` = **非攻击伤害**（不吃怪物力量与玩家易伤），
+  //     但**照样被格挡吸收**，且 `selfDamage` 取默认的 false（不触发破裂）。
+  //  ③ 枚举值是 **9**，排在 `ENTANGLED`(10) **之前**——`applyEndOfTurnPowers` 遍历的是
+  //     `std::map`（枚举序），所以它是那个循环里第一个命中的。
+  // ⚠ 施加走的是普通的 `Player::debuff` 尾段（`statusMap[s] += amount`），会**叠加**，
+  //   而且**会被神器吃掉**（那道门在前面）。
+  | "constricted"
   | "poison" // 中毒：持有者回合开始受到 = 层数的伤害（无视格挡），然后层数 -1（静默主机制）
   | "focus" // 集中：机器人充能球的被动/唤醒数值 +N（被动修正器）
   | "metallicize" // 金属化：每当自己回合结束，获得 N 点格挡（拉加维林睡眠期）
@@ -152,6 +167,19 @@ export type PowerId =
   // ⚠ 「已经用过停滞」这件事**另有一份记录**：出招规则读的是 `miscInfo`，不是这一位
   //   （MonsterSpecific.cpp:2110）。两者由两条独立的语句维护，别合成一处。
   | "stasis"
+  // 通用力量增长（暗球游荡者，第三十三批）：**怪物身上**，开局 `preBattleAction` 自带
+  // 3 层（asc17 是 5）。⚠ 层数**真的被读**——`Monster::applyEndOfRoundPowers` 的最后一句是
+  //   `if (hasStatus<GENERIC_STRENGTH_UP>()) buff<MS::STRENGTH>(getStatus<...>());`
+  //   （Monster.cpp:103-105），即**每个回合末涨 = 层数的力量**，而它自己一层都不掉。
+  // ⚠ 与仪式（RITUAL）不是一回事，两处差别都可观察：
+  //   ① 仪式带 `wasJustApplied` 的 skipFirst（施加当回合不结算），这一条**没有**——
+  //      开局上的 3 层在**第一个回合末**就生效；
+  //   ② 位置不同：仪式是那个函数的**第一句**、这一条是**最后一句**（中间隔着缓慢 / 锁定 /
+  //      虚弱 / 易伤的递减）。当前没有一只怪同时带两者，但照抄位置。
+  //   参考自己在枚举那行注了 `// todo just merge this with orb walker strength up`，
+  //   说明它清楚两者像但没合并——**照抄，别自作主张合并**。
+  // ⚠ 全参考项目**只有暗球游荡者一个宿主**。
+  | "generic_strength_up"
   // —— 玩家能力牌触发型 power（在对应触发点由 combat 结算，玩家专属）——
   | "combust" // 燃烧：每个玩家回合结束，失 1 生命并对所有敌人造成 = 层数的伤害
   | "feel_no_pain" // 无痛：每消耗一张牌，获得 = 层数的格挡
@@ -293,10 +321,19 @@ export type Effect =
   //   啄击的每击伤害是常数 1、段数才分档；冲撞正相反。两者写反的代价不是「总伤害差一点」，
   //   而是段数错 → 玩家侧格挡 / 荆棘 / 火焰屏障各自触发的**次数**都错。
   // ⚠ `ascTimes` 与 `times: "miscInfo"` 互斥（参考里没有任何一招同时用状态段数与分档段数）。
+  //
+  // ⚠⚠ `times: "monsterTurnHalf"`（第三十三批）：段数 = `(getMonsterTurnNumber() + 1) / 2`
+  //   的 **C++ 整数除法**。唯一的用户是大嘴的吞噬——`attackPlayerHelper(bc, 5, t)`
+  //   （MonsterSpecific.cpp:1440-1441）。于是段数是 1,1,2,2,3,3,…（第 1/2 个怪物回合各 1 段，
+  //   第 3/4 个各 2 段……），整场随回合数单调不减。
+  //   ⚠ 它与 `"miscInfo"` 是两件事：那条读的是**这只怪的状态字段**（会被出招规则改写），
+  //     这条读的是**全局回合计数**（`bc.turn + 1`，与这只怪无关）。
+  //   ⚠ 与 `ascTimes` 也互斥：吞噬的每击伤害是裸的 5（参考那里没有任何 `asc? :`）。
+  //   ⚠ 段数在**排队那一刻**读一次就定了（`attackPlayerHelper` 里的 `for` 循环早于任何一段落地）。
   | {
       kind: "deal_damage_multi";
       amount: number;
-      times: number | "miscInfo";
+      times: number | "miscInfo" | "monsterTurnHalf";
       ascAmount?: AscTier[];
       ascTimes?: AscTier[];
     }

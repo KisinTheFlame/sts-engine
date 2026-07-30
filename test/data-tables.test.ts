@@ -621,7 +621,8 @@ describe("敌人与编队表", () => {
   // monsterHpRng 取值整体错位（不是「血量差一点」）。参考里只有三只怪走那条 case
   //（`Monster::initHp`，MonsterSpecific.cpp:119-124）：球状守卫者 / 大嘴 / 复形怪。
   // ⚠ 反方向同样要守：`{240,240}` 的守卫者**照样掷一次**，所以「上下界相同」不是判据。
-  const HP_NO_ROLL = new Set(["spheric_guardian"]);
+  // ⚠ 第三十三批装上了**第二个宿主**大嘴（`the_maw`），剩下复形怪（`transient`）还没登记。
+  const HP_NO_ROLL = new Set(["spheric_guardian", "the_maw"]);
 
   it("只有 initHp 里那条不掷 RNG 的怪才带 hpNoRoll", () => {
     for (const def of ALL_ENEMIES) {
@@ -657,6 +658,10 @@ describe("敌人与编队表", () => {
     taskmaster: { min: 54, max: 60 },
     // 第二十八批：青铜球（`MonsterSpecific.cpp:109-112`）。
     bronze_orb: { min: 52, max: 58 },
+    // 第三十三批：暗球游荡者（`MonsterSpecific.cpp:32-35`）——**这一族的正主**，
+    // 参考只在它那条注了 `// first call is discarded by game`。
+    // ⚠ 低档组是 `{90,96}`、高档组是 `{92,102}`，白掷那次恒用低档。
+    orb_walker: { min: 90, max: 96 },
   };
 
   it("只有 initHp 里那族「先白掷一次」的怪才带 hpDiscardRoll，且区间逐怪对表", () => {

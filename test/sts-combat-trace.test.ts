@@ -403,6 +403,14 @@ const ENCOUNTER: Record<string, string> = {
   THREE_SHAPES: "three_shapes",
   FOUR_SHAPES: "four_shapes",
   SPHERE_AND_TWO_SHAPES: "sphere_and_two_shapes",
+  // —— 第三十三批：第三幕三个**单怪**编队，走 harness 新追加的 variant 33
+  //   （variant 32 的 encounters 一个字没动，那三个文件逐字节不变）。
+  //   ⚠ `MAW` 是**编队**名，它建的**怪**才叫 `THE_MAW`——我们这边的编队 id 本批跟着改成了
+  //     参考的名字（原先叫 `the_maw`，与怪同名）。同族的先例：`SHELL_PARASITE` /
+  //     `AUTOMATON` / `COLLECTOR`。
+  ORB_WALKER: "orb_walker",
+  SPIRE_GROWTH: "spire_growth",
+  MAW: "maw",
 };
 const MONSTER: Record<string, string> = {
   CULTIST: "cultist",
@@ -485,6 +493,11 @@ const MONSTER: Record<string, string> = {
   EXPLODER: "exploder",
   REPULSOR: "repulsor",
   SPIKER: "spiker",
+  // —— 第三十三批：三只第三幕单怪，各自独占一个编队（不分裂、不召唤、不逃跑）。
+  //   ⚠ 编队 id 是 `maw`、怪 id 是 `the_maw`（对齐 `MonsterId::THE_MAW`），两者不同名。
+  ORB_WALKER: "orb_walker",
+  SPIRE_GROWTH: "spire_growth",
+  THE_MAW: "the_maw",
   // ⚠ **分裂留下的空格**。参考的 `MonsterGroup::arr` 是定长 5 的数组，`monsterCount` 只是
   // 「dump 到第几格」；史莱姆王分裂时 `arr[0]` 与 `arr[2]` 被写、`monsterCount = 3`，
   // 于是 1 号格那只**从没被构造过**的默认 `Monster` 也被 dump 出来
@@ -679,6 +692,18 @@ const MOVE: Record<string, string> = {
   REPULSOR_REPULSE: "repulse",
   SPIKER_CUT: "spk_cut",
   SPIKER_SPIKE: "spk_spike",
+  // —— 第三十三批：三只第三幕单怪，合计九条招式 ——
+  // ⚠ 大嘴四条**全都要**，包括旧近似表里根本没有的「流涎」（`THE_MAW_DROOL`）——
+  //   它由吞噬的收尾 `setMove` 强制排定，是那只怪最常出的招之一。
+  ORB_WALKER_LASER: "ow_laser",
+  ORB_WALKER_CLAW: "ow_claw",
+  SPIRE_GROWTH_QUICK_TACKLE: "sg_quick_tackle",
+  SPIRE_GROWTH_SMASH: "sg_smash",
+  SPIRE_GROWTH_CONSTRICT: "sg_constrict",
+  THE_MAW_ROAR: "maw_roar",
+  THE_MAW_DROOL: "maw_drool",
+  THE_MAW_SLAM: "maw_slam",
+  THE_MAW_NOM: "maw_nom",
   // 分裂留下的空格：那只默认 `Monster` 的 `moveHistory[0]` 是 `MMID::INVALID`
   // （`monsterMoveStrings[0] == "INVALID"`，MonsterMoves.h:215）。我们的空占位
   // `currentMove` 是空串。⚠ 这一条只有那个空格用得到——所有真怪在 `MonsterGroup::init`
@@ -855,6 +880,17 @@ const POWER: Record<string, string> = {
   STASIS: "stasis",
   // ⚠ ARTIFACT / MINION_LEADER 早就在表里，本批是它们第一次同时出现在**同一只**怪身上
   //   （青铜自动机 `MINION_LEADER: 1` + `ARTIFACT: 3`）。同一个映射直接复用。
+  // —— 第三十三批 ——
+  // 通用力量增长：**怪物身上**，暗球游荡者 preBattleAction 里上的 3 层（asc17 是 5）。
+  // ⚠ 层数**真的被读**：`applyEndOfRoundPowers` 的最后一句每个回合末 `buff<STRENGTH>(层数)`，
+  //   而它自己一层不掉——所以快照里它恒是 3，旁边的 `STRENGTH` 一路 3 → 6 → 9…
+  // ⚠ 全参考项目只有这一只怪带它。
+  GENERIC_STRENGTH_UP: "generic_strength_up",
+  // 束缚：**玩家身上**，尖塔增生的缠绕上的 10 层（asc17 是 12）。
+  // ⚠ **不递减也不摘除**，所以一旦出现在快照里就跟到战斗结束；效果是每个玩家回合末
+  //   受到 = 层数的非攻击伤害（照样被格挡吸收）。
+  // ⚠ 它一场仗最多被上一次——出招规则里有一道 `!player.hasStatus<CONSTRICTED>()` 的门。
+  CONSTRICTED: "constricted",
 };
 
 const mapPotion = (p: string): string | null => (p in POTION ? POTION[p]! : p);
