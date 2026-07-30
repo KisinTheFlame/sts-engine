@@ -393,6 +393,16 @@ const ENCOUNTER: Record<string, string> = {
   //   收藏家在**2 号位**；所以快照里一开始有两个 `INVALID = 0`，第一招把它们填成火炬头。
   CHAMP: "champ",
   COLLECTOR: "collector",
+  // —— 第三十二批：**第三幕开张**。harness 追加了**第四个乘积**（排在目标策略那个之后，
+  //   加空乘积时单独跑过一次 `--check`，101 个文件逐字节复现），本批装三个「形状怪」编队。
+  //   ⚠ 三个编队的成员**都由 miscRng 掷定**，静态表数不出来：
+  //     `THREE_SHAPES` / `FOUR_SHAPES` 走 `createShapes`（6 项池、**不放回**），
+  //     `SPHERE_AND_TWO_SHAPES` 走两次 `getAncientShape`（3 项表、**有放回**，
+  //     所以那个编队真的可能出两只同种形状怪）。
+  //   ⚠ `SPHERE_AND_TWO_SHAPES` 里球状守卫者在**最后一格**（2 号位）。
+  THREE_SHAPES: "three_shapes",
+  FOUR_SHAPES: "four_shapes",
+  SPHERE_AND_TWO_SHAPES: "sphere_and_two_shapes",
 };
 const MONSTER: Record<string, string> = {
   CULTIST: "cultist",
@@ -469,6 +479,12 @@ const MONSTER: Record<string, string> = {
   THE_CHAMP: "champ",
   THE_COLLECTOR: "the_collector",
   TORCH_HEAD: "torch_head",
+  // —— 第三十二批：三只「形状怪」。⚠ 一场里同一种可能出现两只（`createShapes` 的池子
+  //   每种两份、`getAncientShape` 干脆有放回），与地精帮 / 三哨卫同形。
+  //   ⚠ `SPHERE_AND_TWO_SHAPES` 里的球状守卫者（第二十三批已有映射）在 2 号位。
+  EXPLODER: "exploder",
+  REPULSOR: "repulsor",
+  SPIKER: "spiker",
   // ⚠ **分裂留下的空格**。参考的 `MonsterGroup::arr` 是定长 5 的数组，`monsterCount` 只是
   // 「dump 到第几格」；史莱姆王分裂时 `arr[0]` 与 `arr[2]` 被写、`monsterCount = 3`，
   // 于是 1 号格那只**从没被构造过**的默认 `Monster` 也被 dump 出来
@@ -653,6 +669,16 @@ const MOVE: Record<string, string> = {
   THE_COLLECTOR_FIREBALL: "fireball",
   THE_COLLECTOR_MEGA_DEBUFF: "mega_debuff",
   THE_COLLECTOR_SPAWN: "spawn_torches",
+  // —— 第三十二批：三只形状怪各两条 ——
+  // ⚠ 三只怪的「撞击」重名（爆破怪 `EXPLODER_SLAM` / 斥力怪 `REPULSOR_BASH`），所以我们这边
+  //   带各自的前缀（`exp_` / `rep_` / `spk_`）——招式 id 只需在本只怪里唯一，但这张 MOVE 表
+  //   是**全局**的，参考枚举名自带怪物前缀，两边一一对上即可。
+  EXPLODER_SLAM: "exp_slam",
+  EXPLODER_EXPLODE: "exp_explode",
+  REPULSOR_BASH: "rep_bash",
+  REPULSOR_REPULSE: "repulse",
+  SPIKER_CUT: "spk_cut",
+  SPIKER_SPIKE: "spk_spike",
   // 分裂留下的空格：那只默认 `Monster` 的 `moveHistory[0]` 是 `MMID::INVALID`
   // （`monsterMoveStrings[0] == "INVALID"`，MonsterMoves.h:215）。我们的空占位
   // `currentMove` 是空串。⚠ 这一条只有那个空格用得到——所有真怪在 `MonsterGroup::init`
