@@ -2804,9 +2804,6 @@ const ENEMY_LIST: EnemyDef[] = [
     //   `PRE_BATTLE_ACTION.byrd`（开局 3 层）、`monsterDamageUnblocked` 的 else-if 链
     //   （受击 -1，减到 0 就摔下来改出 `stunned`）、`applyPreTurnLogic`（回合开始复位回 3）。
     //   减半伤害那一处在 `calculateCardDamage`。数据表只描述招式。
-    // ⚠ **爬升度分档本批不写**（与第二十三批那三只同理）：`ascCalibrated` 没置，
-    //   `constructMonster` 在 `ascension > 0` 时直接抛错，写了也没有预言机。
-    //   参考的四处分档记在各招式的注释里，留给「第二幕爬升度」那一批一次性转写。
     id: "byrd",
     name: "拜鸟",
     // MonsterIds.h:160 `{{25,31},{26,33}}`；普通怪阈值 `setRandomHp(hpRng, asc >= 7)`

@@ -3687,7 +3687,7 @@ const PRE_BATTLE_ACTION: Record<string, PreBattleAction> = {
   //   ③ `monsterDamageUnblocked` 的 else-if 链里受击 -1，减到 0 那一击改出 `stunned`；
   //   ④ `applyPreTurnLogic` 每个怪物回合开始**复位回 3**（于是它又飞起来）。
   // ⚠ FLIGHT 会进 trace 的怪物 powers 快照（`FLIGHT: 3`），漏了当场抛「未映射的 power」。
-  // ⚠ asc17 那一档（4 层）当前不可达（`ascCalibrated` 没置），照抄但没有预言机。
+  // ✅ asc17 那一档（4 层）第三十批有背书了（这一处改成恒 3 红 240 例）。
   byrd: (bc, m) => {
     addPower(m.powers, "flight", bc.ascension >= 17 ? 4 : 3);
   },
@@ -3971,8 +3971,14 @@ function overwriteMove(m: CombatMonster, move: string): void {
  *
  * ⚠⚠ **第二十四批起这张表第一次有预言机**：`isMonsterAttacking` 的唯一读者是觅敌之弱，
  * 而第十三批之后的编队都走 `ENC_V0`（只有 variant 0 那副 21 张牌组，里面没有它）。
- * 本批给 act-2 的新 variant 加了一张 `SPOT_WEAKNESS`，于是本批三个编队里这条谓词
- * **真的被读**。此前登记的 21 只怪仍然没有背书，见 TODOS 盲区表。
+ * 那一批给 act-2 的新 variant 加了一张 `SPOT_WEAKNESS`，于是它那三个编队里这条谓词
+ * **真的被读**。
+ * ✅ **第三十批把第二幕剩下的三个编队也补上了**：variant 30（19 编队 × asc19）的牌组同样带
+ * 觅敌之弱，而它的编队列表**包含第二十三批那三个**（`spheric_guardian` / `chosen` /
+ * `snake_plant`，那一批的 variant 里没有这张牌）。于是**硬化那个反例第一次有了预言机**
+ * ——去掉它红 131 例，多加 `chosen/drain` 红 147 例、多加 `snake_plant/sp_spores` 红 30 例。
+ * ⚠ 第十三~二十三批登记的**第一幕**那些怪仍然没有背书（它们的编队走 `ENC_V0`、
+ * 牌组里没有觅敌之弱），见 TODOS 盲区表。
  *
  * ⚠ **登记新怪时必须回 `MonsterMoves.h` 逐条抄这张表**，不要从「带不带伤害」或数据表的
  * intent 推——硬化就是反例的存在证明。漏一条不会静默：这只怪的那个意图会被判成「不是攻击」。
@@ -9240,8 +9246,8 @@ function applyPreTurnLogic(bc: BattleContext): void {
     //  ② 是 **setStatus（覆盖）**，不是 `buff`（累加）——与 `BYRD_FLY` 那条 case 相反。
     //  ③ 时点是**怪物阶段开始**（整个 `applyPreTurnLogic` 循环），所以「玩家回合里把飞行
     //     打光」与「怪物回合开始又满了」之间只隔一个玩家回合末。
-    // ⚠ asc17 那一档当前不可达（拜鸟的 `ascCalibrated` 没置，`constructMonster` 在
-    //   `ascension > 0` 时抛错），照抄但**没有预言机**，见 TODOS 盲区表。
+    // ✅ asc17 那一档第三十批有背书了（这一处改成恒 3 红 **225 例**；`PRE_BATTLE_ACTION`
+    //   那一处是 240 例，两处必须分别量——它们是同一个数的两个独立字面量）。
     const flight = m.powers.find((p) => p.id === "flight");
     if (flight !== undefined) {
       flight.amount = bc.ascension >= 17 ? 4 : 3;
