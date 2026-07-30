@@ -181,7 +181,24 @@ ENC_ALL="cultist jaw_worm jaw_worm_horde three_louse two_louse"
 #     完全相同），所以它的 `encounters` **允许**与 variant 21~30 重叠——分组键带 `@tgt1`
 #     后缀，行落进 23 个**新**文件。同理，以后要是有人拿这副牌组再开一个
 #     **asc0 + tgt0** 的 variant，那就会撞号。
+# 第三十二批：**第三幕开张**。harness 追加了**第四个乘积**
+#   `emitProduct(act3Variants, act3Encounters)`，排在目标策略那个之后。
+#   ⚠⚠ **两步验证做了**：先只加空乘积（`act3Variants` 留空）跑一次 `--check`，
+#     101 个已提交文件逐字节复现；之后才填 variant 32。
+#   ⚠⚠ **第三幕做完之前不许再往它后面挂新乘积**：每一批第三幕都往 `act3Variants` 追加
+#     一个 variant，而往「不是最后一个」的乘积里追加会平移其后所有 `traceIdx`。
+#   本批装三个「形状怪」编队（走 variant 32，牌组沿用 `BATCH_1 + SPOT_WEAKNESS`、
+#   40 个种子、**爬升度 0**、**目标策略 0**）。
+#   ⚠ `three_shapes` / `four_shapes` 走 `MonsterGroup::createShapes`（6 项池
+#     {斥力,斥力,爆破,爆破,尖刺,尖刺}、**不放回**，MonsterGroup.cpp:508-530），
+#     `sphere_and_two_shapes` 走两次 `getAncientShape`（3 项表 {尖刺,斥力,爆破}、**有放回**，
+#     :532-539）——两张表的项数 / 重复度 / 书写顺序全不同，照搬彼此必错。
+#   ⚠ variant 32 的指纹（牌组 + 爬升度 + 目标策略）与 variant 24~29 **完全相同**，
+#     所以它的 encounters 必须与那六个**互不相交**——第三幕的编队没有任何第二幕 variant
+#     点名，这条自动成立。⚠ `jaw_worm_horde` 虽然也是第三幕的，但它自第一个 commit 起就在
+#     第一幕的 `ENC_ALL` 里，**第三幕的 variant 绝不能点名它**。
 ENC_V0_ACT2="spheric_guardian chosen snake_plant three_byrds two_thieves chosen_and_byrds shell_parasite shelled_parasite_and_fungi snecko centurion_and_healer three_cultist cultist_and_chosen sentry_and_sphere gremlin_leader slavers book_of_stabbing automaton champ collector"
+ENC_V0_ACT3="three_shapes four_shapes sphere_and_two_shapes"
 ENC_V0_ACT2_ASC19="spheric_guardian@asc19 chosen@asc19 snake_plant@asc19 three_byrds@asc19 two_thieves@asc19 chosen_and_byrds@asc19 shell_parasite@asc19 shelled_parasite_and_fungi@asc19 snecko@asc19 centurion_and_healer@asc19 three_cultist@asc19 cultist_and_chosen@asc19 sentry_and_sphere@asc19 gremlin_leader@asc19 slavers@asc19 book_of_stabbing@asc19 automaton@asc19 champ@asc19 collector@asc19"
 ENC_V0_ASC0="small_slimes lots_of_slimes large_slime blue_slaver red_slaver looter exordium_thugs exordium_wildlife gremlin_gang gremlin_nob lagavulin three_sentries the_guardian slime_boss hexaghost $ENC_V0_ACT2"
 ENC_V0_TGT1="jaw_worm_horde@tgt1 two_louse@tgt1 three_louse@tgt1 small_slimes@tgt1 lots_of_slimes@tgt1 large_slime@tgt1 gremlin_gang@tgt1 exordium_thugs@tgt1 exordium_wildlife@tgt1 three_sentries@tgt1 slime_boss@tgt1 three_byrds@tgt1 two_thieves@tgt1 chosen_and_byrds@tgt1 sentry_and_sphere@tgt1 cultist_and_chosen@tgt1 three_cultist@tgt1 shelled_parasite_and_fungi@tgt1 centurion_and_healer@tgt1 gremlin_leader@tgt1 slavers@tgt1 automaton@tgt1 collector@tgt1"
@@ -192,7 +209,7 @@ ENC_V0_ASC19="cultist@asc19 jaw_worm@asc19 jaw_worm_horde@asc19 two_louse@asc19 
 # ⚠ `jaw_worm_horde@tgt1` / `two_louse@tgt1` / `three_louse@tgt1` 的**基名**在 `ENC_ALL` 里，
 #   但 `policy_of` 是**全名精确匹配**（带后缀的名字不在 `ENC_ALL` 里），所以它们照旧走
 #   variant0 策略 = 整份冻结。这正是我们要的：这些文件里只有 variant 31 一个 variant。
-ENC_V0="$ENC_V0_ASC0 $ENC_V0_ASC19 $ENC_V0_TGT1"
+ENC_V0="$ENC_V0_ASC0 $ENC_V0_ASC19 $ENC_V0_TGT1 $ENC_V0_ACT3"
 
 policy_of() {
   case " $ENC_ALL " in *" $1 "*) echo all; return;; esac

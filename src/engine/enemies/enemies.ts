@@ -1802,53 +1802,93 @@ const ENEMY_LIST: EnemyDef[] = [
   },
 
   // —— 第三幕（超越）普通敌人 ——
+  //
+  // ⚠ 三只「形状怪」（爆破怪 / 斥力怪 / 尖刺客）第三十二批按参考逐位校准。它们由
+  //   `MonsterGroup::createShapes`（6 项池、不放回）或 `getAncientShape`（3 项表、有放回）
+  //   抽出来，见 sts-combat.ts 的 `ENCOUNTER_BUILDERS.three_shapes` 等三条。
   {
     id: "exploder",
     name: "爆破怪",
+    // MonsterIds.h:170 `{{30,30},{30,35}}`（asc<7 取前者）。⚠ **两组**，不是一个 `30~35`
+    // 的区间——旧近似表写成 30/30 只是碰巧对上了低档。走普通的 `setRandomHp`（掷一次）。
     hpMin: 30,
     hpMax: 30,
-    // 亡语：死亡时爆炸，对玩家造成 30 点伤害（杀它有代价）。
-    deathEffects: [{ kind: "deal_damage", amount: 30 }],
+    // ⚠⚠ **爆炸不是亡语**（旧近似表的 `deathEffects` 本批删掉了）。参考把它建模成一条
+    //   **招式**：撞击的收尾在「已经连撞两次」时同步 `setMove(EXPLODER_EXPLODE)`，
+    //   于是第三个怪物回合它出自爆（MonsterSpecific.cpp:1400-1408）。
+    //   ⚠ 差别是可观察的：**被玩家打死的爆破怪一点伤害都不造成**，只有它自己活到第三回合
+    //   放出自爆才会炸；而 `Monster::die` 的亡语链（孢子云 / 重生 / 停滞）里根本没有它。
+    // ⚠ `preBattleAction` 里它那一格是**空的**（`case MonsterId::EXPLODER: break;`，
+    //   MonsterSpecific.cpp:160-161，参考注了 `// game adds explosive power`）——真实游戏
+    //   的「爆炸倒计时」是个 Power，参考改用意图链表达，所以**没有**开局 Power 进快照。
     moves: [
       {
+        // 撞击：`attackPlayerHelper(bc, asc2 ? 11 : 9)`（MonsterSpecific.cpp:1401）。
         id: "exp_slam",
         name: "撞击",
-        effects: [{ kind: "deal_damage", amount: 9 }],
+        effects: [{ kind: "deal_damage", amount: 9, ascAmount: [{ atLeast: 2, amount: 11 }] }],
+        intent: "attack",
+      },
+      {
+        // 自爆：两条**入队**效果，顺序照抄（MonsterSpecific.cpp:1394-1397）：
+        //     bc.addToBot( Actions::DamagePlayer(30) );
+        //     bc.addToBot( Actions::SuicideAction(idx, true) );
+        // ⚠ 三处照抄：
+        //  ① 伤害走 `DamagePlayer` = **非攻击伤害**：不吃力量与易伤（30 恒是 30）、
+        //     不触发玩家的荆棘 / 火焰屏障，但**照样被格挡吸收**。用 `damage_player_non_attack`
+        //     而不是 `deal_damage`。
+        //  ② **没有 asc 分档**（参考那里就是裸的 30）。
+        //  ③ 顺序：先打人、后自杀。若这 30 点打死了玩家，主循环跳出，**自杀那条永远轮不到**
+        //     ——所以「谁排在前面」是可观察的。
+        // ⚠ intent 记 `attack` 是按**真实游戏**显示的意图；而参考的 `isMoveAttack` 白名单里
+        //   **没有** `EXPLODER_EXPLODE`（判据是「有没有走 attackPlayerHelper」）。
+        //   两者分歧如实记在 TODOS「待裁定」，引擎侧照抄参考（`MONSTER_ATTACK_MOVES` 不收它）。
+        id: "exp_explode",
+        name: "自爆",
+        effects: [{ kind: "damage_player_non_attack", amount: 30 }, { kind: "suicide" }],
         intent: "attack",
       },
     ],
-    intentRule: {
-      scripted: [],
-      weighted: [{ move: "exp_slam", weight: 1, maxInARow: 99 }],
-    },
+    // 出招规则见 sts-combat.ts 的 `MOVE_RULES.exploder`（MonsterSpecific.cpp:3012-3015）：
+    // 恒返回撞击、`roll` 一眼都不看。真正决定意图链的是 `MOVE_TURN_END`。
+    // 旧近似表那份 `weight: 1 / maxInARow: 99` 与参考完全不同，本批弃用。
+    intentRule: { scripted: [], weighted: [] },
   },
   {
     id: "spiker",
     name: "尖刺客",
+    // MonsterIds.h:201 `{{42,56},{44,60}}`（asc<7 取前者）。走普通的 `setRandomHp`（掷一次）。
     hpMin: 42,
     hpMax: 56,
-    // 开局自带反甲 3（你每攻击它一次反弹 3；见 createEnemyState）。
+    // ⚠ 开局的 **THORNS**（不是 `sharp_hide`！）在 `PRE_BATTLE_ACTION.spiker` 里：
+    //   `const int thorns[] {3,4,7}; buff<MS::THORNS>(thorns[getTriIdx(asc,2,17)]);`
+    //   （MonsterSpecific.cpp:204-208）。它会进 trace 的怪物快照（`THORNS: 3`）。
     moves: [
       {
+        // 切割：`attackPlayerHelper(bc, asc2 ? 9 : 7)`（MonsterSpecific.cpp:1421）。
         id: "spk_cut",
         name: "切割",
-        effects: [{ kind: "deal_damage", amount: 7 }],
+        effects: [{ kind: "deal_damage", amount: 7, ascAmount: [{ atLeast: 2, amount: 9 }] }],
         intent: "attack",
       },
       {
+        // 增生尖刺：`++miscInfo; buff<MS::THORNS>(2); rollMove(bc);`
+        //（MonsterSpecific.cpp:1425-1429）。三句分落三处：
+        //   `++miscInfo` → `MOVE_TURN_BEGIN`（它是「已经放过几次」，出招规则读 `> 5`）
+        //   `buff<THORNS>(2)` → 这里（`on: "self"` 省略 `sync` = **同步**，与参考一致）
+        //   `rollMove(bc)` → `MOVE_TURN_END`（同步的真 rollMove）
+        // ⚠⚠ 旧近似表写的是 `sharp_hide`，那是**守卫者的尖锐外壳**、时点完全不同
+        //   （打出攻击牌就触发 vs 被攻击且破了格挡才触发），本批校正成 `thorns`。
+        // ⚠ **没有 asc 分档**（参考那里是裸的 2，只有开局那次分三档）。
         id: "spk_spike",
         name: "增生尖刺",
-        effects: [{ kind: "apply_power", power: "sharp_hide", amount: 2, on: "self" }],
+        effects: [{ kind: "apply_power", power: "thorns", amount: 2, on: "self" }],
         intent: "buff",
       },
     ],
-    intentRule: {
-      scripted: [],
-      weighted: [
-        { move: "spk_cut", weight: 60, maxInARow: 2 },
-        { move: "spk_spike", weight: 40, maxInARow: 1 },
-      ],
-    },
+    // 出招规则见 sts-combat.ts 的 `MOVE_RULES.spiker`（MonsterSpecific.cpp:3026-3032）。
+    // 旧近似表那份加权（60/40）与参考完全不同，本批弃用。
+    intentRule: { scripted: [], weighted: [] },
   },
   {
     id: "orb_walker",
@@ -1997,29 +2037,39 @@ const ENEMY_LIST: EnemyDef[] = [
   {
     id: "repulsor",
     name: "斥力怪",
+    // MonsterIds.h:191 `{{29,35},{31,38}}`（asc<7 取前者）。走普通的 `setRandomHp`（掷一次）。
     hpMin: 29,
     hpMax: 35,
+    // ⚠ 它**没有** preBattleAction（`Monster::preBattleAction` 的 switch 里压根没有它的 case），
+    //   所以开局身上一个 Power 都没有——别按「形状怪」把尖刺客那条荆棘也给它。
     moves: [
       {
+        // 撞击：`attackPlayerHelper(bc, asc2 ? 13 : 11)`（MonsterSpecific.cpp:1411）。
         id: "rep_bash",
         name: "撞击",
-        effects: [{ kind: "deal_damage", amount: 11 }],
+        effects: [{ kind: "deal_damage", amount: 11, ascAmount: [{ atLeast: 2, amount: 13 }] }],
         intent: "attack",
       },
       {
+        // 斥力：`Actions::ShuffleTempCardIntoDrawPile(CardId::DAZED, 2).actFunc(bc);`
+        //（MonsterSpecific.cpp:1416）。⚠ 四处照抄：
+        //  ① **两张**，不是一张（旧近似表写的 1 是错的）；
+        //  ② 洗进**抽牌堆**（`pile: "draw"`），**每张各掷一次 `cardRandomRng`** 选插入位；
+        //     抽牌堆为空时 `idx = 0` 且不掷。这是数据表里第一条 `pile: "draw"`。
+        //  ③ `.actFunc(bc)` = **同步**（`sync: true`），所以两张恍惚在同一条 case 里紧接着的
+        //     同步 `rollMove` 之前就已经进了抽牌堆；
+        //  ④ **没有 asc 分档**（参考那里是裸的 2）。
+        // ⚠ 恍惚**打不出**（`cardCanUse` 恒假），所以它不进 `CARD_RULES`，只躺在牌堆快照里
+        //   ——与伤口 / 灼伤同族。它早就在 `CARD` 映射里（诅咒 HEX 带进来的）。
         id: "repulse",
         name: "斥力",
-        effects: [{ kind: "add_card", cardId: "dazed", pile: "draw", count: 1 }],
+        effects: [{ kind: "add_card", cardId: "dazed", pile: "draw", count: 2, sync: true }],
         intent: "debuff",
       },
     ],
-    intentRule: {
-      scripted: [],
-      weighted: [
-        { move: "rep_bash", weight: 60, maxInARow: 2 },
-        { move: "repulse", weight: 40, maxInARow: 1 },
-      ],
-    },
+    // 出招规则见 sts-combat.ts 的 `MOVE_RULES.repulsor`（MonsterSpecific.cpp:3017-3023）。
+    // 旧近似表那份加权（60/40）与参考完全不同，本批弃用。
+    intentRule: { scripted: [], weighted: [] },
   },
   {
     id: "transient",
@@ -3298,7 +3348,15 @@ const ENCOUNTERS: Record<string, EncounterDef> = {
     enemies: ["sentry", "spheric_guardian"],
     isBoss: false,
   },
-  // —— 第三幕组合遭遇（几何体 shapes：爆破怪/斥力球/尖刺客 + 球卫/颚虫群）——
+  // —— 第三幕组合遭遇（形状怪：爆破怪 / 斥力怪 / 尖刺客，第三十二批）——
+  //
+  // ⚠ 这三条的 `enemies` 只是旧近似战斗的占位（成员由 miscRng 掷定，静态列表表达不了），
+  //   真相在 sts-combat.ts 的 `ENCOUNTER_BUILDERS`：
+  //     `three_shapes` / `four_shapes` → `createShapes(bc, 3 / 4)`，**6 项池、不放回**
+  //       （MonsterGroup.cpp:437-439 / :240-242 / :508-530）；
+  //     `sphere_and_two_shapes`        → 两次 `getAncientShape(bc.miscRng)` + 球状守卫者，
+  //       **3 项表、有放回**（MonsterGroup.cpp:384-388 / :532-539）。
+  // ⚠ 两条路径的候选表**项数、重复度、书写顺序全都不同**，照搬彼此必错。
   three_shapes: {
     id: "three_shapes",
     enemies: ["spiker", "exploder", "repulsor"],
@@ -3309,6 +3367,7 @@ const ENCOUNTERS: Record<string, EncounterDef> = {
     enemies: ["spiker", "exploder", "repulsor", "exploder"],
     isBoss: false,
   },
+  // ⚠ 球状守卫者排在**最后**（2 号位），两只形状怪在 0 / 1 号位——参考的三句就是这个顺序。
   sphere_and_two_shapes: {
     id: "sphere_and_two_shapes",
     enemies: ["exploder", "spheric_guardian", "repulsor"],

@@ -1808,6 +1808,46 @@ const MOVE_RULES: Record<string, MoveForRoll> = {
       "sts-combat: torch_head 的 getMoveForRoll 永远不该被调用（参考返回 INVALID，意图只由 setMove 写入）",
     );
   },
+
+  // —— 第三幕开张（第三十二批）：三只「形状怪」——
+
+  // 爆破怪：整条规则就是 `return EXPLODER_SLAM;`（MonsterSpecific.cpp:3012-3015，
+  // 参考在里面注了 `// first turn only`）。**roll 照掷一次却完全不看**——与酸液史莱姆小
+  // 那种「不看 roll 但追加一次 randomBoolean」不同，这条一次都不追加。
+  // ⚠ 它之所以只在「首回合」有意义：撞击那条 case 的收尾是**同步 setMove + 同步 noOpRollMove**
+  //   （见 `MOVE_TURN_END`），意图链因此完全钉死（撞击 → 撞击 → 自爆），
+  //   开局那次 `MonsterGroup::init` 的 rollMove 之后这条规则再也不会决定任何东西。
+  exploder: () => "exp_slam",
+
+  // 斥力怪：对齐 MonsterSpecific.cpp:3017-3023。
+  //     if (roll < 20 && !lastMove(REPULSOR_BASH)) return BASH; else return REPULSE;
+  // ⚠ 不追加 aiRng（一次 rollMove 恒消耗 1 次）。
+  // ⚠ 门是 `!lastMove(BASH)`（只看上一格），不是 `!lastTwoMoves`——所以撞击**不会连出**。
+  repulsor: (_bc, m, roll) => {
+    if (roll < 20 && !lastMove(m, "rep_bash")) {
+      return "rep_bash";
+    }
+    return "repulse";
+  },
+
+  // 尖刺客：对齐 MonsterSpecific.cpp:3026-3032。
+  //     if (miscInfo > 5 || roll < 50 && !lastMove(SPIKER_CUT)) return CUT; else return SPIKE;
+  // ⚠⚠ **C++ 的运算符优先级**：`&&` 紧于 `||`，所以真正的形状是
+  //     `(miscInfo > 5) || ((roll < 50) && !lastMove(CUT))`
+  //   ——括号写错（`(miscInfo > 5 || roll < 50) && !lastMove(CUT)`）会让攒满尖刺之后
+  //   连续切割那一支消失。
+  // ⚠ `miscInfo` 在这只怪身上是**「已经放过几次增生尖刺」**（参考在那行注了
+  //   `// times used thorns > 5`，`MOVE_TURN_BEGIN` 里 `++`）。攒到 6 次之后它**只切割**，
+  //   荆棘就此封顶在 `3 + 2*6 = 15`（asc0）。这是 `miscInfo` 的第九种含义。
+  // ⚠ 它读的是**成员** `miscInfo` 而不是 `rollMove` 传进来的那个引用参数
+  //   （`Monster::rollMove` 拷出去、传引用、原样写回，这条规则自己不改它，故两者等价）
+  //   ——与红奴隶主那条同族，照抄即可。
+  spiker: (_bc, m, roll) => {
+    if (m.miscInfo > 5 || (roll < 50 && !lastMove(m, "spk_cut"))) {
+      return "spk_cut";
+    }
+    return "spk_spike";
+  },
 };
 
 // ============================================================================
@@ -2478,6 +2518,66 @@ const MOVE_TURN_END: Record<string, MoveTurnEnd> = {
   // ⚠ 参考的 `getMoveForRoll` 对它返回 `INVALID`（见 `MOVE_RULES.torch_head`），
   //   所以写成 `"roll"` 不只是多掷一次，还会把意图打成一个不存在的招式。
   "torch_head/torch_tackle": "none",
+
+  // —— 第三十二批：三只「形状怪」——
+  //
+  // 六条 case 里有四条不是默认的 `roll`，而且**三只怪各用一种形态**，照抄别统一。
+  //
+  // 撞击（爆破怪，MonsterSpecific.cpp:1400-1408）：
+  //     attackPlayerHelper(bc, asc2 ? 11 : 9);
+  //     if (lastTwoMoves(EXPLODER_SLAM)) { setMove(EXPLODER_EXPLODE); }
+  //     else                             { setMove(EXPLODER_SLAM); }
+  //     bc.noOpRollMove();
+  // ⚠ 四处照抄：
+  //  ①⚠⚠ **判据是 `lastTwoMoves(SLAM)`，读的是「已经连撞两次了吗」**。此刻 `moveHistory[0]`
+  //     就是正在执行的这一撞，`[1]` 是上一撞——所以第二次撞击时它为真、当场改成自爆，
+  //     于是链条是「撞、撞、爆」（与真实游戏的三回合倒计时一致）。
+  //     ⚠ 抄成 `lastMove(SLAM)` 会让它第一次撞完就准备自爆（早一回合）。
+  //  ② `setMove` 与 `noOpRollMove` **都是同步的**（`bc.noOpRollMove()` 是裸调用，
+  //     不是 `addToBot(Actions::NoOpRollMove())`），所以这是第五形态（任意函数）。
+  //  ③⚠⚠ **「效果入队 + 收尾同步」这个组合真的可观察**（第二十七批工头那条的同族）：
+  //     攻击是 `addToBot`，收尾却已经跑完了。这一撞若打死玩家，主循环跳出，
+  //     而同步那次 `noOpRollMove` 已经掷过——写成入队的 `"no_op_roll"` 会少掷一次 aiRng。
+  //  ④ 无论走哪一支都**照掷一次** `aiRng.random(99)` 并丢掉：意图已经由 setMove 定死了。
+  "exploder/exp_slam": (bc, m) => {
+    if (lastTwoMoves(m, "exp_slam")) {
+      setMove(m, "exp_explode");
+    } else {
+      setMove(m, "exp_slam");
+    }
+    bc.rng.aiRng.random(99); // ★ 消耗一次 aiRng（noOpRollMove，**同步**，意图不变）
+  },
+  // 自爆（爆破怪，MonsterSpecific.cpp:1394-1398）：两条效果入队之后同样是**同步**的
+  // `bc.noOpRollMove()`。⚠ 它在自爆那一回合仍然要掷——参考没有为「反正要死了」开特例，
+  // 而这一位是可观察的：30 点伤害若打死玩家，主循环跳出、入队的自杀动作永远轮不到，
+  // 但这次 aiRng 已经掷过了。
+  "exploder/exp_explode": (bc) => {
+    bc.rng.aiRng.random(99); // ★ 消耗一次 aiRng（noOpRollMove，**同步**）
+  },
+
+  // 斥力（斥力怪，MonsterSpecific.cpp:1415-1418）：整条 case 是
+  //     Actions::ShuffleTempCardIntoDrawPile(CardId::DAZED, 2).actFunc(bc);
+  //     rollMove(bc);
+  // 两句都**同步**，所以收尾是第六形态（同步的真 rollMove）——与秘法师三招、青铜球两招同族。
+  // ⚠ 顺序可观察：两张恍惚**先**洗进抽牌堆（消耗两次 cardRandomRng），rollMove 才掷 aiRng。
+  //   两条流不同、交错顺序对取值无影响，但 `rollMove` 之后 `moveHistory` 会前移，
+  //   而斥力怪的出招规则读 `lastMove` —— 顺序颠倒不改结果，形状照抄。
+  // ⚠ 撞击那条是裸的 `addToBot(Actions::RollMove(idx))`（`:1412`），即默认值，不写进来。
+  "repulsor/repulse": (bc, m) => {
+    rollMove(bc, m); // ★ 消耗一次 aiRng（同步的真 rollMove，不是 no_op）
+  },
+
+  // 增生尖刺（尖刺客，MonsterSpecific.cpp:1425-1429）：整条 case 是
+  //     ++miscInfo;            // ← 在 MOVE_TURN_BEGIN 里
+  //     buff<MS::THORNS>(2);   // ← 数据表里的 apply_power（同步）
+  //     rollMove(bc);
+  // 同样是第六形态。⚠⚠ **三句的顺序真的可观察**：`++miscInfo` 必须排在 `rollMove` **之前**，
+  //   因为紧接着的 `getMoveForRoll` 读的正是 `miscInfo > 5`（放满六次之后只切割）。
+  //   把计数挪到收尾之后，封顶会晚一整回合、荆棘多涨 2 层。
+  // ⚠ 切割那条是裸的 `addToBot(Actions::RollMove(idx))`（`:1422`），即默认值，不写进来。
+  "spiker/spk_spike": (bc, m) => {
+    rollMove(bc, m); // ★ 消耗一次 aiRng（同步的真 rollMove）
+  },
 };
 
 /**
@@ -2543,6 +2643,20 @@ const MOVE_TURN_BEGIN: Record<string, (bc: BattleContext, m: CombatMonster) => v
   // ⚠ 首领另外两条 case（集结 / 突刺）**没有**任何开场语句。
   "gremlin_leader/encourage": (bc) => {
     bc.rng.aiRng.random(0, 2); // ★ 消耗一次 aiRng，结果丢弃（游戏里的对白）
+  },
+
+  // —— 第三十二批 ——
+  //
+  // 尖刺客的增生尖刺：效果之前那句 `++miscInfo;`，参考在那行注了 `// used thorns count`
+  //（MonsterSpecific.cpp:1426）。它**不掷 RNG**，但它是「什么时候封顶」的唯一状态：
+  // `MOVE_RULES.spiker` 判 `miscInfo > 5`，攒够六次之后这只怪只切割。
+  // ⚠⚠ 它必须排在同一条 case 末尾那次**同步** `rollMove` 之前——那次 rollMove 当场就会
+  //   读这个值。写在 `MOVE_TURN_END` 里（收尾之后）会让封顶晚一整回合、荆棘多涨 2 层。
+  // ⚠ 这是 `miscInfo` 的第九种含义（前八种见 `MOVE_TURN_END` 里青铜自动机那条的注释）。
+  //   **不要按用途另开字段**，第十六批已经把拆开的那次改回来过一遍。
+  // ⚠ 切割那条 case **没有**任何开场语句。
+  "spiker/spk_spike": (_bc, m) => {
+    m.miscInfo += 1; // ★ 「已经放过几次增生尖刺」
   },
 };
 
@@ -2867,6 +2981,71 @@ function getGremlin(rng: StsRandom): string {
     "gremlin_wizard",
   ];
   return gremlins[rng.random(7)]; // ★ 消耗一次传入的那条流
+}
+
+/**
+ * 从 3 项候选表里掷一只「形状怪」（对齐 `MonsterGroup::getAncientShape`，
+ * MonsterGroup.cpp:532-539）。第三十二批。
+ *
+ * ```cpp
+ * MonsterId MonsterGroup::getAncientShape(Random &miscRng) {
+ *     const MonsterId shapes[] { SPIKER, REPULSOR, EXPLODER };
+ *     return shapes[miscRng.random(2)];
+ * }
+ * ```
+ *
+ * ⚠⚠ **它与 `createShapes` 的那张 6 项池不是同一张表，也不是同一种抽法**，照搬必错：
+ *   * 这条是 **3 项、不带重复、有放回**（每次都从完整的三项里掷），唯一的调用方是
+ *     `SPHERE_AND_TWO_SHAPES`——所以那个编队**真的可能出两只一样的形状怪**；
+ *   * `createShapes` 是 **6 项、每种两份、不放回**，用 `lastIdx` 收缩有效区间。
+ * ⚠ **顺序也不同**：这里是 尖刺客 / 斥力怪 / 爆破怪，那张池是 斥力 斥力 爆破 爆破 尖刺 尖刺。
+ *   下标 0 取到的东西两边不一样，抄错会让同种子下的编队整体变样。
+ * ⚠ 掷的是 `miscRng.random(2)`（**闭区间上界**，3 项）。
+ */
+function getAncientShape(bc: BattleContext): string {
+  const shapes = ["spiker", "repulsor", "exploder"];
+  return shapes[bc.rng.miscRng.random(2)]; // ★ 消耗一次 miscRng
+}
+
+/**
+ * 从 6 项池里**不放回**地抽 count 只形状怪并依次建出来（对齐 `MonsterGroup::createShapes`，
+ * MonsterGroup.cpp:508-530）。第三十二批，`THREE_SHAPES`（3 只）与 `FOUR_SHAPES`（4 只）共用。
+ *
+ * ```cpp
+ * MonsterId shapePool[] { REPULSOR, REPULSOR, EXPLODER, EXPLODER, SPIKER, SPIKER };
+ * int lastIdx = 5;
+ * for (int i = 0; i < count; ++i) {
+ *     int idx = bc.miscRng.random(lastIdx);
+ *     MonsterId shape = shapePool[idx];
+ *     while (idx < lastIdx) { shapePool[idx] = shapePool[idx + 1]; ++idx; }
+ *     --lastIdx;
+ *     createMonster(bc, shape);
+ * }
+ * ```
+ *
+ * ⚠ 与 `gremlin_gang` 的 8 选 4 是**同族但不是同一段代码**，四处逐条对过：
+ *  ① 池子是 **6 项、每种恰好两份**（斥力 ×2、爆破 ×2、尖刺 ×2）——所以一场最多两只同种，
+ *     而 `FOUR_SHAPES` 抽 4 只必然是「两种各两只」或「一种两只 + 另两种各一只」；
+ *  ② 有效区间由**独立的 `lastIdx`**（初值 5）表达，每轮取完才 `--lastIdx`；
+ *  ③ 取走 `pool[idx]` 之后是**整体左移**（`while (idx < lastIdx)`），**不是**与末位交换
+ *     ——两种写法分布相同、同种子下排列不同（第十三批实测史莱姆群改成交换红 253 例）；
+ *  ④ RNG 交错是 misc, hp, misc, hp, …：每轮**先**掷下标（miscRng）、**再**建怪（monsterHpRng），
+ *     不是先选完再统一建。
+ * ⚠ 池子的**书写顺序**照抄（斥力在前、尖刺在后），它决定下标 → 怪种的映射。
+ */
+function createShapes(bc: BattleContext, count: number): void {
+  const pool = ["repulsor", "repulsor", "exploder", "exploder", "spiker", "spiker"];
+  let lastIdx = 5;
+  for (let i = 0; i < count; i += 1) {
+    let idx = bc.rng.miscRng.random(lastIdx); // ★ 消耗一次 miscRng
+    const shape = pool[idx];
+    while (idx < lastIdx) {
+      pool[idx] = pool[idx + 1]!;
+      idx += 1;
+    }
+    lastIdx -= 1;
+    createMonster(bc, shape); // ★ 消耗一次 monsterHpRng
+  }
 }
 
 /**
@@ -3563,6 +3742,41 @@ const ENCOUNTER_BUILDERS: Record<string, EncounterBuilder> = {
     bc.monsters.push(emptyMonsterSlot()); // 1 号位：预留（`monsterCount = 2` 跳过的那两格）
     createMonster(bc, "the_collector"); // 2 号位 ★ 消耗一次 monsterHpRng
   },
+
+  // —— 第三十二批：第三幕开张，三个「形状怪」编队 ——
+  //
+  // ⚠⚠ **三个编队用的不是同一条建怪路径**，照抄别合并（这正是本批最容易错的一处）：
+  //   `THREE_SHAPES` / `FOUR_SHAPES`  → `createShapes(bc, n)`：6 项池、**不放回**；
+  //   `SPHERE_AND_TWO_SHAPES`         → 两次 `getAncientShape(bc.miscRng)`：3 项表、**有放回**。
+  // 两张表的项数、重复度、书写顺序全都不同，见那两个函数的注释。
+
+  // 三形状（MonsterGroup.cpp:437-439）：`createShapes(bc, 3)`，一句话。
+  three_shapes: (bc) => {
+    createShapes(bc, 3);
+  },
+
+  // 四形状（MonsterGroup.cpp:240-242）：`createShapes(bc, 4)`。
+  // ⚠ 池子只有 6 项、每种两份，所以抽 4 只之后必然至少有两种各出两只。
+  four_shapes: (bc) => {
+    createShapes(bc, 4);
+  },
+
+  // 球卫 + 两形状（MonsterGroup.cpp:384-388）：
+  //     createMonster(bc, getAncientShape(bc.miscRng));
+  //     createMonster(bc, getAncientShape(bc.miscRng));
+  //     createMonster(bc, MonsterId::SPHERIC_GUARDIAN);
+  // ⚠ 三处照抄：
+  //  ① 两只形状怪走的是 **`getAncientShape`（3 项、有放回）**，不是 `createShapes`
+  //     ——所以两只**可以是同一种**，而 `THREE_SHAPES` 里不可能出现三只同种。
+  //  ② **球状守卫者排在最后**（2 号位），两只形状怪在 0 / 1 号位。
+  //  ③ RNG 交错是 misc, hp, misc, hp，**然后**球卫那一次**一次 monsterHpRng 都不掷**
+  //     （它是 `hpNoRoll` 那一族，见 `initMonsterHp`）。所以整场只消耗 2 次 miscRng
+  //     与 2 次 monsterHpRng。
+  sphere_and_two_shapes: (bc) => {
+    createMonster(bc, getAncientShape(bc)); // ★ 一次 miscRng + 一次 monsterHpRng
+    createMonster(bc, getAncientShape(bc)); // ★ 一次 miscRng + 一次 monsterHpRng
+    createMonster(bc, "spheric_guardian"); // ★ hpNoRoll：**不掷** monsterHpRng
+  },
 };
 
 // ============================================================================
@@ -3787,6 +4001,36 @@ const PRE_BATTLE_ACTION: Record<string, PreBattleAction> = {
   the_collector: (_bc, m) => {
     addPower(m.powers, "minion_leader", 1);
   },
+
+  // —— 第三十二批 ——
+
+  // 尖刺客的荆棘（对齐 MonsterSpecific.cpp:204-208）：
+  //     case MonsterId::SPIKER: {
+  //         const int thorns[] {3,4,7};
+  //         buff<MS::THORNS>(thorns[hallwayDiffIdx]);
+  //         break;
+  //     }
+  // **不消耗 RNG。** 分档是**走廊小怪那一族** `getTriIdx(asc, 2, 17)`，三档 3 / 4 / 7。
+  // ⚠ 第三档是 **7**（不是等差的 5），别按前两档补。
+  // ⚠ 中间那一档（asc2~16 的 4）在 `{0, 19}` 这对档位下**永远走不到**——本批只做 asc0，
+  //   三档一条都没有背书，`ascCalibrated` 不置（`constructMonster` 在 asc>0 时照旧抛错）。
+  // ⚠⚠ **它与守卫者的「尖锐外壳」（SHARP_HIDE）不是一回事**，两处都别混：
+  //   * 荆棘挂在 `attackedUnblockedHelper` 的 else-if 链里（**被攻击**才触发，
+  //     而且要**破了格挡**），见 `monsterDamageUnblocked`；
+  //   * 尖锐外壳挂在 `BattleContext::onUseAttackCard` 的最末（**打出攻击牌**就触发，
+  //     哪怕这一击被格挡吃光、甚至打的是别的怪），见 `onUseAttackCard`。
+  //   两者都走 `addToBot/addToTop(Actions::DamagePlayer(层数))`，形状像、时点完全不同。
+  // ⚠ THORNS 会进 trace 的怪物 powers 快照（`THORNS: 3`），漏了当场抛「未映射的 power」。
+  // ⚠ 层数还会被增生尖刺**每次 +2** 涨上去（`apply_power` + `on: "self"` 同步），
+  //   而且 `MOVE_RULES.spiker` 攒够 6 次就封顶——asc0 下上限是 `3 + 2*6 = 15`。
+  // ⚠ 爆破怪与斥力怪**都没有** preBattleAction：`Monster::preBattleAction` 的 switch 里
+  //   爆破怪那一格是空的（`case MonsterId::EXPLODER: break;`，参考在那行注了
+  //   `// game adds explosive power`——真实游戏的「爆炸」倒计时是个 Power，参考改用
+  //   意图链表达，见 `MOVE_TURN_END`），斥力怪压根没有 case。
+  spiker: (bc, m) => {
+    const thorns = bc.ascension >= 17 ? 7 : bc.ascension >= 2 ? 4 : 3;
+    addPower(m.powers, "thorns", thorns);
+  },
 };
 
 type EncounterSetup = (bc: BattleContext) => void;
@@ -3972,6 +4216,24 @@ function overwriteMove(m: CombatMonster, move: string): void {
  *     自动机五条、球三条排在一起，而白名单又按枚举名字典序写——但**仍然要按名字核**：
  *     自动机的 `BOOST` / `SPAWN_ORBS` / `STUNNED` 与球的 `STASIS` / `SUPPORT_BEAM` 五条
  *     被跳过了，位置上并不连续。
+ *   * **第三十二批的三只**（逐条核对 `MonsterMoves.h:453` / `:486` / `:502`）：
+ *     | 参考招式                    | 在白名单？ | 我们的键             | 数据表 intent |
+ *     | --------------------------- | ---------- | -------------------- | ------------- |
+ *     | `EXPLODER_SLAM` (`:453`)    | **是**     | `exploder/exp_slam`  | attack        |
+ *     | `EXPLODER_EXPLODE`          | **否**     | —                    | attack        |
+ *     | `REPULSOR_BASH` (`:486`)    | **是**     | `repulsor/rep_bash`  | attack        |
+ *     | `REPULSOR_REPULSE`          | 否         | —                    | debuff        |
+ *     | `SPIKER_CUT` (`:502`)       | **是**     | `spiker/spk_cut`     | attack        |
+ *     | `SPIKER_SPIKE`              | 否         | —                    | buff          |
+ *     ⚠⚠ **`EXPLODER_EXPLODE` 是这张表迄今最刺眼的一格：它打 30 点却不算攻击。**
+ *     参考的判据其实很自洽——`isMoveAttack` 收的是走 `attackPlayerHelper` /
+ *     `Actions::AttackPlayer` 的那些招，而自爆走的是 `Actions::DamagePlayer`
+ *     （MonsterSpecific.cpp:1394-1397，非攻击伤害、不吃力量与易伤）。
+ *     ⚠ 同族的反例就在隔壁：匕首的自爆 `DAGGER_EXPLODE`（`:445`）**在**白名单里，
+ *     因为它写的是 `attackPlayerHelper(bc, 25)`（`:1632-1636`）。两条形状几乎一样
+ *     （打人 + `SuicideAction`），一条在一条不在，差别只在用了哪个 Action。
+ *     ⚠ **真实游戏这里显示的是攻击意图**，所以这一格是「参考与真实游戏可能分歧」的候选，
+ *     已如实写进 TODOS「待裁定」——照抄参考，不打补丁（补丁没有预言机）。
  *
  * ⚠⚠ **第二十四批起这张表第一次有预言机**：`isMonsterAttacking` 的唯一读者是觅敌之弱，
  * 而第十三批之后的编队都走 `ENC_V0`（只有 variant 0 那副 21 张牌组，里面没有它）。
@@ -4037,6 +4299,9 @@ const MONSTER_ATTACK_MOVES: ReadonlySet<string> = new Set([
   "mad_gremlin/scratch",
   "shield_gremlin/shield_bash",
   "sneaky_gremlin/puncture",
+  // 爆破怪（`:453`，第三十二批）。⚠⚠ **自爆不在**——它打 30 点却走 `Actions::DamagePlayer`，
+  //   而这张表收的是走 `attackPlayerHelper` 的那些招。判据见上方表格里那条 ⚠⚠。
+  "exploder/exp_slam",
   // 真菌兽（`:455`）
   "fungi_beast/fungi_bite",
   // 红 / 绿虱（`:458` / `:481`）
@@ -4063,6 +4328,8 @@ const MONSTER_ATTACK_MOVES: ReadonlySet<string> = new Set([
   // 劫匪（`:473-474`，第二十四批）。⚠ 烟雾弹与逃跑不在，与抢劫者同形。
   "mugger/mug",
   "mugger/lunge",
+  // 斥力怪（`:486`，第三十二批）。⚠ 斥力（洗两张恍惚）不在。
+  "repulsor/rep_bash",
   // 哨卫（`:489`）
   "sentry/beam",
   // 带壳寄生虫（`:490-492`，第二十五批）。⚠ 眩晕不在（那一回合它什么也不做）。
@@ -4080,6 +4347,8 @@ const MONSTER_ATTACK_MOVES: ReadonlySet<string> = new Set([
   "spheric_guardian/sg_slam",
   "spheric_guardian/sg_harden",
   "spheric_guardian/sg_attack_debuff",
+  // 尖刺客（`:502`，第三十二批）。⚠ 增生尖刺（+2 荆棘）不在。
+  "spiker/spk_cut",
   // 工头（`:512`，第二十七批）。它只有这一招，自然在列。
   "taskmaster/scouring_whip",
   // 火炬头（`:513`，第二十九批）。它只有这一招，自然在列。
@@ -5642,7 +5911,7 @@ function monsterAttacked(bc: BattleContext, m: CombatMonster, rawDamage: number)
 
 function monsterDamageUnblocked(bc: BattleContext, m: CombatMonster, damage: number): void {
   // onAttacked 链（对齐 attackedUnblockedHelper 的 if/**else-if**顺序，Monster.cpp:348-396）。
-  // 参考的顺序是：无敌 → **镀甲** → 蜷缩 → 飞行 → 易塑/反应 → 荆棘 → **沉睡** → 变换。
+  // 参考的顺序是：无敌 → **镀甲** → 蜷缩 → 飞行 → 易塑/反应 → **荆棘** → **沉睡** → 变换。
   // ⚠ 它是一条 **else-if 链**：同时带蜷缩与沉睡的怪只会触发排在前面的那一条。当前没有这种
   //   怪（虱子只有蜷缩、拉加维林只有沉睡），但形状照抄——写成两个独立 if 会在将来静默出错。
   // 蜷缩把加格挡 addToBot 排在扣血之后，故这里先记下、扣完血再加。
@@ -5650,6 +5919,7 @@ function monsterDamageUnblocked(bc: BattleContext, m: CombatMonster, damage: num
   const curl = m.powers.find((p) => p.id === "curl_up");
   const flight = m.powers.find((p) => p.id === "flight");
   const malleable = m.powers.find((p) => p.id === "malleable");
+  const thorns = m.powers.find((p) => p.id === "thorns");
   if (platedArmor !== undefined) {
     // 镀甲（PLATED_ARMOR，带壳寄生虫）：对齐 Monster.cpp:352-355 那一格。
     //
@@ -5740,11 +6010,38 @@ function monsterDamageUnblocked(bc: BattleContext, m: CombatMonster, damage: num
       m.block += amount;
     });
     malleable.amount = amount + 1;
+  } else if (thorns !== undefined) {
+    // 荆棘（THORNS，尖刺客，第三十二批）：对齐 Monster.cpp:384-386 那一格。
+    //
+    //     } else if (hasStatus<MS::THORNS>()) {
+    //         bc.addToTop( Actions::DamagePlayer(getStatus<MS::THORNS>()) );
+    //     }
+    //
+    // ⚠ 六处照抄：
+    //  ①⚠⚠ **位置**：这条 else-if 链的**第六格**——易塑/反应之后、沉睡之前。链上的位置就是
+    //     它全部的可观察面（同第十七批把狂怒挪一格红 30 例的教训）。当前没有哪只怪同时带
+    //     荆棘与前面五位中的任何一位，所以挪位置暂时量不出来，但形状照抄。
+    //  ② 入口是 `hasStatus`（statusBits）而不是层数 > 0。荆棘全项目**只增不减**
+    //     （开局 3/4/7 + 每次增生尖刺 +2），所以两者当前同解；写成「条目在不在」是为了
+    //     与参考的形状一致（同飞行那一格的理由，反面教材是镀甲的 `decrementStatus`）。
+    //  ③ 是 **`addToTop`** 而不是 `addToBot`——反伤**插到队首**。可观察面：多段攻击的
+    //     第一段触发之后，反伤排在**剩余几段之前**结算；玩家因此可能在后几段落下之前就死。
+    //  ④ 走 `Actions::DamagePlayer` = **非攻击伤害**（`Player::damage`），所以**过格挡**、
+    //     不触发荆棘/火焰屏障那一族（那两条挂在 `Player::attacked` 上），
+    //     `selfDamage` 取默认的 false（不触发破裂）。
+    //  ⑤ `clearOnCombatVictory` 是 **false**（Actions.cpp:91-95 第二个参数）——所以打死
+    //     这只尖刺客的那一击，反伤**照样落在玩家身上**（`checkCombat` 清不掉它）。
+    //  ⑥ 判定点是「**未被格挡**的攻击伤害」：调用方有 `if (damage > 0)` 的门（damage 是
+    //     扣掉怪物格挡之后的值），而且它只挂在 `attacked` 这条路上——非攻击伤害
+    //     （燃烧 / 主宰 / 火焰药水走 `damage` → `damageUnblockedHelper`）**不触发反伤**。
+    // ⚠ 与守卫者的尖锐外壳（`onUseAttackCard` 的最末）时点完全不同，见 `PRE_BATTLE_ACTION.spiker`。
+    const amount = thorns.amount;
+    addToTop(bc, (c) => damagePlayerNonAttack(c, amount, false), false);
   } else {
     // 沉睡被打断（Monster.cpp:388-391）。⚠ 它排在这条 else-if 链的**倒数第二**格。
     wakeUpLagavulin(m);
   }
-  // TODO(后续PR): 无敌 / 反应 / 荆棘 / 变换等其余 onAttacked 分支。
+  // TODO(后续PR): 无敌 / 反应 / 变换等其余 onAttacked 分支。
 
   m.hp -= damage;
   if (m.hp <= 0) {
@@ -9625,10 +9922,11 @@ function takeTurn(bc: BattleContext, m: CombatMonster): string | null {
       // 塞状态牌（史莱姆的黏液）。参考是 `addToBot(Actions::MakeTempCardInDiscard(SLIMED))`
       //（MonsterSpecific.cpp:375 / :1180），**排在攻击那条 addToBot 之后**，故顺序就是
       // effects 的书写顺序——数据表里黏液跟在 deal_damage 后面，与参考一致。
-      // ⚠ 只有弃牌堆这一路不消耗 RNG；洗入抽牌堆那一路要掷 cardRandomRng，当前没有怪用到。
+      // ⚠ 只有弃牌堆这一路不消耗 RNG；洗入抽牌堆那一路**每张掷一次 cardRandomRng**
+      //   （第三十二批的斥力怪是第一个用户，见下）。
       // ⚠ 史莱姆王的黏液喷射写的却是 `.actFunc(bc)`（MonsterSpecific.cpp:1112）——**同步**，
       //   与加格挡 / 上减益那两族同形，用 `sync` 区分。
-      if (eff.pile !== "discard") {
+      if (eff.pile !== "discard" && eff.pile !== "draw") {
         throw new Error(`sts-combat 暂未登记怪物塞牌去向: ${eff.pile}`);
       }
       // ⚠ 「塞的是升级版还是原版」由 `CardInstance` 的构造实参决定，在**排队那一刻**求值
@@ -9640,11 +9938,68 @@ function takeTurn(bc: BattleContext, m: CombatMonster): string | null {
       const { cardId } = eff;
       const count = ascValue(bc, eff.count, eff.ascAmount);
       const upgraded = eff.upgradedAfterTurn !== undefined && bc.turn > eff.upgradedAfterTurn;
+      // 洗进**抽牌堆**（第三十二批的斥力怪：`Actions::ShuffleTempCardIntoDrawPile(DAZED, 2)`，
+      // Actions.cpp:203-211）。⚠ 四处照抄：
+      //  ① **每张各掷一次** `cardRandomRng.random(size-1)` 选插入位，而且第二张掷的时候
+      //     抽牌堆**已经多了第一张**（上界随之 +1）——不是「先算两个位置再插」。
+      //  ② 抽牌堆**为空**时 `idx = 0` 且**一次 RNG 都不掷**（那个三目在 `random` 外面）。
+      //  ③ 它与诅咒（HEX）走的 `Actions::MakeTempCardInDrawPile(c, n, true)` 逐位同形
+      //     （Actions.cpp:239-250 的循环体与这条一字不差），所以复用同一个 `makeTempCardInDrawPile`。
+      //  ④ 斥力那条是 `.actFunc(bc)`（**同步**），所以两张恍惚在同一条 case 里紧接着的
+      //     同步 `rollMove` 之前就已经进了抽牌堆。
+      const push =
+        eff.pile === "draw"
+          ? (c: BattleContext): void => {
+              makeTempCardInDrawPile(c, cardId, count, upgraded); // ★ 抽牌堆非空时每张一次 cardRandomRng
+            }
+          : (c: BattleContext): void => {
+              makeTempCardInDiscard(c, cardId, count, upgraded);
+            };
       if (eff.sync === true) {
-        makeTempCardInDiscard(bc, cardId, count, upgraded);
+        push(bc);
       } else {
-        addToBot(bc, (c) => makeTempCardInDiscard(c, cardId, count, upgraded));
+        addToBot(bc, push);
       }
+    } else if (eff.kind === "damage_player_non_attack") {
+      // **非攻击伤害**打在玩家身上（爆破怪的自爆，第三十二批）。参考是
+      // `bc.addToBot( Actions::DamagePlayer(30) )`（MonsterSpecific.cpp:1395）。
+      // ⚠ 四处与普通 `deal_damage` 不同，别拿那条顶替：
+      //  ① 走 `Player::damage` 而不是 `Player::attacked`——**不吃怪物力量、不吃玩家易伤**
+      //     （所以不过 `calculateDamageToPlayer`，30 就是 30），也**不触发荆棘 / 火焰屏障**；
+      //  ② 照样**被格挡吸收**（与 `lose_hp` 那族相反）；
+      //  ③ `selfDamage` 取默认的 **false**，所以不触发破裂；
+      //  ④ `clearOnCombatVictory` 是 **false**（Actions.cpp:91-95 第二个参数），与
+      //     `Actions::AttackPlayer` 一致。
+      // ⚠ 它与守卫者尖锐外壳 / 尖刺客荆棘用的是**同一个 Action**，只是入队位置不同。
+      const amount = ascValue(bc, eff.amount, eff.ascAmount);
+      addToBot(bc, (c) => damagePlayerNonAttack(c, amount, false), false);
+    } else if (eff.kind === "suicide") {
+      // 自杀（爆破怪的自爆，第三十二批）。参考是
+      // `bc.addToBot( Actions::SuicideAction(idx, true) )`（MonsterSpecific.cpp:1396），
+      // 而 `triggerRelics = true` 那一支是：
+      //     if (m.isAlive()) { m.damage(bc, m.curHp); }        // Actions.cpp:923-933
+      // ⚠ 五处照抄：
+      //  ① 它走的是**正常的非攻击伤害路径** `Monster::damage`，不是「把血置 0」
+      //     （那是 `triggerRelics = false` 的 `Monster::suicideAction`，参考里没有调用方
+      //     走到那一支）。于是死亡链正常跑——地精角 / 活体样本 / 亡语都会触发，
+      //     这正是那个参数名 `triggerRelics` 的含义。
+      //  ② 伤害量是**执行那一刻**的 `curHp`（不是最大生命）：这一击若先被别的动作打伤过，
+      //     自杀伤害也跟着变小——但两者相等，照样归零。
+      //  ③ ⚠ `Monster::damage` **会先扣格挡**（`damage -= block`）。爆破怪不会有格挡，
+      //     所以当前观察不到；照抄这条路径而不是直接置 0，形状才对得上。
+      //  ④ 入口门是 `isAlive()` = **血 > 0**（不是 `!isDeadOrEscaped()`）。
+      //  ⑤ ⚠⚠ **`SuicideAction` 里没有 `bc.checkCombat()`**——与 `Actions::DamageEnemy`
+      //     （Actions.cpp:63-71，末尾有一句）正相反。所以这只怪若是最后一只，
+      //     `Monster::die` 写下胜利之后**队列不被清扫**，排在后面的动作照旧留着
+      //     （由主循环那道 `outcome != UNDECIDED` 的门拦下）。故这里**不能**调
+      //     `damageEnemyNonAttack`（那个带 checkCombat），只调 `monsterDamage`。
+      const selfIdx = bc.monsters.indexOf(m);
+      addToBot(bc, (c) => {
+        const self = c.monsters[selfIdx];
+        if (self !== undefined && self.hp > 0) {
+          monsterDamage(c, selfIdx, self.hp);
+        }
+      });
     } else if (eff.kind === "store_hp_scaled_damage") {
       // 按玩家**此刻**的生命算定一个每击伤害，存进 miscInfo（六火幽魂的激活，
       // MonsterSpecific.cpp:794 `miscInfo = bc.player.curHp / 12 + 1;`）。
@@ -10456,6 +10811,22 @@ export const SUPPORTED_ENCOUNTERS: readonly string[] = [
   //   ✅ 第三十批补上了 asc19（冠军 / 收藏家 / 火炬头的 `ascCalibrated` 已置）。
   "champ",
   "collector",
+  // —— 第三十二批：**第三幕开张**。harness 追加了**第四个乘积**
+  //   `emitProduct(act3Variants, act3Encounters)`，排在目标策略那个之后
+  //   （加空乘积时单独跑过一次 `--check`，101 个已提交文件逐字节复现）。
+  //   ⚠⚠ 第三幕做完之前，**不许再往它后面挂新乘积**：每一批第三幕都往 `act3Variants`
+  //     追加一个 variant，而往「不是最后一个」的乘积里追加会平移其后所有 `traceIdx`。
+  //   本批装三个「形状怪」编队（走 variant 32，牌组 `BATCH_1 + SPOT_WEAKNESS`、40 种子、
+  //   asc0、目标策略 0）。
+  //   ⚠ `three_shapes` / `four_shapes` 走 `createShapes`（6 项池、**不放回**），
+  //     `sphere_and_two_shapes` 走两次 `getAncientShape`（3 项表、**有放回**）——
+  //     两条路径不共用，见 `ENCOUNTER_BUILDERS`。
+  //   ⚠ 三个编队**只有 asc0 的背书**：三只新怪的 `ascCalibrated` 一只都没置
+  //     （尖刺客的荆棘 `{3,4,7}` 三档一条都没有预言机），`constructMonster` 在
+  //     `ascension > 0` 下照旧抛错。
+  "three_shapes",
+  "four_shapes",
+  "sphere_and_two_shapes",
 ];
 
 export function isEncounterSupported(encounterId: string): boolean {

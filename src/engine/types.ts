@@ -66,7 +66,18 @@ export type PowerId =
   | "enrage" // 激怒：玩家每打出一张技能牌，此敌人获得 = 层数的力量（地精头目）
   | "artifact" // 神器：抵消下一个施加到自己身上的减益（每抵消一个消耗一层）
   | "demon_form" // 恶魔形态：每个玩家回合开始时获得 = 层数的力量（玩家能力牌）
-  | "thorns" // 荆棘：每次被攻击时对攻击者反弹 = 层数的伤害（无视其格挡）
+  // 荆棘：**玩家侧**（青铜鳞片等）每次被攻击时对攻击者反弹 = 层数的伤害；
+  // **怪物侧**（第三十二批的尖刺客，全参考项目只有它带）挂在 `attackedUnblockedHelper`
+  // 那条 else-if 链的**第六格**（易塑/反应之后、沉睡之前，Monster.cpp:384-386）：
+  //   `bc.addToTop( Actions::DamagePlayer(getStatus<MS::THORNS>()) )`
+  // ⚠ 两侧共用这一个 PowerId（harness 两边都 dump 成 `THORNS`），但触发点不同：
+  //   玩家那条在 `Player::attacked` 里、怪物这条要求**先破格挡**，且都是 `addToTop`。
+  // ⚠⚠ 与守卫者的「尖锐外壳」（`sharp_hide`）**不是一回事**：那条挂在
+  //   `BattleContext::onUseAttackCard` 的最末，**打出攻击牌**就触发（哪怕这一击被格挡吃光、
+  //   哪怕打的是别的怪）。两者都走 `DamagePlayer`，形状像、时点完全不同。
+  // ⚠ 怪物侧的荆棘**只增不减**：开局 `{3,4,7}[getTriIdx(asc,2,17)]`，增生尖刺每次 +2，
+  //   而出招规则攒够 6 次就封顶（asc0 上限 15）。
+  | "thorns"
   | "regen" // 再生：每回合结束回复 = 层数的生命，然后层数 -1
   // 镀甲（带壳寄生虫，第二十五批）：两处协同，都在 sts-combat.ts 里。
   //  ① **回合末加 = 层数的格挡**（`applyEndOfTurnTriggers`，Monster.cpp:51-52，
@@ -239,6 +250,29 @@ export type Effect =
   // ascAmount：敌人专用的爬升度分档，覆盖 `amount`（见 AscTier）。
   | { kind: "deal_damage"; amount: number; strengthMultiplier?: number; ascAmount?: AscTier[] }
   | { kind: "deal_damage_all"; amount: number }
+  // 敌人用：**非攻击伤害**打在玩家身上（爆破怪的自爆 30 点，第三十二批）。对齐
+  // `bc.addToBot( Actions::DamagePlayer(30) )`（MonsterSpecific.cpp:1395）。
+  //
+  // ⚠ **不能拿 `deal_damage` 顶替**，四处不同：
+  //   ① 走 `Player::damage` 而不是 `Player::attacked`：**不过 `calculateDamageToPlayer`**
+  //      ——怪物力量、玩家易伤、虚弱一概不参与，30 就是 30；
+  //   ② **不触发玩家侧的荆棘 / 火焰屏障**（那两条挂在 `Player::attacked` 上，需要攻击者下标）；
+  //   ③ 照样**被格挡吸收**（与 `lose_hp` 那族相反）；
+  //   ④ 它**不在 `isMoveAttack` 白名单里**——参考的判据正是「有没有走 `attackPlayerHelper`」，
+  //      所以带着这条效果的招式在觅敌之弱眼里**不是攻击**。⚠ 真实游戏显示的是攻击意图，
+  //      这一格记在 TODOS「待裁定」。
+  | { kind: "damage_player_non_attack"; amount: number; ascAmount?: AscTier[] }
+  // 敌人用：**自杀**（爆破怪的自爆，第三十二批）。对齐
+  // `bc.addToBot( Actions::SuicideAction(idx, true) )`（MonsterSpecific.cpp:1396）。
+  //
+  // 不带参数：`triggerRelics = true` 那一支的函数体就是
+  //   `if (m.isAlive()) { m.damage(bc, m.curHp); }`（Actions.cpp:923-933），
+  // 即**走正常的非攻击伤害路径把自己打到 0**——所以死亡链（亡语 / 地精角 / 活体样本）
+  // 全部照常触发，这正是那个参数名的含义。逐条形状见 sts-combat.ts 里那条 case。
+  // ⚠ 全参考项目有两个宿主：爆破怪与蜥蜴法师的匕首（`DAGGER_EXPLODE`，:1634），
+  //   两者写法逐字相同。⚠ 但**匕首的自爆算攻击**（走 `attackPlayerHelper(bc, 25)`）、
+  //   爆破怪的不算（走 `DamagePlayer(30)`），别把两只怪的前半段也当成一样的。
+  | { kind: "suicide" }
   // ascAmount 覆盖**每一击**的 amount。绝大多数多段攻击的段数是恒定的——参考写的是
   // `attackPlayerHelper(bc, asc4 ? 6 : 5, 2)`（六火幽魂冲撞 MonsterSpecific.cpp:841），
   // 分档挂在那个伤害数上，段数是第二个实参、恒定。
@@ -890,10 +924,15 @@ export type EnemyDef = {
   //   `MONSTER_ON_HP_LOST.the_guardian` 里，姿态链的真相在 `MOVE_TURN_END` 的七条同步
   //   `setMove` 里。留着就是第二份真相，与第十五批 `steal_gold` 去掉 `amount`、
   //   第十六批删掉真菌兽 `deathEffects` 同一条理由。
+  // ⚠ **第三十二批把 `deathEffects` 这个字段本身也删了**（它此时只剩爆破怪一个用户，
+  //   而那条是错的）。参考里根本没有「数据驱动的亡语」这种东西，只有两族各自的代码：
+  //   ① `Monster::die` 里那条写死的 else-if 链（孢子云 / 重生 / 停滞，Monster.cpp:299-310）
+  //      ——层数与 `isSourceMonster` 都是 `die` 里硬写的，见 `monsterDie`；
+  //   ② **招式**（爆破怪的自爆是 `EXPLODER_EXPLODE` 这一招：`DamagePlayer(30)` +
+  //      `SuicideAction`，MonsterSpecific.cpp:1394-1398），它由意图链定时、**不是死亡触发**
+  //      ——被玩家打死的爆破怪一点伤害都不会造成。写成 `deathEffects` 是两处都不对。
   /** 半血分裂：降到 ≤maxHp/2 时分裂成这些敌人（各自 HP = 分裂瞬间当前 HP）。 */
   splitInto?: string[];
-  /** 亡语：此敌人死亡时结算的效果（真菌兽孢子云给玩家易伤）。 */
-  deathEffects?: Effect[];
   /** 复活：首次死亡时以此 HP 复活并获得力量（觉醒者二阶段），仅触发一次。 */
   reviveHp?: number;
   /** 复仇魔：每次出招结束后，若自身没有虚无缥缈则叠加此层数（隔回合无敌）。省略=无。 */
