@@ -587,14 +587,39 @@ export type Effect =
   // ⚠ 与 `apply_power` + `on: "all_enemies"` **不是一回事**：那个是「场上每一只」，
   //   这个是「0 号位与自己」——三只以上的编队里两者会分岔（当前没有这样的编队）。
   | { kind: "buff_ally"; power: PowerId; amount: number; ascAmount?: AscTier[] }
-  // 敌人用：召唤若干敌人加入战斗。⚠ **这是旧近似战斗留下的占位**，唯一的读者是数据表
-  // 自己——只剩蜥蜴法师的匕首（`reptomancerSummon`）还在用它。
-  // 参考里每个召唤宿主各是**一段专门的代码**（`Actions::SummonGremlins` /
-  // `Monster::spawnBronzeOrbs` / `Actions::SpawnTorchHeads` / `reptomancerSummon`），
-  // 落位规则、RNG 消耗、要不要 `initHp`、用 `rollMove` 还是 `setMove`、要不要跳过本回合
-  // 各不相同——前三个已经登记，**没有任何两个能共用代码**（并列表见 WORKFLOW）。
-  // 所以登记第四个时同样要单开一个 kind，别拿这条通用形状去凑。
-  | { kind: "summon"; defIds: string[] }
+  // 敌人用：**蜥蜴法师的召唤**（第三十六批）。对齐 `Monster::reptomancerSummon`
+  //（MonsterSpecific.cpp:3589-3608）——本项目**第四条也是最后一条**召唤路径。
+  // ⚠ 第三十六批之前这里是一个通用的 `{ kind: "summon"; defIds: string[] }`，那是旧近似
+  //   战斗留下的占位、唯一的读者是数据表自己。四个召唤宿主并排看之后（并列表见 WORKFLOW）
+  //   **没有任何两个能共用代码**，所以那条通用形状连同它的最后一个用户一起删掉了。
+  //
+  // ⚠⚠ **它与前三条一处都不共用，十处形状全不同**（照搬邻居必错）：
+  //   ①⚠⚠ **召几只由爬升度决定**：`reptomancerSummon(bc, asc18 ? 2 : 1)`——全参考项目
+  //      唯一一个「召唤数量看爬升度」的地方（地精 / 青铜球恒 2，收藏家是 `3 - monstersAlive`）。
+  //      asc0 下恒 1 只，所以 asc18 那一档是本批的结构性盲区。
+  //   ②⚠ **参考是 `Monster` 的成员函数 + 一个自由的 helper**（`reptoSummonHelper`），
+  //      而且在 `takeTurn` 里是**裸的同步调用**（`:1620-1622` 没有 addToBot）——
+  //      与青铜球同侧、与地精首领 / 收藏家（都是 `Actions::` + addToBot）相反。
+  //   ③⚠⚠ **找空位的顺序是写死的 `{4, 1, 3, 0}`**，门是 `!isAlive()`（血 <= 0）。
+  //      地精是 `{1, 2, 0}`、青铜球写死 0 与 2 且不判空、收藏家用一张两格的落位表。
+  //      ⚠ 它扫 **4** 格（0/1/3/4），**跳过 2 号位**——那是法师自己站的地方。
+  //   ④ **有 `= Monster()` 整只重建**（地精 / 收藏家有、青铜球没有）。
+  //   ⑤ 血量：`construct` 里掷一次（匕首是普通的 `setRandomHp`，没有白掷也不跑两遍）。
+  //   ⑥⚠ **意图靠 `setMove(DAGGER_STAB)`**（与收藏家同侧，与地精 / 青铜球的 `rollMove` 相反），
+  //      所以召唤本身不为「选意图」掷 aiRng。
+  //   ⑦⚠⚠ **aiRng 在循环里逐只还**：`bc.noOpRollMove()` 写在 for 体内、每召一只一次。
+  //      收藏家是**循环之外**再跑一个 `for` 统一还——次数相同、位置不同，而位置在
+  //      「召两只」时才可观察（中间隔着第二只的 construct，monsterHpRng 与 aiRng 的交错不同）。
+  //   ⑧ `++monstersAlive` 在循环**里面**，且排在 `construct` **之后、`setMove` 之前**
+  //      （收藏家那条在循环末尾）。
+  //   ⑨⚠⚠ **末尾 `bc.monsters.skipTurn.set(daggerIdx, true)`** ——全参考项目**唯一**的
+  //      写入点（`MonsterGroup.h:24` 的 `std::bitset<5>`）。落在游标还没走到的格子里的匕首
+  //      **本回合不行动**。前三条召唤都不用它：青铜球靠 `++monsterTurnIdx`、
+  //      地精首领与收藏家的宿主位置让新来的本来就轮不到。
+  //   ⑩ **没有 `++monsterTurnIdx`**（青铜球那条有）。
+  // 与前三条相同的只有两件事：`buff<MS::MINION>()`、以及 `monsterCount` 一动不动。
+  // 逐条见 sts-combat.ts 的 `reptomancerSummon`。
+  | { kind: "summon_daggers"; count: number; ascAmount?: AscTier[] }
   // 敌人用：**地精首领的召唤**（第二十七批）。对齐 `Actions::SummonGremlins`
   //（Actions.cpp:459-497）——参考里全项目只有它一个用户，写死了地精首领的场地形状。
   //
@@ -1103,8 +1128,13 @@ export type EnemyDef = {
   splitInto?: string[];
   /** 复活：首次死亡时以此 HP 复活并获得力量（觉醒者二阶段），仅触发一次。 */
   reviveHp?: number;
-  /** 复仇魔：每次出招结束后，若自身没有虚无缥缈则叠加此层数（隔回合无敌）。省略=无。 */
-  intangibleAfterMove?: number;
+  // ⚠ 第三十六批删掉了 `intangibleAfterMove`（复仇魔那条「出招后补虚无缥缈」）。
+  //   它是旧近似战斗的字段，与参考对不上：参考把这件事写在**三条 case 各自的尾部**
+  //   （`if (!hasStatus<MS::INTANGIBLE>())`），而且**三条的形状不一样**——多重打击与巨镰是
+  //   `addToBot(Actions::BuffEnemy<MS::INTANGIBLE>(idx, 2))`、排在入队的 RollMove **之后**，
+  //   灼烧诅咒却是**同步**的 `buff<MS::INTANGIBLE>(2)`、排在同步的 rollMove 之后
+  //   （MonsterSpecific.cpp:1585-1607）。一个数据字段表达不了这三种时序，真相在 `MOVE_TURN_END`。
+  //   与第十九批删守卫者 `modeShift`、第三十二批删 `deathEffects` 同一条理由。
   /** 时间吞噬者：玩家每打出这么多张牌，此敌人 +2 力量并立即结束玩家回合。省略=无。 */
   timeWarpEvery?: number;
 };

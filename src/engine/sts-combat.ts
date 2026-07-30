@@ -824,6 +824,26 @@ export type BattleContext = {
 
   /** 怪物回合游标：>= monsters.length 表示当前不在怪物回合（对齐 monsterTurnIdx，游戏初值 6）。 */
   monsterTurnIdx: number;
+
+  /**
+   * 「这一轮跳过谁的怪物回合」（对齐 `MonsterGroup::skipTurn`，`MonsterGroup.h:24` 的
+   * `std::bitset<5>`，第三十六批）。
+   *
+   * ⚠ 全参考项目**只有一个写入点**：`Monster::reptomancerSummon`（MonsterSpecific.cpp:3606）。
+   * 蜥蜴法师在 2 号位，召唤出来的匕首可能落在 3 或 4 号位——那两格的游标还没走到，
+   * 不置这一位的话新匕首**本回合就会行动**。
+   * ⚠ 读点是 `MonsterGroup::doMonsterTurn` 的门（`:572-578`），清点是
+   * `BattleContext::executeActions` 里「怪物回合走完」那一句 `monsters.skipTurn.reset()`
+   * （BattleContext.cpp:805）——所以它的生命周期**不跨回合**。
+   * ⚠ 前三条召唤路径都不用它：青铜自动机靠 `++monsterTurnIdx` 推游标，
+   * 地精首领与收藏家的宿主位置让新来的本来就轮不到。
+   *
+   * ⚠ **不进 `StsCombatState`**：存档点必然是玩家可操作态（`exportState` 有断言），
+   * 而走到那里的每一条路径都先经过「怪物回合走完 → reset」那一句，所以它在存档点恒为空。
+   * 存一个恒空的字段只会多一处可以对不上的地方。
+   */
+  skipTurn: Set<number>;
+
   endTurnQueued: boolean;
   turnHasEnded: boolean;
 
@@ -896,6 +916,19 @@ function lastTwoMoves(m: CombatMonster, moveId: string): boolean {
  */
 function lastMoveBefore(m: CombatMonster, moveId: string): boolean {
   return m.moveHistory[1] === moveId;
+}
+
+/**
+ * 对齐 `Monster::eitherLastTwo`（**moveHistory[0] 或 [1]** == moveId，Monster.cpp:625-627）。
+ *
+ * ⚠ 参考在 Monster.cpp:609-627 并排放了五个谓词（`firstTurn` / `lastMove` /
+ * `lastMoveBefore` / `lastTwoMoves` / `eitherLastTwo`），登记时要逐字看清用的是哪一个：
+ * 这一条是 `lastTwoMoves` 的**对偶**（那条要求两格都是，这条只要有一格是），
+ * 也正好是 `!lastMove && !lastMoveBefore` 的反面（第二十九批冠军那条）。
+ * 第一个用户是复仇魔的巨镰连续限制（第三十六批）。
+ */
+function eitherLastTwo(m: CombatMonster, moveId: string): boolean {
+  return m.moveHistory[0] === moveId || m.moveHistory[1] === moveId;
 }
 
 const MOVE_RULES: Record<string, MoveForRoll> = {
@@ -2182,6 +2215,139 @@ const MOVE_RULES: Record<string, MoveForRoll> = {
     }
     return lastTwoMoves(m, "gh_count") ? "gh_glare" : "gh_count";
   },
+
+  // —— 第三十六批：第三幕两个精英 ——
+
+  // 复仇魔：对齐 MonsterSpecific.cpp:2554-2607。逐位照抄，**别按「三档 roll」的直觉简化**：
+  //
+  //     if (firstTurn())  return roll < 50 ? ATTACK : DEBUFF;
+  //     if (roll < 30) {                                   // 巨镰档
+  //         if (!eitherLastTwo(SCYTHE))       return SCYTHE;
+  //         else if (aiRng.randomBoolean())   return lastTwoMoves(ATTACK) ? DEBUFF : ATTACK;
+  //         else if (!lastMove(DEBUFF))       return DEBUFF;
+  //         else                              return ATTACK;
+  //     }
+  //     if (roll < 65) {                                   // 多重打击档
+  //         if (!lastTwoMoves(ATTACK))                          return ATTACK;
+  //         else if (!aiRng.randomBoolean() || eitherLastTwo(SCYTHE)) return DEBUFF;
+  //         else                                                return SCYTHE;
+  //     }
+  //     if (!lastMove(DEBUFF)) return DEBUFF;              // 灼烧诅咒档
+  //     if (aiRng.randomBoolean() && !eitherLastTwo(SCYTHE)) return SCYTHE;
+  //     return ATTACK;
+  //
+  // ⚠ 六处照抄：
+  //  ① **首回合只看 roll < 50**（没有任何连续限制），分界与后面两档的 30 / 65 完全无关。
+  //  ② 巨镰的连续限制是 **`eitherLastTwo`**（最近两格里出现过就不再出），不是 `lastTwoMoves`
+  //     ——它是这两个谓词第一次在本项目里分家，抄成 `lastTwoMoves` 会让巨镰隔一回合就连出。
+  //  ③ 多重打击的连续限制却是 **`lastTwoMoves`**（连出两次才封）。同一只怪上两种并存。
+  //  ④⚠⚠ **三处 `randomBoolean` 的极性各不相同**：巨镰档是 `if (randomBoolean())` 走
+  //     「打击族」，多重打击档是 **`if (!randomBoolean() || …)`** 走灼烧，最后一档是
+  //     `if (randomBoolean() && …)` 走巨镰。抄反任何一处都只在一半种子上分岔。
+  //  ⑤ **那几次 `randomBoolean` 是短路求值的**：多重打击档写的是 `!randomBoolean() || eitherLastTwo(SCYTHE)`
+  //     ——`randomBoolean` 在**左边**，所以**无论右边是什么都会掷**；最后一档写的是
+  //     `randomBoolean() && !eitherLastTwo(SCYTHE)`，同样掷在左边。两处都必须先掷再判，
+  //     顺序写反会让 `rng.ai` 计数器在「刚出过巨镰」的那些回合对不上。
+  //  ⑥ 三档的 roll 分界是 **30 / 65**（不是 33 / 66），三档宽度 30 / 35 / 35。
+  nemesis: (bc, m, roll) => {
+    if (firstTurn(m)) {
+      return roll < 50 ? "nem_attack" : "nem_debuff";
+    }
+    if (roll < 30) {
+      if (!eitherLastTwo(m, "nem_scythe")) {
+        return "nem_scythe";
+      } else if (bc.rng.aiRng.randomBoolean()) {
+        // ★ 追加一次 aiRng
+        return lastTwoMoves(m, "nem_attack") ? "nem_debuff" : "nem_attack";
+      } else if (!lastMove(m, "nem_debuff")) {
+        return "nem_debuff";
+      } else {
+        return "nem_attack";
+      }
+    }
+    if (roll < 65) {
+      if (!lastTwoMoves(m, "nem_attack")) {
+        return "nem_attack";
+      }
+      // ⚠ `randomBoolean` 在 `||` 的**左边**，所以这一掷无条件发生。
+      if (!bc.rng.aiRng.randomBoolean() || eitherLastTwo(m, "nem_scythe")) {
+        // ★ 追加一次 aiRng
+        return "nem_debuff";
+      }
+      return "nem_scythe";
+    }
+    if (!lastMove(m, "nem_debuff")) {
+      return "nem_debuff";
+    }
+    // ⚠ 同上：`randomBoolean` 在 `&&` 的**左边**，无条件掷。
+    if (bc.rng.aiRng.randomBoolean() && !eitherLastTwo(m, "nem_scythe")) {
+      // ★ 追加一次 aiRng
+      return "nem_scythe";
+    }
+    return "nem_attack";
+  },
+
+  // 蜥蜴法师：对齐 MonsterSpecific.cpp:2641-2677。
+  //
+  //     if (firstTurn()) return SUMMON;
+  //     int myRoll = roll;
+  //     const bool canSpawn = bc.monsters.monstersAlive < 4;   // ← 循环**之前**算一次
+  //     while (true) {
+  //         if (myRoll < 33) {
+  //             if (!lastMove(SNAKE_STRIKE)) return SNAKE_STRIKE;
+  //             else myRoll = aiRng.random(33, 99);            // ★ 重掷，然后**继续往下**
+  //         }
+  //         if (myRoll < 66) {
+  //             if (!lastTwoMoves(SUMMON) && canSpawn) return SUMMON;
+  //             else return SNAKE_STRIKE;                       // ← 这一档**必然返回**
+  //         }
+  //         if (!lastMove(BIG_BITE)) return BIG_BITE;
+  //         myRoll = aiRng.random(0, 65);                       // ★ 重掷并回到循环顶
+  //     }
+  //
+  // ⚠ 五处照抄：
+  //  ①⚠ **首回合恒召唤**，`canSpawn` 那道门在这条路上**不生效**——开局 3 只活怪
+  //     （法师 + 两把匕首）虽然 `< 4` 成立，但即便不成立也照样召。
+  //  ② **`canSpawn` 在循环外算一次**（`monstersAlive < 4`）：循环里重掷 roll 不会重新读它。
+  //     ⚠ 这个 4 与「预留空位不算活怪」直接挂钩：开局 `monstersAlive = 3`（0 / 3 号位是空格），
+  //     写成数组长度 5 的话第一次重掷之后就再也召不出来。
+  //  ③ **第一段的 else 是「重掷到 [33,99] 然后往下走」，不是 continue**——所以重掷之后
+  //     一定落进第二段或第三段，不会再判一次 `myRoll < 33`。
+  //  ④ **第二段两条分支都 return**，于是「重掷到 [33,66) 」必然出毒牙或召唤。
+  //  ⑤ 末尾那次 `random(0, 65)` 才是真正回到循环顶的那一支（`myRoll` 可能又 < 33）。
+  //     ⚠ 与蠕动血块那种「五段并列 if + 两处 continue」形似，但这条的循环边只有一条。
+  reptomancer: (bc, m, roll) => {
+    if (firstTurn(m)) {
+      return "summon_daggers";
+    }
+    let myRoll = roll;
+    const canSpawn = bc.monstersAlive < 4;
+    for (;;) {
+      if (myRoll < 33) {
+        if (!lastMove(m, "snake_strike")) {
+          return "snake_strike";
+        }
+        myRoll = bc.rng.aiRng.random(33, 99); // ★ 追加一次 aiRng（重掷，然后继续往下判）
+      }
+      if (myRoll < 66) {
+        if (!lastTwoMoves(m, "summon_daggers") && canSpawn) {
+          return "summon_daggers";
+        }
+        return "snake_strike";
+      }
+      if (!lastMove(m, "big_bite")) {
+        return "big_bite";
+      }
+      myRoll = bc.rng.aiRng.random(0, 65); // ★ 追加一次 aiRng（重掷并回到循环顶）
+    }
+  },
+
+  // 匕首：对齐 MonsterSpecific.cpp:2679-2681——**恒返回突刺**，一条分支都没有。
+  // ⚠ 它的另一个意图（自爆）不是掷出来的：突刺那条 case 的收尾是同步 `setMove(DAGGER_EXPLODE)`，
+  //   见 `MOVE_TURN_END`。而召唤出来的匕首同样靠 `setMove(DAGGER_STAB)` 定意图、不走 rollMove
+  //   ——所以这条规则其实只在**开局那两把**匕首身上被调用（`MonsterGroup::init` 的
+  //   rollMove 循环），召唤路径一次都不调。
+  dagger: () => "dagger_stab",
 };
 
 // ============================================================================
@@ -3036,6 +3202,94 @@ const MOVE_TURN_END: Record<string, MoveTurnEnd> = {
   "giant_head/gh_it_is_time": (bc) => {
     bc.rng.aiRng.random(99); // ★ 消耗一次 aiRng（noOpRollMove，**同步**，意图不变）
   },
+
+  // —— 第三十六批：复仇魔 / 蜥蜴法师 / 匕首 ——
+  //
+  // ⚠⚠ **复仇魔三条 case 的收尾全都不是默认值，而且三条的形状两两不同**
+  //（MonsterSpecific.cpp:1585-1607）。差别全在「虚无缥缈那一句怎么排」：
+  //
+  //   多重打击 / 巨镰                          灼烧诅咒
+  //   ------------------------------------     ------------------------------------
+  //   attackPlayerHelper(...)   ← 入队伤害      MakeTempCardInDiscard(...).actFunc(bc) ← **同步**
+  //   addToBot(RollMove(idx))   ← **入队**      rollMove(bc)                            ← **同步的真 roll**
+  //   if (!hasStatus<INTANGIBLE>())             if (!hasStatus<INTANGIBLE>())
+  //       addToBot(BuffEnemy<INTANGIBLE>(2))        buff<INTANGIBLE>(2)                 ← **同步**
+  //
+  // ⚠ 五处照抄：
+  //  ①⚠⚠ **那道 `if` 判在 takeTurn 里、也就是排队的那一刻**（不是出队时）——三条都一样。
+  //     写成「出队时再判」会在同一回合里被别的动作改写掉 statusBits 时分岔。
+  //  ②⚠⚠ **虚无缥缈那条动作排在 RollMove 之后**（不是之前）：于是下一次
+  //     `getMoveForRoll` 跑在补层之前。当前出招规则不读虚无缥缈，所以顺序不可观察；照抄。
+  //  ③ 攻击那两条的 buff 是**入队**的 `Actions::BuffEnemy`，所以攻击若打死玩家、主循环
+  //     跳出，这一层就**永远补不上**——「效果入队 + 收尾入队」，两者一起被跳过。
+  //  ④ 灼烧诅咒整条 case **一个 addToBot 都没有**（塞牌是 `.actFunc(bc)`），所以它的
+  //     「同步 vs 入队」按第二十六批那条判据属于**等价改写**；但 rollMove 是**真 roll**
+  //     （第六形态），写成 `"no_op_roll"` 会让意图不变、写成 `{setMove}` 会少掷一次 aiRng。
+  //  ⑤⚠ 门是 `hasStatus`（条目在不在），不是层数 > 0。虚无缥缈的层数在回合末
+  //     `decrementStatus` 归零时**连条目一起摘掉**（见 `applyMonsterEndOfTurnTriggers`），
+  //     所以两者当前同解——但形状照抄，别写成 `getPower(...) > 0`。
+  //  ⚠ 净效果：2 层 → 回合末减到 1 → 下一个玩家回合仍然无敌 → 那个怪物回合不补层 →
+  //    回合末减到 0（条目消失）→ 再下一个玩家回合正常吃伤害。这就是「隔回合无敌」。
+  "nemesis/nem_attack": (bc, m) => {
+    const idx = bc.monsters.indexOf(m);
+    addToBot(bc, (c) => {
+      rollMove(c, m);
+    });
+    if (!hasPower(m.powers, "intangible")) {
+      addToBot(bc, (c) => {
+        buffEnemy(c, idx, "intangible", 2);
+      });
+    }
+  },
+  "nemesis/nem_scythe": (bc, m) => {
+    const idx = bc.monsters.indexOf(m);
+    addToBot(bc, (c) => {
+      rollMove(c, m);
+    });
+    if (!hasPower(m.powers, "intangible")) {
+      addToBot(bc, (c) => {
+        buffEnemy(c, idx, "intangible", 2);
+      });
+    }
+  },
+  "nemesis/nem_debuff": (bc, m) => {
+    rollMove(bc, m); // ★ 消耗至少一次 aiRng（同步的真 rollMove）
+    if (!hasPower(m.powers, "intangible")) {
+      addPower(m.powers, "intangible", 2); // 同步 buff，排在 rollMove 之后
+    }
+  },
+
+  // 蜥蜴法师：三条 case 里只有**召唤**不是默认值（MonsterSpecific.cpp:1609-1623）：
+  //   巨口 / 毒牙   `addToBot(Actions::RollMove(idx));` —— 默认 `"roll"`，不写进来
+  //   召唤          `rollMove(bc);`                     —— 第六形态：**同步的真 rollMove**
+  //
+  // ⚠⚠ 这一条的「同步」**真的可观察**，与秘法师治疗那条同族：召唤本身是同步的，
+  //   它当场把 `monstersAlive` 加了 1，而紧接着这次 `getMoveForRoll` 里的
+  //   `canSpawn = monstersAlive < 4` 读的正是**加过之后**的值。写成入队的 `"roll"`
+  //   在当前形状下取值相同（召唤也是同步的，早就跑完了），但形状照抄。
+  "reptomancer/summon_daggers": (bc, m) => {
+    rollMove(bc, m); // ★ 消耗至少一次 aiRng（同步的真 rollMove）
+  },
+
+  // 匕首两条 case 的收尾（MonsterSpecific.cpp:1625-1636）：
+  //   突刺  `setMove(DAGGER_EXPLODE); bc.noOpRollMove();`  —— 同步 setMove + **同步** noOp
+  //   自爆  `bc.noOpRollMove();`                           —— **同步** noOp，意图不变
+  //
+  // ⚠ 三处照抄：
+  //  ① 突刺那条与球状守卫者 / 青铜自动机同形（第五形态：两件事都做）——`{setMove}` 不掷
+  //     aiRng、`"no_op_roll"` 不改意图，静态形态一个都表达不了。
+  //  ② **两条都是同步的 `bc.noOpRollMove()`**，而它们的效果**全是入队的**——正是第二十七批
+  //     工头那条判据说的「效果入队 + 收尾同步」组合：自爆打 25 点，打死玩家时主循环跳出，
+  //     入队的伤害与自杀都还没跑完，但这次掷骰**已经发生**。写成入队版会让 `rng.ai` 对不上。
+  //  ③ 自爆那条**不改意图**（noOp 掷完就丢）：匕首自杀之后不会再行动，所以意图停在自爆上，
+  //     这一点在快照里看得到（尸体的 move 仍是 `dagger_explode`）。
+  "dagger/dagger_stab": (bc, m) => {
+    setMove(m, "dagger_explode");
+    bc.rng.aiRng.random(99); // ★ 消耗一次 aiRng（noOpRollMove，**同步**）
+  },
+  "dagger/dagger_explode": (bc) => {
+    bc.rng.aiRng.random(99); // ★ 消耗一次 aiRng（noOpRollMove，**同步**，意图不变）
+  },
 };
 
 /**
@@ -3714,6 +3968,77 @@ function summonTorchHeads(bc: BattleContext): void {
   }
 }
 
+/**
+ * 蜥蜴法师的召唤（对齐 `Monster::reptomancerSummon` + `reptoSummonHelper`，
+ * MonsterSpecific.cpp:3565-3608）。
+ *
+ * 本项目**第四条也是最后一条**召唤路径。前三条（地精首领的 `Actions::SummonGremlins`、
+ * 青铜自动机的 `Monster::spawnBronzeOrbs`、收藏家的 `Actions::SpawnTorchHeads`）在
+ * 第二十九批已经并排比过 **11 个维度、没有一个三族一致**；这一条与那三条**同样一处都不共用**。
+ * 逐条照抄的点：
+ *
+ *  ①⚠⚠ **召几只由爬升度决定**：`reptomancerSummon(bc, asc18 ? 2 : 1)`（`:1621`）——
+ *     全参考项目唯一一个「召唤数量看爬升度」的地方。地精 / 青铜球恒 2、收藏家是
+ *     `3 - monstersAlive`。asc0 下恒 **1** 只，所以 asc18 那一档是本批的结构性盲区。
+ *  ②⚠ **同步调用**（`:1620-1622` 没有 addToBot），与青铜自动机同侧、与地精首领 /
+ *     收藏家（都是 `addToBot(Actions::…)`）相反。
+ *  ③⚠⚠ **找空位的顺序是写死的 `{4, 1, 3, 0}`**（`reptoSummonHelper` 的 `searchOrder`），
+ *     门是 `!isAlive()` = **血 <= 0**。⚠ 它只扫这 **4** 格，**2 号位（法师自己）不在表里**。
+ *     ⚠ 三条对比：地精是 `{1, 2, 0}`、青铜球写死 0 与 2 且**不判空**、收藏家是
+ *       `{arr[1].isDying() ? 1 : 0, 0}` 这张两格的落位表。四条各写各的。
+ *     ⚠ 参考在找不满时是 `assert(false)`（release 版会读未初始化的下标），我们显式抛错。
+ *  ④ **`dagger = Monster()` 整只重建**（地精 / 收藏家有、青铜球没有）：那一格上残留的
+ *     易伤 / 格挡 / 意图历史全清零。
+ *  ⑤ 血量：`construct` 里掷**一次**（匕首是普通的 `setRandomHp`，既不白掷也不跑两遍）。
+ *  ⑥⚠ **`++monstersAlive` 排在 `construct` 之后、`setMove` 之前**（收藏家那条在循环末尾）。
+ *  ⑦⚠ **意图靠 `setMove(DAGGER_STAB)`**（与收藏家同侧、与地精 / 青铜球的 `rollMove` 相反），
+ *     所以召唤本身不为「选意图」掷 aiRng。
+ *  ⑧ `buff<MS::MINION>()` 排在 setMove 之后。⚠ 匕首自己的 `preBattleAction` 也是这一句，
+ *     而召唤**不重跑** `preBattleAction`——两者净效果相同，所以这条「不重跑」在匕首身上
+ *     是可证的空操作（探针无效），见 `PRE_BATTLE_ACTION.dagger`。
+ *  ⑨⚠⚠ **aiRng 在循环里逐只还**：`bc.noOpRollMove()` 写在 for 体**内**，每召一只一次。
+ *     收藏家是循环**之外**再跑一个 for 统一还——次数相同、位置不同（召两只时可观察）。
+ *  ⑩⚠⚠ **末尾 `bc.monsters.skipTurn.set(daggerIdx, true)`**：全参考项目**唯一**的写入点。
+ *     落在游标还没走到的格子里的匕首**本回合不行动**（法师在 2 号位，4 号与 3 号都在它右边）。
+ *     ⚠ 前三条召唤都不用它：青铜球靠 `++monsterTurnIdx` 推游标，地精首领与收藏家的宿主
+ *     位置让新来的本来就轮不到。见 `BattleContext.skipTurn` 与 `doMonsterTurn`。
+ *  ⑪ **没有 `++monsterTurnIdx`**（青铜球那条有）；`monsterCount`（= 数组长度）一动不动。
+ */
+function reptomancerSummon(bc: BattleContext, daggerCount: number): void {
+  // ③ 落位：写死的搜索顺序 {4, 1, 3, 0}，门是「血 <= 0」（空格血 0，天然算空）。
+  const searchOrder = [4, 1, 3, 0];
+  const daggerIdxs: number[] = [];
+  for (const mIdx of searchOrder) {
+    if ((bc.monsters[mIdx]?.hp ?? 0) <= 0) {
+      daggerIdxs.push(mIdx);
+    }
+    if (daggerIdxs.length === daggerCount) {
+      break;
+    }
+  }
+  if (daggerIdxs.length !== daggerCount) {
+    throw new Error(`sts-combat 召唤匕首时空位不够: 要 ${String(daggerCount)} 个`);
+  }
+  for (const daggerIdx of daggerIdxs) {
+    // ④⑤ 整只重建 + 一次 monsterHpRng。
+    const dagger = constructMonster(bc, "dagger"); // ★ 消耗一次 monsterHpRng
+    bc.monsters[daggerIdx] = dagger;
+    // ⑥ 每召一只加一次，排在 setMove 之前。
+    bc.monstersAlive += 1;
+    // ⑦ setMove 而不是 rollMove：不掷 aiRng（新怪的历史本来是空的）。
+    setMove(dagger, "dagger_stab");
+    // ⑧ MINION 标记（进怪物快照）。
+    addPower(dagger.powers, "minion", 1);
+    // TODO(后续PR): 贤者之石（PHILOSOPHERS_STONE）会给召唤出来的每只 +1 力量
+    //   （MonsterSpecific.cpp:3600-3602，与另外三条召唤、两个分裂函数里那一支同源）。
+    //   harness 的遗物轮换里没有它，写了也没有预言机走到。
+    // ⑨ 每只各还一次 aiRng（noOpRollMove，掷完丢掉）——**在循环里面**。
+    bc.rng.aiRng.random(99); // ★ 消耗一次 aiRng，取值丢弃
+    // ⑩ 本回合不行动。
+    bc.skipTurn.add(daggerIdx);
+  }
+}
+
 // ============================================================================
 // 停滞（对齐 `Monster::stasisAction` / `stasisHelper` / `returnStasisCard`，
 // MonsterSpecific.cpp:3467-3565）。青铜球专用，参考里全项目只有它一个用户。
@@ -4246,6 +4571,41 @@ const ENCOUNTER_BUILDERS: Record<string, EncounterBuilder> = {
     createMonster(bc, getAncientShape(bc)); // ★ 一次 miscRng + 一次 monsterHpRng
     createMonster(bc, "spheric_guardian"); // ★ hpNoRoll：**不掷** monsterHpRng
   },
+
+  // 蜥蜴法师（第三十六批）：对齐 MonsterGroup.cpp:339-345。
+  //
+  // ⚠⚠ **「怎么预留空位」的第四种写法**，参考是五句：
+  //   ```cpp
+  //   ++monsterCount;                            // ← 先空出 0 号位，count → 1
+  //   createMonster(bc, MonsterId::DAGGER);       // ← 落在 arr[1]，count → 2
+  //   createMonster(bc, MonsterId::REPTOMANCER);  // ← 落在 arr[2]，count → 3
+  //   ++monsterCount;                            // ← 再空出 3 号位，count → 4
+  //   createMonster(bc, MonsterId::DAGGER);       // ← 落在 arr[4]，count → 5
+  //   ```
+  //   净效果是「**0 号位与 3 号位是预留空位**，两把匕首在 1 / 4 号位、法师在**中间的
+  //   2 号位**，`monsterCount = 5`、`monstersAlive = 3`」。
+  // ⚠⚠ 它与前三种预留写法**没有一处相同**（并列表见 WORKFLOW）：
+  //   地精首领 —— 建 1/2/3 三格 + 手动赋值 `monstersAlive = 3; monsterCount = 4`（只留 0 号位）；
+  //   青铜自动机 —— `monsterCount = 1; createMonster(...); ++monsterCount;`（留 0 与 2、宿主在中间）；
+  //   收藏家 —— `monsterCount = 2; createMonster(...);`（留 0 与 1、宿主在最后）；
+  //   蜥蜴法师 —— **两个 `++` 夹着三次 createMonster**，是唯一一个 **5 格**、也是唯一一个
+  //   **两个空位之间还夹着活怪**的编队。
+  // ⚠ 三处可观察面：
+  //  ① `monstersAlive` 开局是 **3**（不是数组长度 5）——出招规则的 `canSpawn = monstersAlive < 4`
+  //     直接读它，写成 5 的话第一次重掷之后就再也召不出匕首。
+  //  ② RNG 交错是 hp(匕首) → hp+hp(法师，`hpDiscardRoll` 掷两次) → hp(匕首)，共 **4 次**
+  //     monsterHpRng；两个空格一次都不掷。
+  //  ③ harness 的策略恒打 0 号位的活怪 = 1 号位那把匕首（0 号是空格），所以战斗前期
+  //     打的是匕首而不是法师。
+  // ⚠ 两个空格都不参与 `MonsterGroup::init` 的后两个循环（门是 `arr[i].idx != -1`），
+  //   见 `initCombat` 里那两处的 `EMPTY_MONSTER_SLOT` 跳过条件。
+  reptomancer: (bc) => {
+    bc.monsters.push(emptyMonsterSlot()); // 0 号位：预留（第一句 `++monsterCount`）
+    createMonster(bc, "dagger"); // 1 号位 ★ 消耗一次 monsterHpRng
+    createMonster(bc, "reptomancer"); // 2 号位 ★ 消耗**两次** monsterHpRng（hpDiscardRoll）
+    bc.monsters.push(emptyMonsterSlot()); // 3 号位：预留（第二句 `++monsterCount`）
+    createMonster(bc, "dagger"); // 4 号位 ★ 消耗一次 monsterHpRng
+  },
 };
 
 // ============================================================================
@@ -4590,6 +4950,35 @@ const PRE_BATTLE_ACTION: Record<string, PreBattleAction> = {
   // ⚠ 三个读点见 `PowerId` 的注释；回合末清零在 `applyEndOfRoundPowers`。
   giant_head: (_bc, m) => {
     addPower(m.powers, "slow", 0);
+  },
+
+  // —— 第三十六批 ——
+
+  // 蜥蜴法师的随从首领（对齐 MonsterSpecific.cpp:238-240）：
+  //     case MonsterId::REPTOMANCER:
+  //         buff<MS::MINION_LEADER>();
+  //         break;
+  // **纯 bool**，不消耗 RNG，快照里是 `MINION_LEADER: 1`。
+  // ⚠ 它给 `Monster::die` 加了第二条判胜路径（`monstersAlive == 0 || hasStatus<MINION_LEADER>()`，
+  //   Monster.cpp:293-297）：法师一死当场判胜，匕首还站着也算赢。地精首领是同族的第一个宿主。
+  // ⚠ 复仇魔**没有** `preBattleAction`（那个 switch 里没有 `NEMESIS` 这一格），
+  //   开局身上一个 Power 都没有；虚无缥缈全靠它自己三条 case 的尾部补。
+  reptomancer: (_bc, m) => {
+    addPower(m.powers, "minion_leader", 1);
+  },
+
+  // 匕首的随从标记（对齐 MonsterSpecific.cpp:148-150）：
+  //     case MonsterId::DAGGER:
+  //         buff<MS::MINION>();
+  //         break;
+  // **纯 bool**，不消耗 RNG，快照里是 `MINION: 1`。开局那两把匕首走这一条。
+  // ⚠ 召唤出来的那些**不走这里**（召唤一律不重跑 `preBattleAction`），而是由
+  //   `reptomancerSummon` 自己手写的那句 `dagger.buff<MS::MINION>()` 上——两处的净效果相同。
+  //   ⚠ 所以「不重跑 preBattleAction」这条在匕首身上是**可证的空操作**：即便重跑，
+  //   `buff` 对纯 bool 只是再置一次位。与火炬头那条（它压根没有 case）同为「探针无效」，
+  //   真正有背书的只有地精首领那条（召唤出来的狂暴小鬼没有狂怒）。
+  dagger: (_bc, m) => {
+    addPower(m.powers, "minion", 1);
   },
 };
 
@@ -4974,18 +5363,43 @@ const MONSTER_ATTACK_MOVES: ReadonlySet<string> = new Set([
   //   凝视 → **不在**（它走的是裸的 `bc.player.debuff<PS::WEAK>(1, true)`，不带任何伤害）。
   "giant_head/gh_count",
   "giant_head/gh_it_is_time",
-  // 蠕动血块（`:527-529`，第三十五批）。⚠⚠ **五招里只有三条在，而这是全项目最刺眼的一格**：
-  //   挥击 / 乱抽 / 重抽 → 在；植入（没有伤害）→ 不在，这两点都符合判据；
-  //   ⚠⚠ **萎缩走 `attackPlayerHelper(bc, asc2 ? 12 : 10)` 却不在参考的白名单里**
-  //   （MonsterMoves.h:527-529 只列了三条）。按第三十二批立下的判据
-  //   （「`isMoveAttack` 收的就是走 `attackPlayerHelper` / `Actions::AttackPlayer` 的那些招」）
-  //   它应该在，而且真实游戏里萎缩显示的是**攻击 + 减益**双意图——所以这**疑似参考的笔误**。
-  //   ⚠ 但三条判据只过了第 ①、③ 条（补丁没有预言机：预言机就是参考本身），
-  //   与第三十二批爆破怪自爆那条同族，**照抄参考、不打补丁**，记进 TODOS「待裁定」。
-  //   ⚠ 这条差异已被数据钉住（把萎缩加进来会当场红），不会静默飘走。
+  // 蠕动血块（`:527` / `:550-552`，第三十五批登记，**第三十六批打补丁补上萎缩**）。
+  //   挥击 / 乱抽 / 重抽 / **萎缩** → 在；植入（没有伤害）→ 不在。
+  //   ⚠⚠ **萎缩这一条是本项目给参考打的补丁**，不是照抄：第三十五批发现它走
+  //   `attackPlayerHelper(bc, asc2 ? 12 : 10)`（MonsterSpecific.cpp:1560-1565）却**不在**
+  //   参考的白名单里，并记进 TODOS「待裁定」；第三十六批复核后打了补丁（`isMoveAttack` 加一行）。
+  //   证据链两条：① 全表扫过之后**它是整个参考里唯一一个「伤害走 `attackPlayerHelper`
+  //   却不在白名单」的招式**（反方向那些例外要么走 `Actions::DamagePlayer`——爆破怪的自爆，
+  //   那是自洽的；要么走 `Actions::VampireAttack`——寄生虫的吸取）；② 四个同族的
+  //   「攻击 + 减益」招式 `CHOSEN_DEBILITATE` / `SPHERIC_GUARDIAN_ATTACK_DEBUFF` /
+  //   `MYSTIC_ATTACK_DEBUFF` / `SNECKO_TAIL_WHIP` **全在表里**，只有它例外。
+  //   ⚠ 与爆破怪那一格的分水岭：爆破怪是**参考在自己的规则下自洽**（非攻击伤害路 → 不在表里），
+  //   萎缩是**参考跟自己不自洽**（攻击路 → 却不在表里，且全表唯一）。
+  //   「隔壁那个是这样」不是证据，**「全表只有它一个例外」才是**。
+  //   ⚠ 补丁只影响 `writhing_mass.jsonl` 一个已冻结文件，第三十六批走
+  //   `ALLOW_CHANGED="writhing_mass"` 重新生成（24 例）。
   "writhing_mass/wm_flail",
+  "writhing_mass/wm_wither",
   "writhing_mass/wm_multi_strike",
   "writhing_mass/wm_strong_strike",
+  // 复仇魔（`:476-477`，第三十六批）。⚠ **三招里只有两条在**：
+  //   多重打击 / 巨镰 → 在；灼烧诅咒 → **不在**（它一点伤害都不带，只往弃牌堆塞灼烧，
+  //   自然不经过 `attackPlayerHelper`）。与哨卫的射钉那一格同形。
+  "nemesis/nem_attack",
+  "nemesis/nem_scythe",
+  // 蜥蜴法师（`:484-485`，第三十六批）。⚠ **三招里只有两条在**：
+  //   毒牙 / 巨口 → 在；召唤匕首 → **不在**（纯召唤，不带伤害）。
+  //   ⚠ 参考的白名单里这两条的顺序是 SNAKE_STRIKE 在前、BIG_BITE 在后，而枚举声明序是
+  //   SUMMON / SNAKE_STRIKE / BIG_BITE——又一个「按名字找、别按位置数」的例子。
+  "reptomancer/snake_strike",
+  "reptomancer/big_bite",
+  // 匕首（`:447-448`，第三十六批）。⚠⚠ **两招全在，而自爆这一格是爆破怪那一格的镜像**：
+  //   突刺 → 在；**自爆也在**——它写的是 `attackPlayerHelper(bc, 25)`（MonsterSpecific.cpp:1632），
+  //   而爆破怪的自爆写的是 `Actions::DamagePlayer(30)`，于是打 30 点的那个不算攻击、
+  //   打 25 点的这个算。两条 case 的形状几乎一样（打人 + `SuicideAction`），
+  //   **差别只在用了哪个函数**——这就是判据本身。
+  "dagger/dagger_stab",
+  "dagger/dagger_explode",
 ]);
 
 /**
@@ -5932,6 +6346,7 @@ export function initCombat(input: CombatInitInput): BattleContext {
     // 对齐 `CardManager::stasisCards` 的初值 `{INVALID, INVALID}`（CardManager.h:32）。
     stasisCards: [null, null],
     monsterTurnIdx: 6, // 对齐游戏初值（>= monsterCount 即「非怪物回合」）
+    skipTurn: new Set<number>(), // 对齐 `MonsterGroup::skipTurn` 的空 bitset
     endTurnQueued: false,
     turnHasEnded: false,
     nextUid: 0,
@@ -6090,6 +6505,11 @@ export function executeActions(bc: BattleContext): void {
       bc.monsterTurnIdx += 1;
       continue;
     }
+    // ④b 怪物回合全部走完 → 清空「本轮跳过谁」（对齐 BattleContext.cpp:805 那句
+    //     `monsters.skipTurn.reset();`，第三十六批）。⚠ 位置照抄：它排在④那个 `continue`
+    //     之后、⑤之前，所以每一轮「游标已经越过最后一格」的主循环迭代都会清一次
+    //     ——包括玩家回合里的那些空转。幂等，且这正是它在存档点恒为空的原因。
+    bc.skipTurn.clear();
     // ⑤ 怪物回合走完 → 回合结算。
     if (bc.turnHasEnded) {
       afterMonsterTurns(bc);
@@ -6497,7 +6917,20 @@ export function calculateCardDamage(
   if (target !== undefined && hasPower(target.powers, "flight")) {
     damage = Math.fround(damage * 0.5);
   }
-  // TODO(后续PR): 虚无缥缈（怪物侧，`max(damage, 1.0f)`，在飞行之后）。
+  // 虚无缥缈（怪物侧，复仇魔，第三十六批）：
+  //   `if (monster.hasStatus<MS::INTANGIBLE>()) { damage = std::max(damage, 1.0f); }`
+  //   （BattleContext.cpp:2768-2770）。⚠ 四处照抄：
+  //  ①⚠⚠ 它是 **`std::max`（下限）而不是 `min`（上限）**——这个函数只**预计算**一个数给
+  //     `Actions::AttackEnemy` 用，真正的钳制在 `Monster::attacked` 里（见 `monsterAttacked`）。
+  //     写成 `min(damage, 1)` 在最终血量上碰巧同解，但那是两处独立的逻辑，形状照抄。
+  //     ⚠ 可观察面：玩家侧读这个预计算值的地方（打完之后的「上一击未被格挡量」等）会分岔。
+  //  ② 位置在**飞行之后**，也就是所有加法与全部倍率都算完之后（`AtDamageReceiveFinal` 段）。
+  //  ③ 门是 `hasStatus`（条目在不在），与飞行那一格同族；虚无缥缈归零时条目会被摘掉
+  //     （`decrementStatus` 走 `uniquePower0` 那一支），所以当前两种写法同解。
+  //  ④ 它在 `float` 域里做（`1.0f`），随后才是末尾那次 `max(0, trunc(...))`。
+  if (target !== undefined && hasPower(target.powers, "intangible")) {
+    damage = Math.max(damage, Math.fround(1));
+  }
 
   return Math.max(0, Math.trunc(damage));
 }
@@ -6540,6 +6973,21 @@ function attackEnemy(bc: BattleContext, idx: number, damage: number): void {
 
 function monsterAttacked(bc: BattleContext, m: CombatMonster, rawDamage: number): void {
   let damage = Math.max(0, rawDamage);
+  // 虚无缥缈（INTANGIBLE，怪物侧，复仇魔，第三十六批）：对齐 `Monster::attacked` 里那句
+  //     `if (hasStatus<MS::INTANGIBLE>()) { if (damage > 0) { damage = 1; } }`
+  //（Monster.cpp:418-422）。⚠ 四处照抄：
+  //  ①⚠⚠ **位置在整条链的最前**——排在**狂怒之前**、更在格挡吸收之前。
+  //     位置就是这一族全部的可观察面（第十七批把狂怒挪一格红 30 例的教训）：
+  //     挪到狂怒之后当前不可分辨（没有怪同时带两者），挪到格挡吸收之后就完全错了
+  //     （那样 1 点伤害会被格挡吃掉，而参考是「先压成 1，再让格挡吃」）。
+  //  ② 内层还有一道 `damage > 0`：0 伤害**不会**被抬成 1。
+  //  ③ 门是 `hasStatus`（条目在不在），不是层数 > 0。
+  //  ④ 它在**两条**伤害路径上各有一份（`attacked` 与 `damage`，Monster.cpp:477-481），
+  //     两处逐字相同——所以非攻击伤害（燃烧 / 主宰 / 荆棘 / 火焰药水）**照样**被压成 1，
+  //     与蜷缩 / 镀甲那种「只挂在 attacked 上」的正相反。见 `monsterDamage`。
+  if (hasPower(m.powers, "intangible") && damage > 0) {
+    damage = 1;
+  }
   // 狂怒（ANGRY，狂暴地精）：对齐 `Monster::attacked` 里那句 `if (hasStatus<ANGRY>())
   // buff<STRENGTH>(getStatus<ANGRY>())`（Monster.cpp:424-426）。三处非直觉但照抄：
   //  ① 位置在**格挡吸收之前**，而且这一族的判定与伤害无关——**打在格挡上照样涨力量**，
@@ -6556,7 +7004,7 @@ function monsterAttacked(bc: BattleContext, m: CombatMonster, rawDamage: number)
   const tempDamage = damage;
   damage -= m.block;
   m.block = Math.max(0, m.block - tempDamage);
-  // TODO(后续PR): 虚无缥缈（怪物侧，位置在狂怒**之前**）、手钻（破盾时上易伤）。
+  // TODO(后续PR): 手钻（破盾时上易伤）。
   if (damage > 0) {
     monsterDamageUnblocked(bc, m, damage);
   }
@@ -9841,6 +10289,15 @@ function monsterDamage(bc: BattleContext, idx: number, rawDamage: number): void 
     return;
   }
   let damage = Math.max(0, rawDamage);
+  // 虚无缥缈（第三十六批）：`Monster::damage` 里那句与 `Monster::attacked` 的**逐字相同**
+  //（Monster.cpp:477-481，参考在那行注着 `// this is probably wrong with potions`）。
+  // ⚠ 所以**非攻击伤害也被压成 1**——荆棘 / 燃烧 / 主宰 / 火焰药水 / 自杀都算。
+  //   这与蜷缩 / 镀甲 / 荆棘那一族「只挂在 attacked 那条 else-if 链上」正相反：
+  //   那条链在这条路径上根本不存在，而虚无缥缈两条路各写了一份。
+  // ⚠ 位置同样在**扣格挡之前**。
+  if (hasPower(m.powers, "intangible") && damage > 0) {
+    damage = 1;
+  }
   const tempDamage = damage;
   damage -= m.block;
   m.block = Math.max(0, m.block - tempDamage);
@@ -10471,7 +10928,14 @@ function doMonsterTurn(bc: BattleContext, idx: number): void {
   // ⚠ 反过来，另外两个循环（`applyPreTurnLogic` / `applyEndOfRoundPowers`）的门是
   //   `isDying() || isEscaping()`——那里**不**放行半死的怪（它血量为 0，`isDying` 已为真），
   //   所以那两处写 `!alive` 与参考同解，见 `CombatMonster.halfDead` 的注释。
-  if (m === undefined || (!m.alive && !m.halfDead)) {
+  // ⚠ 门的第二半（第三十六批）：`&& !skipTurn[bc.monsterTurnIdx]`——蜥蜴法师召唤出来的
+  //   匕首若落在游标右边的格子里，本回合**不行动**。它是这一整轮唯一的读点，
+  //   清点在 `executeActions` 的「怪物回合走完」那一句，见 `BattleContext.skipTurn`。
+  // ⚠ 参考在门内还有一句 `if (skipTurn[idx]) { skipTurn.set(idx, false); } else { takeTurn(); }`
+  //   （MonsterGroup.cpp:576-578）——那个 if **恒假**（外层的 `&& !skipTurn[…]` 已经把它
+  //   排除干净了），是一段死代码。它与 as-built 严格同解：那一位无论清不清，
+  //   本轮都不会再被读第二次，而回合末的 `reset()` 一律清空。故**照抄 as-built，不报补丁**。
+  if (m === undefined || (!m.alive && !m.halfDead) || bc.skipTurn.has(idx)) {
     return;
   }
   const move = takeTurn(bc, m);
@@ -10843,6 +11307,13 @@ function takeTurn(bc: BattleContext, m: CombatMonster): string | null {
       addToBot(bc, (c) => {
         summonGremlins(c);
       });
+    } else if (eff.kind === "summon_daggers") {
+      // 召唤匕首（蜥蜴法师，第三十六批）。参考是**裸的同步调用**
+      // `reptomancerSummon(bc, asc18 ? 2 : 1);`（MonsterSpecific.cpp:1621）——**不是** addToBot，
+      // 与青铜自动机那条同侧、与地精首领 / 收藏家（都是入队）相反。
+      // ⚠ 只数是全参考项目唯一一个**看爬升度**的召唤数量；asc0 下恒 1 只。
+      // 逐条形状见 `reptomancerSummon`。
+      reptomancerSummon(bc, ascValue(bc, eff.count, eff.ascAmount));
     } else if (eff.kind === "summon_bronze_orbs") {
       // 召唤两颗青铜球（青铜自动机，第二十八批）。参考是**裸的同步调用**
       // `spawnBronzeOrbs(bc);`（MonsterSpecific.cpp:503）——**不是** addToBot，
@@ -11196,6 +11667,31 @@ function applyMonsterEndOfTurnTriggers(m: CombatMonster): void {
   const platedArmor = getPower(m.powers, "plated_armor");
   if (platedArmor > 0) {
     m.block += platedArmor;
+  }
+  // 虚无缥缈递减（复仇魔，第三十六批）：对齐 Monster.cpp:55-57
+  //     if (hasStatus<MS::INTANGIBLE>()) { decrementStatus<MS::INTANGIBLE>(); }
+  // ——这个函数的**第四句**（金属化 → 易塑 → 镀甲 → **虚无缥缈** → 再生 → 枷锁）。
+  // ⚠ 四处照抄：
+  //  ①⚠⚠ **无条件递减、没有 skipFirst**：参考在枚举那行自注
+  //     `// differs from the game in that it always decrements at end of round`
+  //     （MonsterStatusEffects.h:35）——真实游戏里怪物侧的虚无缥缈是「获得当回合不掉」，
+  //     参考**故意**没有这么做。这是「参考与真实游戏可能分歧」的候选，但补丁没有预言机
+  //     （预言机就是参考本身），照抄参考、记进 TODOS。
+  //     ⚠ 而复仇魔的三条 case 在**补层之前**先判 `!hasStatus`，所以净效果仍然是「隔回合」：
+  //     2 → 回合末 1（下个玩家回合仍无敌、怪物回合不补）→ 回合末 0（条目消失）→ 再补 2。
+  //  ② `decrementStatus<INTANGIBLE>` 走的是 `WEAK < s <= TIME_WARP` 那一段
+  //     （`uniquePower0 -= 1; if (uniquePower0 == 0) setHasStatus(false);`，Monster.h:303-307）
+  //     ——**归零时连条目一起摘掉**（与镀甲 / 消逝同族，与飞行那种裸 `setStatus` 正相反）。
+  //     这一点是承重的：条目留着的话 `hasPower` 恒真，复仇魔就**再也补不上第二次**。
+  //  ③ 位置在**镀甲之后、枷锁之前**。当前没有一只怪同时带虚无缥缈与它们，故不可观察；照抄。
+  //  ④ 它在 `applyEndOfRoundPowers` 的**第一个**循环里（`applyEndOfTurnTriggers`），
+  //     不是第二个（仪式 / 缓慢 / 虚弱递减那个）。
+  const intangible = findPower(m.powers, "intangible");
+  if (intangible !== undefined) {
+    intangible.amount -= 1;
+    if (intangible.amount === 0) {
+      m.powers.splice(m.powers.indexOf(intangible), 1);
+    }
   }
   const shackled = getPower(m.powers, "shackled");
   if (shackled > 0) {
@@ -11810,6 +12306,8 @@ export function importState(s: StsCombatState): BattleContext {
     strikeCount: s.strikeCount,
     stasisCards: copyStasisCards(s.stasisCards),
     monsterTurnIdx: s.monsterTurnIdx,
+    // 存档点恒空（见 `BattleContext.skipTurn` 的注释），所以不入档、直接重建成空集。
+    skipTurn: new Set<number>(),
     endTurnQueued: s.endTurnQueued,
     turnHasEnded: s.turnHasEnded,
     nextUid: s.nextUid,
@@ -11975,6 +12473,23 @@ export const SUPPORTED_ENCOUNTERS: readonly string[] = [
   //   ⚠ 两个编队**只有 asc0 的背书**：两只新怪的 `ascCalibrated` 一只都没置。
   "writhing_mass",
   "giant_head",
+  // —— 第三十六批：第三幕两个**精英**（走 harness 新追加的 variant 36，variant 35 的
+  //   encounters 一个字没动，那两个文件除了萎缩补丁引起的 `writhing_mass` 之外逐字节不变）。
+  //   牌组沿用 `BATCH_1 + SPOT_WEAKNESS`、40 种子、asc0、目标策略 0。
+  //   ⚠ `nemesis` 带来**怪物侧 INTANGIBLE**：四处协同——`Monster::attacked` 与
+  //     `Monster::damage` 的入口各把伤害压成 1（**排在狂怒之前、格挡吸收之前**）、
+  //     `calculateCardDamage` 末尾 `max(damage, 1.0f)`（**下限**，在飞行之后）、
+  //     `applyEndOfTurnTriggers` 的第四句无条件递减。而它自己三条 case 的尾部各有一句
+  //     `if (!hasStatus<INTANGIBLE>())` 补层——**三条的入队 / 同步形状两两不同**。
+  //   ⚠ `reptomancer` 带来**召唤的第四族**（`Monster::reptomancerSummon`）与
+  //     **预留空位的第四种写法**（0 与 3 号位空、两把匕首在 1 / 4、法师在中间的 2 号位、
+  //     `monsterCount = 5`），外加全参考项目唯一的 `skipTurn` 写入点。
+  //     它还是 `hpDiscardRoll` 四个宿主里最后一个被登记的。
+  //   ⚠ `dagger` 是第一个**既预置又召唤**的怪（青铜球 / 火炬头都只有召唤这一个来源），
+  //     它的自爆是「打人 + `SuicideAction`」这一族里**走攻击路**的那一支，与爆破怪相反。
+  //   ⚠ 两个编队**只有 asc0 的背书**：三只新怪的 `ascCalibrated` 一只都没置。
+  "nemesis",
+  "reptomancer",
 ];
 
 export function isEncounterSupported(encounterId: string): boolean {

@@ -433,6 +433,11 @@ const ENCOUNTER: Record<string, string> = {
   //     与 `MAW` / `THE_MAW` 那一对正相反——两张表各查各的，别想当然。
   WRITHING_MASS: "writhing_mass",
   GIANT_HEAD: "giant_head",
+  // —— 第三十六批：走 harness 新追加的 variant 36（variant 35 的 encounters 一个字没动）。
+  //   ⚠ `NEMESIS` 与它建的怪同名；`REPTOMANCER` 也与它建的怪同名，但那个编队还会建
+  //     **两只 `DAGGER`**（1 / 4 号位），法师在中间的 2 号位——0 与 3 号位是预留空格。
+  NEMESIS: "nemesis",
+  REPTOMANCER: "reptomancer",
 };
 const MONSTER: Record<string, string> = {
   CULTIST: "cultist",
@@ -533,6 +538,15 @@ const MONSTER: Record<string, string> = {
   //   ⚠ 巨头开局快照里**一个 power 都没有**：缓慢的层数同样从 0 起步。
   WRITHING_MASS: "writhing_mass",
   GIANT_HEAD: "giant_head",
+  // —— 第三十六批：复仇魔（单怪）与蜥蜴法师一家（法师 + 匕首）。
+  //   ⚠ `DAGGER` 与青铜球 / 火炬头不同：它**既在建怪列表里**（`REPTOMANCER` 编队开局就建
+  //     两只，落在 1 / 4 号位）**又会被召唤**（`reptomancerSummon` 往 4 / 1 / 3 / 0 里找空位）。
+  //     所以同一场仗里同一种怪最多能出现 4 只。
+  //   ⚠ 复仇魔的快照里 `INTANGIBLE` 会**周期性地出现又消失**（2 → 1 → 消失 → 2 …），
+  //     那不是漏了一层：回合末无条件递减，归零时条目一起摘掉，下一次出招才补 2。
+  NEMESIS: "nemesis",
+  REPTOMANCER: "reptomancer",
+  DAGGER: "dagger",
   // ⚠ **分裂留下的空格**。参考的 `MonsterGroup::arr` 是定长 5 的数组，`monsterCount` 只是
   // 「dump 到第几格」；史莱姆王分裂时 `arr[0]` 与 `arr[2]` 被写、`monsterCount = 3`，
   // 于是 1 号格那只**从没被构造过**的默认 `Monster` 也被 dump 出来
@@ -764,6 +778,19 @@ const MOVE: Record<string, string> = {
   GIANT_HEAD_COUNT: "gh_count",
   GIANT_HEAD_GLARE: "gh_glare",
   GIANT_HEAD_IT_IS_TIME: "gh_it_is_time",
+  // —— 第三十六批：复仇魔三条 + 蜥蜴法师三条 + 匕首两条 ——
+  // ⚠ 匕首的**自爆**不是掷出来的：突刺那条 case 的收尾是同步 `setMove(DAGGER_EXPLODE)`，
+  //   而自爆自己的收尾是同步 `noOpRollMove`（意图不变），所以自爆完的尸体在快照里
+  //   `move` 仍然停在 `dagger_explode`。
+  // ⚠ 召唤出来的匕首同样靠 `setMove(DAGGER_STAB)` 定意图，一次 `rollMove` 都不走。
+  NEMESIS_DEBUFF: "nem_debuff",
+  NEMESIS_ATTACK: "nem_attack",
+  NEMESIS_SCYTHE: "nem_scythe",
+  REPTOMANCER_SUMMON: "summon_daggers",
+  REPTOMANCER_SNAKE_STRIKE: "snake_strike",
+  REPTOMANCER_BIG_BITE: "big_bite",
+  DAGGER_STAB: "dagger_stab",
+  DAGGER_EXPLODE: "dagger_explode",
   // 分裂留下的空格：那只默认 `Monster` 的 `moveHistory[0]` 是 `MMID::INVALID`
   // （`monsterMoveStrings[0] == "INVALID"`，MonsterMoves.h:215）。我们的空占位
   // `currentMove` 是空串。⚠ 这一条只有那个空格用得到——所有真怪在 `MonsterGroup::init`

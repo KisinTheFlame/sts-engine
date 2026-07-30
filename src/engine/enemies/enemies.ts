@@ -1947,61 +1947,122 @@ const ENEMY_LIST: EnemyDef[] = [
     intentRule: { scripted: [], weighted: [] },
   },
 
-  // —— 第三幕精英：蛇法师（召唤匕首）——
+  // —— 第三幕精英：蜥蜴法师（召唤的第四族，第三十六批按参考逐位校准）——
   {
     id: "reptomancer",
-    name: "蛇法师",
+    name: "蜥蜴法师",
+    // MonsterIds.h:189 `{{180,190},{190,200}}`；`setRandomHp(hpRng, asc >= 8)`
+    //（MonsterSpecific.cpp:104-107，**精英**那一档）。
     hpMin: 180,
     hpMax: 190,
+    // ⚠⚠ **先白掷一次再取**（`hpDiscardRoll`）：参考那条 case 是
+    //     hpRng.random(180, 190);                 // ← 取值丢弃
+    //     setRandomHp(hpRng, ascension >= 8);
+    //   所以建一只法师消耗 **2 次** monsterHpRng。它是这一族四个宿主里最后一个被登记的
+    //   （前三个：暗球游荡者 / 青铜球 / 工头）。白掷那次恒用**低档**区间。
+    hpDiscardRoll: { min: 180, max: 190 },
+    // preBattleAction 见 sts-combat.ts 的 `PRE_BATTLE_ACTION.reptomancer`：
+    //   `buff<MS::MINION_LEADER>()`（MonsterSpecific.cpp:238-240）。
+    // ⚠ 它给 `Monster::die` 加了第二条判胜路径：法师一死当场判胜，匕首还站着也算赢。
     moves: [
       {
+        // 召唤匕首（MonsterSpecific.cpp:1620-1623）：
+        //     reptomancerSummon(bc, asc18 ? 2 : 1);   // ← **同步**，不是 addToBot
+        //     rollMove(bc);                           // ← **同步的真 rollMove**（见 MOVE_TURN_END）
+        // ⚠ 召几只由爬升度决定，是全参考项目唯一这么写的召唤（地精/青铜球恒 2、
+        //   收藏家是 `3 - monstersAlive`）。asc0 下恒 1 只。逐条形状见 `reptomancerSummon`。
         id: "summon_daggers",
         name: "召唤匕首",
-        effects: [{ kind: "summon", defIds: ["dagger", "dagger"] }],
+        effects: [{ kind: "summon_daggers", count: 1, ascAmount: [{ atLeast: 18, amount: 2 }] }],
         intent: "unknown",
       },
       {
+        // 毒牙（MonsterSpecific.cpp:1614-1618）：
+        //     attackPlayerHelper(bc, asc3 ? 16 : 13, 2);
+        //     bc.addToBot( Actions::DebuffPlayer<PS::WEAK>(1, true) );
+        //     bc.addToBot( Actions::RollMove(idx) );
+        // ⚠ 三处照抄：① 两段、每段 13（asc3 是 16）——分档挂在**第一个**实参上，段数恒 2；
+        //   ② 虚弱是**入队**的（`addToBot`），排在两段伤害之后；③ 收尾是默认的 `"roll"`。
+        // ⚠ 旧近似表写的是单段 13 + 虚弱，段数漏了一半。
         id: "snake_strike",
         name: "毒牙",
         effects: [
-          { kind: "deal_damage", amount: 13 },
+          {
+            kind: "deal_damage_multi",
+            amount: 13,
+            times: 2,
+            ascAmount: [{ atLeast: 3, amount: 16 }],
+          },
           { kind: "apply_power", power: "weak", amount: 1, on: "target" },
         ],
         intent: "attack",
       },
       {
+        // 巨口（MonsterSpecific.cpp:1609-1612）：`attackPlayerHelper(bc, asc3 ? 34 : 30);`
+        // 收尾是默认的 `"roll"`。⚠ 分档是 **asc3**（精英那一族 `getTriIdx(asc, 3, 18)`
+        // 的低阈值），不是走廊小怪的 asc2——照搬邻居必错。
         id: "big_bite",
         name: "巨口",
-        effects: [{ kind: "deal_damage", amount: 30 }],
+        effects: [{ kind: "deal_damage", amount: 30, ascAmount: [{ atLeast: 3, amount: 34 }] }],
         intent: "attack",
       },
     ],
-    // 首招召唤匕首，之后 毒牙/巨口（身边匕首少时再召唤由 reptomancer 分支处理）。
-    intentRule: {
-      scripted: ["summon_daggers"],
-      weighted: [
-        { move: "snake_strike", weight: 60, maxInARow: 2 },
-        { move: "big_bite", weight: 40, maxInARow: 1 },
-      ],
-    },
+    // 出招规则见 sts-combat.ts 的 `MOVE_RULES.reptomancer`（MonsterSpecific.cpp:2641-2677）。
+    intentRule: { scripted: [], weighted: [] },
   },
+  // —— 匕首（第三十六批按参考逐位校准）——
+  //
+  // ⚠ 它有**两个来源**：`REPTOMANCER` 编队开局就建两只（1 / 4 号位），法师的召唤再往
+  //   空位里填。青铜球 / 火炬头都只有召唤这一个来源，匕首是第一个「既预置又召唤」的怪。
   {
     id: "dagger",
     name: "匕首",
+    // MonsterIds.h:165 `{{20,25},{20,25}}`——两组**完全相同**，但照样走
+    // `setRandomHp(hpRng, asc >= 8)`（MonsterSpecific.cpp:91-102 那一族，精英档）。
+    // ⚠ 「上下界相同」与「两组相同」都**不是** `hpNoRoll` 的判据：这一只照样掷一次。
     hpMin: 20,
     hpMax: 25,
+    // preBattleAction 见 sts-combat.ts 的 `PRE_BATTLE_ACTION.dagger`：
+    //   `buff<MS::MINION>()`（MonsterSpecific.cpp:148-150）。
+    // ⚠ 召唤出来的那些**不重跑** preBattleAction，但 `reptomancerSummon` 自己手写了一句
+    //   同样的 `buff<MS::MINION>()`——所以这只怪身上「不重跑」是可证的空操作，
+    //   与火炬头那条（它压根没有 preBattleAction 的 case）同为「探针无效」。
     moves: [
       {
+        // 突刺（MonsterSpecific.cpp:1625-1630）：
+        //     attackPlayerHelper(bc, 9);
+        //     bc.addToBot( Actions::MakeTempCardInDiscard(CardId::WOUND) );
+        //     setMove(MMID::DAGGER_EXPLODE);   // ← 同步
+        //     bc.noOpRollMove();               // ← **同步**
+        // ⚠ 参考这里**一个 `asc? :` 都没有**——匕首整只怪在任何爬升度下都是这些数。
+        // ⚠ 收尾是「同步 setMove + 同步 noOpRollMove」（球状守卫者那一族），见 MOVE_TURN_END。
         id: "dagger_stab",
         name: "突刺",
-        effects: [{ kind: "deal_damage", amount: 9 }],
+        effects: [
+          { kind: "deal_damage", amount: 9 },
+          { kind: "add_card", cardId: "wound", pile: "discard", count: 1 },
+        ],
+        intent: "attack",
+      },
+      {
+        // 自爆（MonsterSpecific.cpp:1632-1636）：
+        //     attackPlayerHelper(bc, 25);
+        //     bc.addToBot( Actions::SuicideAction(idx, true) );
+        //     bc.noOpRollMove();               // ← **同步**
+        // ⚠⚠ **它与爆破怪的自爆是同一条判据的两个方向**：形状几乎一样（打人 + `SuicideAction`），
+        //   但这一条走 `attackPlayerHelper` → **在** `isMoveAttack` 白名单里；
+        //   爆破怪那条走 `Actions::DamagePlayer` → 不在。判据是**用了哪个函数**，不是伤害量。
+        // ⚠ `SuicideAction(idx, **true**)` 走正常的非攻击伤害路径 `Monster::damage`，
+        //   死亡链照常触发（与复形怪那条 `false` 相反）。
+        id: "dagger_explode",
+        name: "自爆",
+        effects: [{ kind: "deal_damage", amount: 25 }, { kind: "suicide" }],
         intent: "attack",
       },
     ],
-    intentRule: {
-      scripted: [],
-      weighted: [{ move: "dagger_stab", weight: 1, maxInARow: 99 }],
-    },
+    // 出招规则见 sts-combat.ts 的 `MOVE_RULES.dagger`（MonsterSpecific.cpp:2679-2681）：
+    // 恒返回突刺，一条分支都没有。
+    intentRule: { scripted: [], weighted: [] },
   },
 
   // —— 第三幕 Boss：铎努与迪卡（双子，互相增益）——
@@ -2308,41 +2369,70 @@ const ENEMY_LIST: EnemyDef[] = [
     },
   },
 
-  // —— 第三幕精英：复仇魔（隔回合虚无缥缈无敌）——
+  // —— 第三幕精英：复仇魔（隔回合虚无缥缈，第三十六批按参考逐位校准）——
   {
     id: "nemesis",
     name: "复仇魔",
+    // MonsterIds.h:184 `{{185,185},{200,200}}`；`setRandomHp(hpRng, asc >= 8)`
+    //（MonsterSpecific.cpp:91-102，**精英**那一档）。
+    // ⚠ 上下界相同**照样掷一次**（`Random::random(int,int)` 无条件 `++counter`）——
+    //   与守卫者的 `{240,240}` 同族，不是 `hpNoRoll`。
     hpMin: 185,
     hpMax: 185,
-    intangibleAfterMove: 2,
+    // ⚠ 它**没有** `preBattleAction`（`Monster::preBattleAction` 的 switch 里没有
+    //   `NEMESIS` 这一格），虚无缥缈全靠三条招式自己在 `takeTurn` 里补，见 MOVE_TURN_END。
     moves: [
       {
+        // 多重打击（MonsterSpecific.cpp:1585-1591）：`attackPlayerHelper(bc, asc3 ? 7 : 6, 3)`
+        // ——三段、每段 6（asc3 是 7）。分档挂在**第一个**实参上，段数恒 3。
+        // ⚠ 收尾与虚无缥缈那条 `if` 见 MOVE_TURN_END（两条都是入队的，且**排在效果之后**）。
         id: "nem_attack",
         name: "多重打击",
-        effects: [{ kind: "deal_damage_multi", amount: 6, times: 3 }],
+        effects: [
+          {
+            kind: "deal_damage_multi",
+            amount: 6,
+            times: 3,
+            ascAmount: [{ atLeast: 3, amount: 7 }],
+          },
+        ],
         intent: "attack",
       },
       {
+        // 巨镰（MonsterSpecific.cpp:1601-1607）：`attackPlayerHelper(bc, 45)`。
+        // ⚠ 参考这里**没有 `asc? :`**——45 是写死的，与多重打击不同族。
         id: "nem_scythe",
         name: "巨镰",
         effects: [{ kind: "deal_damage", amount: 45 }],
         intent: "attack",
       },
       {
+        // 灼烧诅咒（MonsterSpecific.cpp:1593-1599）：
+        //     Actions::MakeTempCardInDiscard({CardId::BURN}, asc3 ? 5 : 3).actFunc(bc);
+        // ⚠ 三处照抄：
+        //  ① `.actFunc(bc)` = **同步**（不是 addToBot），所以三张灼烧在紧随其后那次
+        //     **同步** rollMove 之前就已经进了弃牌堆；
+        //  ② 张数分档是 **asc3**（精英那一族），不是走廊小怪的 asc2；
+        //  ③ 塞的是**未升级**的灼烧（`{CardId::BURN}` 的单参构造），与六火幽魂那条
+        //     `CardInstance(BURN, bc.turn > 8)` 不同——这里没有那个第二实参。
         id: "nem_debuff",
         name: "灼烧诅咒",
-        effects: [{ kind: "add_card", cardId: "burn", pile: "discard", count: 3 }],
+        effects: [
+          {
+            kind: "add_card",
+            cardId: "burn",
+            pile: "discard",
+            count: 3,
+            ascAmount: [{ atLeast: 3, amount: 5 }],
+            sync: true,
+          },
+        ],
         intent: "debuff",
       },
     ],
-    intentRule: {
-      scripted: [],
-      weighted: [
-        { move: "nem_attack", weight: 35, maxInARow: 2 },
-        { move: "nem_scythe", weight: 30, maxInARow: 1 },
-        { move: "nem_debuff", weight: 35, maxInARow: 1 },
-      ],
-    },
+    // 出招规则见 sts-combat.ts 的 `MOVE_RULES.nemesis`（MonsterSpecific.cpp:2554-2607）。
+    // 旧近似表那份加权（35/30/35）与参考完全不同，本批弃用。
+    intentRule: { scripted: [], weighted: [] },
   },
 
   // —— 精英：地精头目（第十八批）——
