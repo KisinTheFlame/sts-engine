@@ -142,6 +142,13 @@ asc0 钉住低侧，「分界线恰好在 N」以及「三档里的中间那一�
 ⚠ 它的抽打往弃牌堆塞**伤口**——伤口早就在 `cards.ts` 与 `CARD` 映射里（狂野劈砍 / 强渡带进来的），
 **打不出**，所以不进 `CARD_RULES`、也不能进 `--no-upgrade` 段；它的背书是「躺在牌堆快照里」
 （`slavers.jsonl` 里弃牌堆含伤口的帧 5670 个，最多同时 7 张）。
+⚠ **「永远关不掉」这个结论由复核方独立核过参考源码**（这是本项目最强的一类断言，
+不能只凭报告）：`Monster::die` 那一句是
+`else if (monstersAlive == 0 || hasStatus<MINION_LEADER>()) { outcome = PLAYER_VICTORY; return; }`
+——首领一死当场判胜并 `return`，随从不可能再行动；而读出侧
+`case MMID::GENERIC_ESCAPE_MOVE: default: break;` 本身**是空的**。
+两端都堵死，所以这不是「暂时没有数据」，是**任何数据都不可能有**。
+
 ⚠⚠ **本批把挂了十批的 `escapeNext` 那条盲区结了案，结论是「永远关不掉」而不是「补上」**
 ——逐条判据与新的关门条件见「已确认但尚未打补丁」。
 
