@@ -826,6 +826,17 @@ function lastTwoMoves(m: CombatMonster, moveId: string): boolean {
   return m.moveHistory[0] === moveId && m.moveHistory[1] === moveId;
 }
 
+/**
+ * 对齐 `Monster::lastMoveBefore`（**moveHistory[1]** == moveId，Monster.cpp:617-619）。
+ *
+ * ⚠ 它与 `lastTwoMoves` 不是一回事：那条要求两格**都**是 moveId，这条**只看上上一格**。
+ * 第二十九批的冠军二阶段用的是 `!lastMove(EXECUTE) && !lastMoveBefore(EXECUTE)`
+ * ——「最近两格里都没有处决」，这正是 `eitherLastTwo` 的反面。
+ */
+function lastMoveBefore(m: CombatMonster, moveId: string): boolean {
+  return m.moveHistory[1] === moveId;
+}
+
 const MOVE_RULES: Record<string, MoveForRoll> = {
   // 邪教徒：首回合（无历史）必咏唱，之后恒暗袭。roll 被消耗但不影响结果（故不取用）。
   // 对齐 MonsterSpecific.cpp:2280 CULTIST。
@@ -1652,6 +1663,122 @@ const MOVE_RULES: Record<string, MoveForRoll> = {
     }
     return "orb_support";
   },
+
+  // —— 第二十九批 ——
+  //
+  // 冠军：对齐 MonsterSpecific.cpp:2892-2946 THE_CHAMP。
+  //
+  // ⚠⚠ **二阶段是「血量阈值锁存」，而且整条住在这里、不在 `Monster::onHpLost`。**
+  //   `Monster::onHpLost` 那个 switch（Monster.cpp:499-535）**压根没有 `THE_CHAMP` 这一格**
+  //   ——它只有三种大史莱姆的分裂与守卫者的模式切换。差别是可观察的：守卫者在**挨打那一
+  //   瞬间**就改意图，冠军要等到**下一次 rollMove**（也就是它自己回合的收尾）才发现自己
+  //   过了半血。所以我们这边也**不能**给它写 `MONSTER_ON_HP_LOST` 条目。
+  //
+  // ⚠⚠ **`miscInfo` 一个字段两种用途**（参考 Monster.h:73 那行注释就叫 `champ phase2`）：
+  //     bit 0~1（`miscInfo & 0x3`）= 防御姿态的**已用次数**，上限 2；
+  //     bit 2  （`miscInfo & 0x4`）= 二阶段标志。
+  //   出防御姿态时是 `++monsterData`（整数自增），因为次数被 `< 2` 卡住，
+  //   它永远进不到 bit 2——照抄这个「自增而不是按位或」的写法。
+  //
+  // ⚠ 参考在这里同时读**成员** `miscInfo`（次数那一处）与**引用形参** `monsterData`
+  //   （二阶段判定与两处写入）。`Monster::rollMove` 是「拷出去 → 传引用 → 写回」
+  //   （Monster.cpp:629-635），所以进函数那一刻两者相等；而写完 `monsterData` 的两支
+  //   都**立刻 return**，中间没有再读次数的机会——于是当前两者等价，我们统一读写
+  //   `m.miscInfo`。（同族的先例是红奴隶主那条，第十六批已核过。）
+  //
+  // ⚠ 分支顺序照抄，三段：
+  //  ① **二阶段块**：已在二阶段 → 「最近两格都不是处决」就出处决；否则**穿透**到下面。
+  //     ⚠ 判据是 `!lastMove(EXECUTE) && !lastMoveBefore(EXECUTE)`（不是 `!lastTwoMoves`）
+  //       ——`lastTwoMoves` 只在两格**都**是处决时为真，会让处决连出，与参考不同。
+  //  ② **一阶段块**：`curHp < maxHp / 2`（C++ 整除；⚠ 是 **<** 而不是守卫者那种 `<=`）
+  //     → 置 bit 2 并出**暴怒**；否则 `(getMonsterTurnNumber() + 1) % 4 == 0` → **嘲讽**。
+  //     两支都 return，其余穿透。
+  //  ③ **公共块**（两个阶段都会落进来）：防御姿态 → 自夸 → 扇脸 → 重斩 → 兜底扇脸。
+  //     ⚠ 防御姿态的 roll 阈值有 asc 分档（`asc19 ? 30 : 15`），另两个（30 / 55）没有。
+  //     ⚠ 自夸那支的门里有**两个** `lastMove`（自夸 / 防御姿态），照抄别少一个。
+  champ: (bc, m, roll) => {
+    // ① 二阶段：处决优先，穿透到公共块。
+    if (m.miscInfo & 0x4) {
+      if (!lastMove(m, "execute") && !lastMoveBefore(m, "execute")) {
+        return "execute";
+      }
+    } else {
+      // ② 一阶段：过半血锁存 → 暴怒；否则每四个怪物回合嘲讽一次。
+      if (m.hp < Math.trunc(m.maxHp / 2)) {
+        m.miscInfo |= 0x4; // ★ 二阶段标志（一次性，此后再也回不去）
+        return "anger";
+      } else if ((getMonsterTurnNumber(bc) + 1) % 4 === 0) {
+        return "taunt";
+      }
+    }
+    // ③ 公共块。
+    const defensiveStanceUseCount = m.miscInfo & 0x3;
+    const rollThreshold = bc.ascension >= 19 ? 30 : 15;
+    if (roll <= rollThreshold && !lastMove(m, "champ_defend") && defensiveStanceUseCount < 2) {
+      m.miscInfo += 1; // ★ 已用次数 +1（参考写的是 `++monsterData`，不是按位或）
+      return "champ_defend";
+    }
+    if (roll <= 30 && !lastMove(m, "gloat") && !lastMove(m, "champ_defend")) {
+      return "gloat";
+    } else if (roll <= 55 && !lastMove(m, "face_slap")) {
+      return "face_slap";
+    } else if (!lastMove(m, "champ_slash")) {
+      return "champ_slash";
+    }
+    return "face_slap";
+  },
+
+  // 收藏家：对齐 MonsterSpecific.cpp:2948-2986 THE_COLLECTOR。
+  //
+  // ⚠ 五处照抄：
+  //  ① 首回合**恒召唤**（`firstTurn()`），roll 照掷但结果被丢掉；
+  //  ② `bc.getMonsterTurnNumber() == 3` **恒出巨型削弱**（参考注的是 `// always uses mega
+  //     debuff turn 4`——注释与代码差一，因为 `getMonsterTurnNumber()` 是 `turn + 1`，
+  //     它说的是游戏里显示的第 4 回合。**照抄代码那个 3**）；
+  //  ③⚠⚠ **`canUseSpawn` 读的是 `bc.monsters.monstersAlive < 3`**，再 `&& !lastMove(SPAWN)`
+  //     ——这是「预留空位不算活怪」的第二个读点（第一个是 `SpawnTorchHeads` 的
+  //     `3 - monstersAlive`）。抄成「数组长度」会让它开局就以为满员、再也不召；
+  //  ④ `roll <= 25 && canUseSpawn` → 召唤；`roll <= 70 && !lastTwoMoves(FIREBALL)` → 火球；
+  //  ⑤ 兜底二选一：**刚增幅过就火球，否则增幅**（`lastMove(BUFF) ? FIREBALL : BUFF`）。
+  //     ⚠ 于是「火球」有**两条**产生路径，而巨型削弱只在第 3 个怪物回合出现一次。
+  the_collector: (bc, m, roll) => {
+    // ① 首回合恒召唤。
+    if (firstTurn(m)) {
+      return "spawn_torches";
+    }
+    // ② 第 3 个怪物回合恒出巨型削弱。
+    if (getMonsterTurnNumber(bc) === 3) {
+      return "mega_debuff";
+    }
+    // ③ 「还能不能召」——读 monstersAlive，不是数组长度。
+    const canUseSpawn = bc.monstersAlive < 3 && !lastMove(m, "spawn_torches");
+    if (roll <= 25 && canUseSpawn) {
+      return "spawn_torches";
+    }
+    if (roll <= 70 && !lastTwoMoves(m, "fireball")) {
+      return "fireball";
+    }
+    // ⑤ 兜底。
+    if (lastMove(m, "collector_buff")) {
+      return "fireball";
+    }
+    return "collector_buff";
+  },
+
+  // 火炬头：⚠⚠ **它的 `getMoveForRoll` 永远不该被调用。**
+  // 参考对 `TORCH_HEAD` 的处理是落在 `default` 上、返回 `MMID::INVALID`
+  //（MonsterSpecific.cpp:3364，那行注着 `// setting in collector spawn move`）：
+  //   * 意图由 `Actions::SpawnTorchHeads` 的 `setMove(TORCH_HEAD_TACKLE)` 写入；
+  //   * 冲撞那条 case **没有任何收尾语句**（`MOVE_TURN_END` 记作 `"none"`），所以既不排
+  //     `RollMove` 也不 `noOpRollMove`；
+  //   * 它不在任何建怪列表里，故 `MonsterGroup::init` 那次开局 rollMove 也轮不到它。
+  // 于是照抄成「被调用就抛错」——真被调用说明我们哪条收尾抄错了，而那种错在参考侧是
+  // 一个 `INVALID` 意图（release 版静默），在我们这边应该当场炸出来。
+  torch_head: () => {
+    throw new Error(
+      "sts-combat: torch_head 的 getMoveForRoll 永远不该被调用（参考返回 INVALID，意图只由 setMove 写入）",
+    );
+  },
 };
 
 // ============================================================================
@@ -2278,6 +2405,50 @@ const MOVE_TURN_END: Record<string, MoveTurnEnd> = {
   "bronze_orb/orb_support": (bc, m) => {
     rollMove(bc, m); // ★ 消耗一次 aiRng（同步的真 rollMove）
   },
+
+  // —— 第二十九批 ——
+  //
+  // 冠军：**七条 case 分两族**（MonsterSpecific.cpp:1251-1307），照抄别统一：
+  //   入队 `addToBot(Actions::RollMove(idx))` —— 处决 / 扇脸 / 重斩（= 这张表的默认值 `"roll"`，
+  //                                             不写进来）；
+  //   **同步的真 `rollMove(bc)`**            —— 暴怒 / 防御姿态 / 自夸 / 嘲讽（下面四条）。
+  // ⚠ 分族的判据不是「攻击 vs 非攻击」这个直觉，而是参考那四条 case 的最后一句真的写的是
+  //   裸的 `rollMove(bc);`（`:1255` / `:1270` / `:1291` / `:1305`）。与第二十六批的
+  //   秘法师三招、第二十八批的青铜球两招同族（第六形态：同步的真 rollMove）。
+  // ⚠ 这四条 case 的效果**全是同步的**（加力量 / 加格挡 / 清减益 / 上减益都没有 addToBot），
+  //   所以按第二十六批那条判据，「同步 ↔ 入队」在这四条上预期是**等价改写**——
+  //   被钉住的是「效果排在 rollMove 之前」这个相对顺序。⚠ 而这里的相对顺序**真的可观察**：
+  //   暴怒把二阶段标志置上之后才 rollMove，而防御姿态那条 case 之后的 rollMove 会读到
+  //   刚 +1 的已用次数（`miscInfo & 0x3`）。
+  "champ/anger": (bc, m) => {
+    rollMove(bc, m); // ★ 消耗一次 aiRng（同步的真 rollMove）
+  },
+  "champ/champ_defend": (bc, m) => {
+    rollMove(bc, m); // ★ 消耗一次 aiRng（同步的真 rollMove）
+  },
+  "champ/gloat": (bc, m) => {
+    rollMove(bc, m); // ★ 消耗一次 aiRng（同步的真 rollMove）
+  },
+  "champ/taunt": (bc, m) => {
+    rollMove(bc, m); // ★ 消耗一次 aiRng（同步的真 rollMove）
+  },
+
+  // 收藏家四条 case 的收尾**全是**入队的 `addToBot(Actions::RollMove(idx))`
+  //（MonsterSpecific.cpp:1322 / :1328 / :1336 / :1340），也就是这张表的默认值，不写进来。
+  // ⚠ 召唤那条是 `addToBot(SpawnTorchHeads()); addToBot(RollMove(idx));` 两条紧挨着入队
+  //   ——所以下一次 `getMoveForRoll` 必然看到**已经填满的** `monstersAlive == 3`，
+  //   于是它的 `canUseSpawn` 恒假，`!lastMove(SPAWN)` 那一半在这条路上永远用不上
+  //   （与第二十七批地精首领的集结同构，那边两个 `lastMove(RALLY)` 分支整支是死代码）。
+  //   ⚠ 差别在于收藏家这条的 `monstersAlive < 3` 之后**还会**再有机会为真（火炬头被打死），
+  //   所以召唤本身不是死代码，只有「刚召唤过」那一半的**独立作用**量不出来。
+
+  // 火炬头的冲撞：整条 case 就是 `attackPlayerHelper(bc, 7);` + `break`
+  //（MonsterSpecific.cpp:1388-1390）——**什么收尾都没有**，第四形态。
+  // ⚠ 于是它一辈子只出这一招、召唤之后再也不碰 aiRng。写成 `"no_op_roll"` 会让每个
+  //   火炬头每回合多掷一次 `aiRng.random(99)`，`rng.ai` 计数器当场对不上。
+  // ⚠ 参考的 `getMoveForRoll` 对它返回 `INVALID`（见 `MOVE_RULES.torch_head`），
+  //   所以写成 `"roll"` 不只是多掷一次，还会把意图打成一个不存在的招式。
+  "torch_head/torch_tackle": "none",
 };
 
 /**
@@ -2371,6 +2542,54 @@ function getMonsterTurnNumber(bc: BattleContext): number {
 // ============================================================================
 
 /**
+ * 掷一只怪的初始血量（对齐 `Monster::initHp`，MonsterSpecific.cpp:26-128）。
+ *
+ * ⚠ 单独拆成函数是因为参考里有**第二个调用点**：`Actions::SpawnTorchHeads` 在
+ * `construct`（内部已经跑过一次 `initHp`）之后**又显式调了一次**
+ * （Actions.cpp:513，参考在那行注着 `// bug somewhere in game`）。所以一只火炬头
+ * 消耗 **2 次** monsterHpRng、保留**第二次**的取值。见 `summonTorchHeads`。
+ * ⚠ 它与 `hpDiscardRoll` 不是一族：那一族的白掷在本函数**内部**、恒用低档区间，
+ *   而火炬头是整个 `initHp` 跑两遍（asc>=9 时两次都用高档区间）。
+ *
+ * 三种掷法都在这里：
+ *  ① 普通：一次 `setRandomHp` → 一次 monsterHpRng；
+ *  ② `hpNoRoll`：`curHp = monsterHpRange[id][0][0]`，**一次都不掷**；
+ *  ③ `hpDiscardRoll`：先白掷一次（结果丢弃）再正常掷 → 两次。
+ */
+function initMonsterHp(bc: BattleContext, defId: string): number {
+  const def = getEnemyDef(defId);
+  // 血量区间的第二组（对齐 `setRandomHp(hpRng, ascension >= N)`）。
+  // ⚠ 阈值 N **逐怪不同**（普通 7 / 精英 8 / Boss 9），所以它写在数据表里跟着区间走，
+  //   这里不猜。⚠ 火炬头是个「随从却走 Boss 档（asc>=9）」的反例，见它的数据表注释。
+  // ⚠ 无论走哪一组都**只掷一次** monsterHpRng——`setRandomHp` 只有一句 `hpRng.random(a,b)`，
+  //   换组不改 RNG 消耗次数，只改上下界。
+  const range =
+    def.hpHigh !== undefined && bc.ascension >= def.hpHigh.atLeast
+      ? { min: def.hpHigh.hpMin, max: def.hpHigh.hpMax }
+      : { min: def.hpMin, max: def.hpMax };
+  // ⚠⚠ 第三种掷法：**先白掷一次、结果丢弃，再正常掷**（第二十七批的工头）。
+  //   `Monster::initHp` 里有一族 case 长这样（`MonsterSpecific.cpp:33-36 / :105-117`）：
+  //       hpRng.random(54, 60);                 // 参考在 ORB_WALKER 那条注了
+  //       setRandomHp(hpRng, ascension >= 8);   // "first call is discarded by game"
+  //   所以一次建怪消耗 **2 次** monsterHpRng。⚠ 白掷那次的**上下界要单独写**
+  //   （见 `hpDiscardRoll`）：工头两组恰好相同，青铜球却是 `(52,58)` 对 `{52,58}`/`{54,60}`。
+  //   漏掉这一次不会静默——`rng.hp` 计数器当场对不上。
+  if (def.hpDiscardRoll !== undefined) {
+    bc.rng.monsterHpRng.random(def.hpDiscardRoll.min, def.hpDiscardRoll.max); // ★ 消耗一次 monsterHpRng，取值丢弃
+  }
+  // ⚠⚠ 少数怪**一次 monsterHpRng 都不掷**（第二十三批的球状守卫者，以及尚未登记的
+  //   THE_MAW / TRANSIENT）：`Monster::initHp` 给它们的是
+  //   `curHp = monsterHpRange[id][0][0]`，连 `setRandomHp` 都不调（MonsterSpecific.cpp:119-124）。
+  //   这与「上下界相同」**不是一回事**——守卫者的 `{240,240}` 照样掷一次
+  //   （`Random::random(int,int)` 无条件 `++counter`）。把这一条写成普通掷法会让此后
+  //   每一次 monsterHpRng 取值整体错位，`rng.hp` 计数器当场对不上。
+  if (def.hpNoRoll === true) {
+    return range.min;
+  }
+  return bc.rng.monsterHpRng.random(range.min, range.max); // ★ 消耗一次 monsterHpRng
+}
+
+/**
  * 只**造**一只怪，不入场（对齐 `Monster::construct`，Monster.cpp:107）。
  *
  * 拆出来是因为 `createWeakWildlife` / `createStrongHumanoid` 那类编队会把候选
@@ -2389,32 +2608,7 @@ function constructMonster(bc: BattleContext, defId: string): CombatMonster {
       `sts-combat: 敌人「${defId}」的爬升度分档尚未按预言机校准，无法在 ascension=${String(bc.ascension)} 下开战`,
     );
   }
-  // 血量区间的第二组（对齐 `Monster::initHp` → `setRandomHp(hpRng, ascension >= N)`，
-  // MonsterSpecific.cpp:26-128）。⚠ 阈值 N **逐怪不同**（普通 7 / 精英 8 / Boss 9），
-  // 所以它写在数据表里跟着区间走，这里不猜。
-  // ⚠ 无论走哪一组都**只掷一次** monsterHpRng——`setRandomHp` 只有一句 `hpRng.random(a,b)`，
-  //   换组不改 RNG 消耗次数，只改上下界。
-  const range =
-    def.hpHigh !== undefined && bc.ascension >= def.hpHigh.atLeast
-      ? { min: def.hpHigh.hpMin, max: def.hpHigh.hpMax }
-      : { min: def.hpMin, max: def.hpMax };
-  // ⚠⚠ 少数怪**一次 monsterHpRng 都不掷**（第二十三批的球状守卫者，以及尚未登记的
-  //   THE_MAW / TRANSIENT）：`Monster::initHp` 给它们的是
-  //   `curHp = monsterHpRange[id][0][0]`，连 `setRandomHp` 都不调（MonsterSpecific.cpp:119-124）。
-  //   这与「上下界相同」**不是一回事**——守卫者的 `{240,240}` 照样掷一次
-  //   （`Random::random(int,int)` 无条件 `++counter`）。把这一条写成普通掷法会让此后
-  //   每一次 monsterHpRng 取值整体错位，`rng.hp` 计数器当场对不上。
-  // ⚠⚠ 第三种掷法：**先白掷一次、结果丢弃，再正常掷**（第二十七批的工头）。
-  //   `Monster::initHp` 里有一族 case 长这样（`MonsterSpecific.cpp:33-36 / :105-117`）：
-  //       hpRng.random(54, 60);                 // 参考在 ORB_WALKER 那条注了
-  //       setRandomHp(hpRng, ascension >= 8);   // "first call is discarded by game"
-  //   所以一次建怪消耗 **2 次** monsterHpRng。⚠ 白掷那次的**上下界要单独写**
-  //   （见 `hpDiscardRoll`）：工头两组恰好相同，青铜球却是 `(52,58)` 对 `{50,56}`/`{54,60}`。
-  //   漏掉这一次不会静默——`rng.hp` 计数器当场对不上。
-  if (def.hpDiscardRoll !== undefined) {
-    bc.rng.monsterHpRng.random(def.hpDiscardRoll.min, def.hpDiscardRoll.max); // ★ 消耗一次 monsterHpRng，取值丢弃
-  }
-  const hp = def.hpNoRoll === true ? range.min : bc.rng.monsterHpRng.random(range.min, range.max); // ★ 掷法二选一：hpNoRoll 时**不**消耗 monsterHpRng
+  const hp = initMonsterHp(bc, defId);
   const m: CombatMonster = {
     defId,
     hp,
@@ -2772,6 +2966,75 @@ function spawnBronzeOrbs(bc: BattleContext): void {
   bc.monstersAlive += 2;
   // ⑨ 游标推一格：2 号位那颗球本回合不行动。
   bc.monsterTurnIdx += 1;
+}
+
+/**
+ * 收藏家的召唤（对齐 `Actions::SpawnTorchHeads`，Actions.cpp:500-527）。
+ *
+ * 本项目**第三条召唤路径**。前两条（地精首领的 `Actions::SummonGremlins`、青铜自动机的
+ * `Monster::spawnBronzeOrbs`）在第二十八批已经并排比过、**八处形状全不同**；这一条与那
+ * 两条**同样一处都不共用**。逐条照抄的点：
+ *
+ *  ①⚠⚠ **召几只是算出来的**：`spawnCount = 3 - bc.monsters.monstersAlive`。
+ *     这是**全参考项目唯一**按 `monstersAlive` 决定召唤数量的地方，于是它顺带成了
+ *     「预留空位不算活怪」这件事的预言机——`ENCOUNTER_BUILDERS.collector` 建完是
+ *     `monsterCount = 3 / monstersAlive = 1`，所以开局那次召 **2** 只；若把两个空格
+ *     算成活的（3），开局就一只都不召。第二十七批留下的那条盲区在这里关门。
+ *     ⚠ 参考在这里只有一句 `assert(spawnCount > 0)`（release 版不检查）。调用点是
+ *     出招规则里的 `monstersAlive < 3` 那道门 + 首回合恒召，所以 <= 0 走不到；
+ *     我们照抄「循环 spawnCount 次」，自然对 <= 0 是空操作。
+ *  ②⚠ **落位表写死**：`const int spawnIdxs[2] {(arr[1].isDying() ? 1 : 0), 0};`
+ *     ——第一个是「1 号位空着就填 1、否则填 0」，第二个**恒是 0**。
+ *     既不是地精那套「按 1,2,0 顺序搜索」，也不是青铜球那种「写死 0 与 2」。
+ *     ⚠ 表在循环**之前**一次算好（C++ 的数组初始化），所以第一只填进 1 号位之后，
+ *       第二只的下标仍然读的是那份旧快照里的 0——不会因为「1 号位现在活了」而改。
+ *  ③⚠ 门是 `isDying()` = **血 <= 0**（空格血 0 也算），与地精那条同族。
+ *  ④ **`torchHead = Monster()` 整只重建**（地精那条有、青铜球那条没有）。
+ *  ⑤⚠⚠ **`construct` 之后又显式 `initHp` 一次**（`:513`，参考注着 `// bug somewhere
+ *     in game`）→ 每只 **2 次 monsterHpRng**、**保留第二次**的取值。见 `initMonsterHp`。
+ *  ⑥ `buff<MS::MINION>()`，排在 setMove 之后。
+ *  ⑦⚠⚠ **意图靠 `setMove(TORCH_HEAD_TACKLE)`，不是 `rollMove`**——所以召唤本身
+ *     **一次 aiRng 都不掷**（前两条召唤都是每只一次 rollMove）。参考的
+ *     `getMoveForRoll` 对 `TORCH_HEAD` 落在 `default` 上（MonsterSpecific.cpp:3364）。
+ *  ⑧ `++monstersAlive` 在**循环里**（每召一只加一次），不是末尾一次 `+= 2`。
+ *  ⑨⚠⚠ **aiRng 在末尾按只数统一还**：`for (i < spawnCount) bc.noOpRollMove();`
+ *     ——掷 `spawnCount` 次 `aiRng.random(99)` 全部丢掉。次数与召几只**绑定**：
+ *     写成固定 2 次会在「只死了一只」的那些回合把 `rng.ai` 计数器错位。
+ *  ⑩ **没有 `++monsterTurnIdx`**（青铜球那条有）：收藏家在**最后一格**（2 号位），
+ *     新召的两只本回合本来就轮不到，参考因此不需要推游标。
+ *  ⑪ `monsterCount`（= 我们的数组长度）一动不动，与前两条相同。
+ */
+function summonTorchHeads(bc: BattleContext): void {
+  // ① 召几只由 monstersAlive 决定。
+  const spawnCount = 3 - bc.monstersAlive;
+  // ② 落位表在循环之前一次算好，第二格恒是 0。
+  const spawnIdxs = [(bc.monsters[1]?.hp ?? 0) <= 0 ? 1 : 0, 0];
+  for (let i = 0; i < spawnCount; i += 1) {
+    const at = spawnIdxs[i];
+    if (at === undefined) {
+      // 参考的 `spawnIdxs` 只有两格，spawnCount 最多也是 2（3 - 1）。
+      throw new Error(`sts-combat: 召唤火炬头的只数超出参考的落位表: ${String(spawnCount)}`);
+    }
+    // ④⑤ 整只重建 + 两次 monsterHpRng（construct 一次、显式 initHp 一次）。
+    const torchHead = constructMonster(bc, "torch_head"); // ★ 消耗一次 monsterHpRng
+    const rerolled = initMonsterHp(bc, "torch_head"); // ★ 再消耗一次 monsterHpRng（参考的「bug」）
+    torchHead.hp = rerolled;
+    torchHead.maxHp = rerolled;
+    bc.monsters[at] = torchHead;
+    // ⑦ setMove 而不是 rollMove：不掷 aiRng，且会前移 moveHistory（新怪的历史本来是空的）。
+    setMove(torchHead, "torch_tackle");
+    // ⑥ MINION 标记（进怪物快照）。
+    addPower(torchHead.powers, "minion", 1);
+    // TODO(后续PR): 贤者之石（PHILOSOPHERS_STONE）会给召唤出来的每只 +1 力量
+    //   （Actions.cpp:517-519，与两个分裂函数、另两条召唤里那一支同源）。
+    //   harness 的遗物轮换里没有它，写了也没有预言机走到。
+    // ⑧ 每召一只加一次。
+    bc.monstersAlive += 1;
+  }
+  // ⑨ 末尾按只数还 aiRng（noOpRollMove，掷完丢掉）。
+  for (let i = 0; i < spawnCount; i += 1) {
+    bc.rng.aiRng.random(99); // ★ 消耗一次 aiRng，取值丢弃
+  }
 }
 
 // ============================================================================
@@ -3247,6 +3510,30 @@ const ENCOUNTER_BUILDERS: Record<string, EncounterBuilder> = {
     createMonster(bc, "bronze_automaton"); // 1 号位 ★ 消耗一次 monsterHpRng
     bc.monsters.push(emptyMonsterSlot()); // 2 号位：预留（末尾那句 `++monsterCount`）
   },
+
+  // 收藏家（第二十九批）：对齐 MonsterGroup.cpp:198-201。
+  //
+  // ⚠⚠ **「怎么预留空位」的第三种写法**，参考只有两句：
+  //   ```cpp
+  //   monsterCount = 2;                            // ← 游标直接跳到 2
+  //   createMonster(bc, MonsterId::THE_COLLECTOR); // ← 于是它落在 arr[2]，count → 3
+  //   ```
+  //   净效果是「**0 号位与 1 号位都是预留空位**，收藏家在**最后一格**（2 号位），
+  //   `monsterCount = 3`、`monstersAlive = 1`」。那两格正是 `summonTorchHeads` 要填的。
+  // ⚠ 三种预留写法逐个都不同，照抄邻居必错：
+  //   地精首领 —— 建 1/2/3 三格 + **手动赋值** `monstersAlive = 3; monsterCount = 4;`（只留 0 号位）；
+  //   青铜自动机 —— `monsterCount = 1; createMonster(...); ++monsterCount;`（留 0 与 2、宿主在中间）；
+  //   收藏家 —— `monsterCount = 2; createMonster(...);`（留 0 与 1、宿主在最后，**没有**末尾那句 `++`）。
+  // ⚠ 「宿主在最后一格」有可观察面：`doMonsterTurn` 的游标走到 2 时收藏家才行动，
+  //   它排的 `SpawnTorchHeads` 出队时游标已经越过 `monsterCount`——所以新召的两只
+  //   本回合不行动，参考因此**不需要** `++monsterTurnIdx`（青铜自动机那条需要）。
+  // ⚠ 两个空格都不参与 `MonsterGroup::init` 的后两个循环（门是 `arr[i].idx != -1`），
+  //   见 `initCombat` 里那两处的 `EMPTY_MONSTER_SLOT` 跳过条件。
+  collector: (bc) => {
+    bc.monsters.push(emptyMonsterSlot()); // 0 号位：预留
+    bc.monsters.push(emptyMonsterSlot()); // 1 号位：预留（`monsterCount = 2` 跳过的那两格）
+    createMonster(bc, "the_collector"); // 2 号位 ★ 消耗一次 monsterHpRng
+  },
 };
 
 // ============================================================================
@@ -3455,6 +3742,21 @@ const PRE_BATTLE_ACTION: Record<string, PreBattleAction> = {
   bronze_automaton: (_bc, m) => {
     addPower(m.powers, "minion_leader", 1);
     addPower(m.powers, "artifact", 3);
+  },
+
+  // 收藏家（第二十九批，对齐 MonsterSpecific.cpp:272-274）。**只有一句**：
+  //     buff<MS::MINION_LEADER>();
+  //
+  // ⚠ `MINION_LEADER` 的**第三个宿主**（前两个是地精首领与青铜自动机）：它一死当场判胜
+  //   （`Monster::die` 那条 `if (monstersAlive == 0 || hasStatus<MINION_LEADER>())`，
+  //   Monster.cpp:293-297），火炬头还站着也算赢。
+  // ⚠ 与青铜自动机的差别：收藏家**没有** `ARTIFACT`（别照搬邻居）。
+  // ⚠ 火炬头**没有** preBattleAction（`Monster::preBattleAction` 的 switch 里没有它的
+  //   case）——它的 `MINION` 是召唤函数里加的，见 `summonTorchHeads`。
+  // ⚠ 冠军也**没有** preBattleAction（同一个 switch 里没有 `THE_CHAMP`）：它的二阶段
+  //   不靠开局 Power，而是 `getMoveForRoll` 里的 `miscInfo` bit 2，见 `MOVE_RULES.champ`。
+  the_collector: (_bc, m) => {
+    addPower(m.powers, "minion_leader", 1);
   },
 };
 
@@ -3745,6 +4047,18 @@ const MONSTER_ATTACK_MOVES: ReadonlySet<string> = new Set([
   "spheric_guardian/sg_attack_debuff",
   // 工头（`:512`，第二十七批）。它只有这一招，自然在列。
   "taskmaster/scouring_whip",
+  // 火炬头（`:513`，第二十九批）。它只有这一招，自然在列。
+  "torch_head/torch_tackle",
+  // 冠军（`:514-516`，第二十九批）。⚠ **七招里只有三条在**：
+  //   扇脸 / 重斩 / 处决 → 在；防御姿态 / 嘲讽 / 自夸 / 暴怒 → **不在**。
+  //   ⚠ 防御姿态在参考里不算攻击（它只加格挡与金属化），与球状守卫者的「硬化」
+  //   （加格挡**再打人**，因此在列）不是一回事——别按名字猜。
+  "champ/face_slap",
+  "champ/champ_slash",
+  "champ/execute",
+  // 收藏家（`:517`，第二十九批）。⚠ **四招里只有火球在**：
+  //   召唤火炬头 / 增幅 / 巨型削弱都不在。
+  "the_collector/fireball",
   // 守卫者（`:518-521`）
   "the_guardian/fierce_bash",
   "the_guardian/whirlwind",
@@ -9181,6 +9495,40 @@ function takeTurn(bc: BattleContext, m: CombatMonster): string | null {
         }
       }
       addPower(m.powers, power, strGain);
+    } else if (eff.kind === "buff_torch_heads") {
+      // 给**前两格**（火炬头的两个位置）加一个 Power（收藏家的增幅，第二十九批）。
+      // 对齐 MonsterSpecific.cpp:1310-1321 那个 for 循环：
+      //   `const int strAmounts[3] {3,4,5};`
+      //   `for (int i = 0; i < 2; ++i) { auto &torchHead = bc.monsters.arr[i];`
+      //   `    if (!torchHead.isDying()) { torchHead.buff<MS::STRENGTH>(strAmounts[bossDiffIdx]); } }`
+      // ⚠ 三处照抄：
+      //  ① 范围是**写死的 0/1 两格**（收藏家恒在 2 号位，那两格就是火炬头的位置）。
+      //     与地精首领的 `buff_minions` 差一格——那条是 0..2（首领在 3 号位）。
+      //  ② **不给随从加格挡**（`buff_minions` 那条给 `asc3 ? 10 : 6`）。收藏家自己的
+      //     力量与格挡是循环之后的两句独立语句，在数据表里另有两条效果对应。
+      //  ③ 门是 `!isDying()` = **血 > 0**，不是 `alive`——开局那两个空格血 0，天然跳过；
+      //     刚死的火炬头也跳过。全部**同步**，不入队。
+      const { power } = eff;
+      const buffAmount = ascValue(bc, eff.amount, eff.ascAmount);
+      for (let i = 0; i < 2; i += 1) {
+        const torchHead = bc.monsters[i];
+        if (torchHead !== undefined && torchHead.hp > 0) {
+          addPower(torchHead.powers, power, buffAmount);
+        }
+      }
+    } else if (eff.kind === "remove_debuffs") {
+      // 清掉自己身上的减益（冠军的暴怒，第二十九批）。对齐 `Monster::removeDebuffs`
+      //（Monster.cpp:522-535）——**同步**，参考那条 case 里没有任何 addToBot。
+      monsterRemoveDebuffs(m);
+    } else if (eff.kind === "summon_torch_heads") {
+      // 召唤火炬头（收藏家，第二十九批）。参考是 `addToBot(Actions::SpawnTorchHeads())`
+      //（MonsterSpecific.cpp:1339）——**入队**（与地精首领的集结同侧，与青铜自动机的
+      // 同步召唤相反）。所以那几次 monsterHpRng / aiRng 掷在动作**出队执行**的那一刻。
+      // ⚠ 差别可观察：同一回合里排在它前面的动作若打死了某只火炬头，`3 - monstersAlive`
+      //   算出来的只数就会多一只。逐条形状见 `summonTorchHeads`。
+      addToBot(bc, (c) => {
+        summonTorchHeads(c);
+      });
     } else if (eff.kind === "summon_gremlins") {
       // 召唤两只小鬼（地精首领的集结，第二十七批）。参考是
       // `addToBot(Actions::SummonGremlins())`（MonsterSpecific.cpp:731）——**入队**，
@@ -9564,6 +9912,37 @@ function dealDamageToPlayer(bc: BattleContext, amount: number, attackerIdx = -1)
  */
 function monsterHeal(m: CombatMonster, amount: number): void {
   m.hp = Math.min(m.maxHp, m.hp + amount);
+}
+
+/**
+ * 怪物侧的「清掉自己的减益」（对齐 `Monster::removeDebuffs`，Monster.cpp:522-535）。
+ * 第二十九批的冠军的暴怒是它在**战斗内**唯一的读者（另一个调用点是觉醒者的假死，未登记）。
+ *
+ * ⚠ 它**不是「清空所有 Power」**，而是一张写死的名单，两段：
+ *  ①⚠ 力量**只抬负值**：`if (getStatus<STRENGTH>() < 0) setStatus<STRENGTH>(0);`
+ *     ——正的力量原样保留（所以暴怒不会把自己此前累积的力量清掉），而且它走的是
+ *     `setStatus` 而不是 `removeStatus`（力量的 `static_assert` 就禁了后者）。
+ *     ⚠ 我们的 Power 表里「层数 0」与「没有这一条」在快照上是两件事：harness 的
+ *     `monsterStatuses` 跳过 `getStatusInternal(s) == 0` 的项，而力量存在自己的 int 字段里、
+ *     从不进 statusBits——所以抬回 0 就等于「快照里不再出现 STRENGTH」，
+ *     用 `removePower` 表达是逐位一致的。
+ *  ②⚠ `removeStatus<>()` 九条（**整条摘掉**：`removeStatus` 同时清数值与 statusBits，
+ *     Monster.h:495-501）。其中 `BLOCK_RETURN` / `CORPSE_EXPLOSION` 在我们的 `PowerId` 里
+ *     还不存在（束缚之球 / 尸爆都没登记），登记它们时要回来补进这张名单。
+ * ⚠ 名单里**没有**脆弱：参考的 `Monster::removeDebuffs` 只清上面那些，
+ *   而脆弱在怪物身上压根没有对应的 `MonsterStatus`（那是玩家侧的）。照抄，别按直觉补。
+ */
+function monsterRemoveDebuffs(m: CombatMonster): void {
+  // ① 力量只抬负值。
+  if (getPower(m.powers, "strength") < 0) {
+    removePower(m.powers, "strength");
+  }
+  // ② 逐条摘掉（顺序照抄参考，虽然彼此独立）。
+  // TODO(后续PR): `block_return`（束缚之球）与 `corpse_explosion`（尸爆）还没有 PowerId，
+  //   登记那两张牌时补进来。
+  for (const id of ["choked", "lock_on", "mark", "poison", "shackled", "vulnerable", "weak"]) {
+    removePower(m.powers, id);
+  }
 }
 
 /**
@@ -10001,6 +10380,14 @@ export const SUPPORTED_ENCOUNTERS: readonly string[] = [
   //   ⚠ 同样**只有 asc0 的背书**（三只新怪的 `ascCalibrated` 都没置）。
   "book_of_stabbing",
   "automaton",
+  // —— 第二十九批：第二幕最后两个 Boss（**第二幕 19 / 19 收官**）。走 harness 新追加的
+  //   variant 29，牌组同样是 `BATCH_1 + SPOT_WEAKNESS`。
+  //   ⚠ `collector` 是**编队** id（对齐 `MonsterEncounter::COLLECTOR`），它建的**怪**
+  //     才叫 `the_collector`；0 号位与 1 号位都是预留空位、收藏家在**2 号位**
+  //     （`monsterCount = 3` / `monstersAlive = 1`），由 `summonTorchHeads` 往里填。
+  //   ⚠ 同样**只有 asc0 的背书**（冠军 / 收藏家 / 火炬头的 `ascCalibrated` 都没置）。
+  "champ",
+  "collector",
 ];
 
 export function isEncounterSupported(encounterId: string): boolean {
