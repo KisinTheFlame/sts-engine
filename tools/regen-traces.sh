@@ -162,13 +162,37 @@ ENC_ALL="cultist jaw_worm jaw_worm_horde three_louse two_louse"
 #     （`getTriIdx(asc,9,19)` 与 `bossDiffIdx(4,19)`）在 19 下同解、分不开。
 #   ⚠ 「阈值恰好是 N」与「三档里的中间那一档」仍是盲区，关门条件是**跨两幕的 asc7 + asc16**
 #     那一批（见 TODOS），不在本批范围内。
+# 第三十一批：**目标策略**这条轴（`@tgt1` = harness 打「下标最大的活怪」，与历来的
+#   `firstAliveMonster` 正好相反）。走**新追加的第三个乘积** `emitProduct(tgtVariants,
+#   tgtEncounters)`，里面只有 variant 31，牌组沿用 `BATCH_1 + SPOT_WEAKNESS`、40 个种子、
+#   **爬升度 0**（两条轴不叠加，叠加是以后的事）。
+#   ⚠⚠ **为什么必须是第三个乘积、而不是往 `variants` 里追加一个 variant**：第一幕那个乘积
+#     跑在最前面，`traceIdx` 是按引用捕获的——往它里面加 variant 会平移第二幕乘积发出的
+#     每一个下标，38 个第二幕文件全部作废。第二十二批当年能往 `variants` 里追加，只因为
+#     那时第一幕**还是最后一个**乘积。**推论：从此往 `variants` / `act2Variants` 里追加
+#     variant 都不再是免费的**，新轴一律另开乘积挂到最后。
+#   ⚠ **只覆盖多怪编队**（第一幕 11 个 + 第二幕 12 个 = 23 个）。单怪编队下
+#     `lastAliveMonster` 与 `firstAliveMonster` 用的是同一个谓词、同一个兜底，取到的是同一只
+#     → trace 会与已提交的 asc0 那份逐字节相同，纯属白占体积。筛掉的 16 个见 TODOS。
+#     ⚠ 「多怪」的判据是**「场上会不会同时有两只可选目标」**，不是「开局有几只」：
+#     `large_slime` / `slime_boss`（分裂）、`automaton`（青铜球）、`collector`（火炬头）
+#     开局都是一只，但它们正是这条轴要的局面，必须算进来。
+#   ⚠ 这 23 个文件的 variant 指纹与已提交那些**只差 `targetPolicy` 这一维**（牌组与爬升度
+#     完全相同），所以它的 `encounters` **允许**与 variant 21~30 重叠——分组键带 `@tgt1`
+#     后缀，行落进 23 个**新**文件。同理，以后要是有人拿这副牌组再开一个
+#     **asc0 + tgt0** 的 variant，那就会撞号。
 ENC_V0_ACT2="spheric_guardian chosen snake_plant three_byrds two_thieves chosen_and_byrds shell_parasite shelled_parasite_and_fungi snecko centurion_and_healer three_cultist cultist_and_chosen sentry_and_sphere gremlin_leader slavers book_of_stabbing automaton champ collector"
 ENC_V0_ACT2_ASC19="spheric_guardian@asc19 chosen@asc19 snake_plant@asc19 three_byrds@asc19 two_thieves@asc19 chosen_and_byrds@asc19 shell_parasite@asc19 shelled_parasite_and_fungi@asc19 snecko@asc19 centurion_and_healer@asc19 three_cultist@asc19 cultist_and_chosen@asc19 sentry_and_sphere@asc19 gremlin_leader@asc19 slavers@asc19 book_of_stabbing@asc19 automaton@asc19 champ@asc19 collector@asc19"
 ENC_V0_ASC0="small_slimes lots_of_slimes large_slime blue_slaver red_slaver looter exordium_thugs exordium_wildlife gremlin_gang gremlin_nob lagavulin three_sentries the_guardian slime_boss hexaghost $ENC_V0_ACT2"
+ENC_V0_TGT1="jaw_worm_horde@tgt1 two_louse@tgt1 three_louse@tgt1 small_slimes@tgt1 lots_of_slimes@tgt1 large_slime@tgt1 gremlin_gang@tgt1 exordium_thugs@tgt1 exordium_wildlife@tgt1 three_sentries@tgt1 slime_boss@tgt1 three_byrds@tgt1 two_thieves@tgt1 chosen_and_byrds@tgt1 sentry_and_sphere@tgt1 cultist_and_chosen@tgt1 three_cultist@tgt1 shelled_parasite_and_fungi@tgt1 centurion_and_healer@tgt1 gremlin_leader@tgt1 slavers@tgt1 automaton@tgt1 collector@tgt1"
 ENC_V0_ASC19="cultist@asc19 jaw_worm@asc19 jaw_worm_horde@asc19 two_louse@asc19 three_louse@asc19 small_slimes@asc19 lots_of_slimes@asc19 large_slime@asc19 blue_slaver@asc19 red_slaver@asc19 looter@asc19 exordium_thugs@asc19 exordium_wildlife@asc19 gremlin_gang@asc19 gremlin_nob@asc19 lagavulin@asc19 three_sentries@asc19 the_guardian@asc19 slime_boss@asc19 hexaghost@asc19 $ENC_V0_ACT2_ASC19"
 # ⚠ 必须拼成**单行**：policy_of 用 `case " $ENC_V0 " in *" $1 "*` 做匹配，中间夹一个换行会让
-#   两段接缝处的名字（hexaghost / cultist@asc19）匹配不上，静默失去校验。
-ENC_V0="$ENC_V0_ASC0 $ENC_V0_ASC19"
+#   两段接缝处的名字（hexaghost / cultist@asc19 / collector@asc19 / jaw_worm_horde@tgt1）
+#   匹配不上，静默失去校验。
+# ⚠ `jaw_worm_horde@tgt1` / `two_louse@tgt1` / `three_louse@tgt1` 的**基名**在 `ENC_ALL` 里，
+#   但 `policy_of` 是**全名精确匹配**（带后缀的名字不在 `ENC_ALL` 里），所以它们照旧走
+#   variant0 策略 = 整份冻结。这正是我们要的：这些文件里只有 variant 31 一个 variant。
+ENC_V0="$ENC_V0_ASC0 $ENC_V0_ASC19 $ENC_V0_TGT1"
 
 policy_of() {
   case " $ENC_ALL " in *" $1 "*) echo all; return;; esac

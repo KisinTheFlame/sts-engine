@@ -694,10 +694,17 @@ describe("接线：覆盖面登记与 trace 数据双向对齐", () => {
       ...new Set(
         readdirSync(traceDir)
           .filter((f) => f.endsWith(".jsonl"))
-          // `<编队>@ascN.jsonl` 是同一个编队在另一个爬升度上的数据（第二十一批），
-          // 不是新编队——去掉后缀再去重，否则这条对齐会把 `cultist@asc19` 当成
-          // 一个没登记的编队。
-          .map((f) => f.replace(/\.jsonl$/, "").replace(/@asc\d+$/, "")),
+          // `<编队>@ascN` / `<编队>@tgtN` 是同一个编队在另一个**爬升度**（第二十一批）
+          // 或另一个**目标策略**（第三十一批）上的数据，不是新编队——把后缀全部剥掉再去重，
+          // 否则这条对齐会把 `cultist@asc19` / `centurion_and_healer@tgt1` 当成没登记的编队。
+          // ⚠ 顺序与 `tools/split-traces.mjs` 的拼接顺序一致（先 asc 后 tgt），
+          //   所以从右往左剥：先 `@tgtN` 再 `@ascN`。
+          .map((f) =>
+            f
+              .replace(/\.jsonl$/, "")
+              .replace(/@tgt\d+$/, "")
+              .replace(/@asc\d+$/, ""),
+          ),
       ),
     ].sort();
     // 多列（登记了却没 trace 背书）与漏列（有 trace 却不启用）都会在这里失败。
