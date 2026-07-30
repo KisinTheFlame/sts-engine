@@ -1574,6 +1574,84 @@ const MOVE_RULES: Record<string, MoveForRoll> = {
   //   工头的收尾是**同步的 `noOpRollMove`**（掷完丢掉、不改意图），所以这条规则也只在
   //   开局的 `MonsterGroup::init` 里跑一次——但两者的 aiRng 消耗次数完全不同，见 MOVE_TURN_END。
   taskmaster: () => "scouring_whip",
+
+  // —— 第二十八批 ——
+  //
+  // 突刺之书：对齐 MonsterSpecific.cpp:2295-2319 BOOK_OF_STABBING。
+  //
+  // ⚠⚠ **这条规则会改 `miscInfo`（乱刺的段数），是本项目第三个「出招规则写状态」的例子**
+  //   （前两个是地精巫师的蓄力位、带壳寄生虫那次被短路的 roll2）。参考把它绑成了引用：
+  //   `auto &stabCount = monsterData;`——而 `monsterData` 就是 `Monster::rollMove` 拷出去
+  //   再写回的那份 `miscInfo`（Monster.cpp:629-635）。所以直接改 `m.miscInfo` 等价。
+  //   ⚠ 计数**只在发出乱刺的那两支**加一，发重刺的两支不加（asc18 那两句是死代码，见下）。
+  //     于是段数 = 「开局的 1」+「此前发过几次乱刺」，整场单调递增、永不清零。
+  //
+  // ⚠ 三处阈值/门照抄：
+  //  ① 唯一的阈值是 `roll < 15`，进门之后**不看 roll**、只看「上一招是不是重刺」：
+  //     刚重刺过 → 乱刺（并 +1）；否则 → 重刺。
+  //  ② 第二段是 `lastTwoMoves(MULTI_STAB)`（连着两次乱刺）→ 强制重刺。
+  //  ③ 兜底是乱刺（并 +1）。所以重刺**只有两条**产生路径，乱刺是常态。
+  //
+  // ⚠⚠ **参考在这里有两处死代码，本批不转写、也不打补丁**（写进报告）：
+  //     `return (MMID::BOOK_OF_STABBING_SINGLE_STAB); if (asc18) { ++stabCount; }`
+  //   （`:2304-2307` 与 `:2310-2313`）——`if` 排在 `return` **之后**，永远执行不到。
+  //   两条都在「本次发重刺」的支上，即「asc18 时发重刺也算一段」。判据三条都不过：
+  //   ① 当前内容集合里 asc>0 压根开不了战（`ascCalibrated` 没置），产生不了分歧；
+  //   ② 因此也没有预言机；③ 行为不唯一确定——真实游戏 `BookOfStabbing.getMove` 里**没有**
+  //   任何 ascension 相关的 stabCount 自增，所以「补上它」与「删掉它」是两种不同的行为，
+  //   参考自己答不了。**照抄参考的实际行为（= 不加）**，如实记进 TODOS 待裁定。
+  book_of_stabbing: (_bc, m, roll) => {
+    if (roll < 15) {
+      if (lastMove(m, "big_stab")) {
+        m.miscInfo += 1; // ★ 段数 +1（参考的 `++stabCount`，走引用写回 miscInfo）
+        return "multi_stab";
+      }
+      // ⚠ 参考在这里的 `if (asc18) ++stabCount;` 排在 return 之后 = 死代码，故不转写。
+      return "big_stab";
+    }
+    if (lastTwoMoves(m, "multi_stab")) {
+      // ⚠ 同上，这一支的 `if (asc18) ++stabCount;` 也在 return 之后。
+      return "big_stab";
+    }
+    m.miscInfo += 1; // ★ 段数 +1
+    return "multi_stab";
+  },
+
+  // 青铜自动机：对齐 MonsterSpecific.cpp:2101-2104 BRONZE_AUTOMATON——**无条件**返回召唤，
+  // roll 照掷、结果丢弃。
+  // ⚠ 与球状守卫者 / 六火幽魂 / 守卫者同形：五条 case 的收尾全是「同步 setMove + 同步
+  //   noOpRollMove」，一次真正的 RollMove 都不排，所以整场只调用它一次。
+  //   照抄成「第二次被调用就抛错」——真被第二次调用说明我们哪条收尾抄错了。
+  bronze_automaton: (_bc, m) => {
+    if (!firstTurn(m)) {
+      throw new Error("sts-combat: bronze_automaton 的 getMoveForRoll 只应在开局被调用一次");
+    }
+    return "spawn_orbs";
+  },
+
+  // 青铜球：对齐 MonsterSpecific.cpp:2106-2124 BRONZE_ORB。**不追加任何 aiRng。**
+  // ⚠ 四处照抄：
+  //  ① 第一支的门是 `!haveUsedStasis && roll >= 25`，其中 `haveUsedStasis` 读的是
+  //     **`miscInfo`**（不是那个引用形参，参考写的是裸的成员）。它由停滞那条 case 的收尾
+  //     `miscInfo = 1` 置上，所以**一颗球整场只放一次停滞**。
+  //     ⚠ 阈值方向是 `>=`：召唤出来时那次 rollMove 有 75% 概率直接出停滞。
+  //  ② 第二支 `roll >= 70 && !lastTwoMoves(SUPPORT_BEAM)` → 支援光束；
+  //  ③ 第三支 `!lastTwoMoves(BEAM)` → 光束；
+  //  ④ 兜底又是支援光束——**所以支援光束能连出三次以上**（第二支被连续限制挡住时，
+  //     若光束也连了两次就落到兜底）。照抄，别按「每招都该有上限」的直觉补。
+  bronze_orb: (_bc, m, roll) => {
+    const haveUsedStasis = m.miscInfo;
+    if (!haveUsedStasis && roll >= 25) {
+      return "stasis";
+    }
+    if (roll >= 70 && !lastTwoMoves(m, "orb_support")) {
+      return "orb_support";
+    }
+    if (!lastTwoMoves(m, "orb_beam")) {
+      return "orb_beam";
+    }
+    return "orb_support";
+  },
 };
 
 // ============================================================================
@@ -2127,6 +2205,79 @@ const MOVE_TURN_END: Record<string, MoveTurnEnd> = {
   "taskmaster/scouring_whip": (bc) => {
     bc.rng.aiRng.random(99); // ★ 消耗一次 aiRng（noOpRollMove，**同步**，意图不变）
   },
+
+  // —— 第二十八批 ——
+  //
+  // 突刺之书两条 case 的收尾都是**裸的 `addToBot(Actions::RollMove(idx))`**
+  //（MonsterSpecific.cpp:459 / :464），也就是这张表的默认值 `"roll"`，不写进来。
+  //
+  // —— 青铜自动机（第二十八批）：五条 case 的收尾**逐字同形**，与球状守卫者同族 ——
+  //
+  //     setMove(下一招);        // 同步，快照里意图当场就变
+  //     bc.noOpRollMove();      // **同步**（不是 addToBot(NoOpRollMove())），照掷一次 aiRng
+  //
+  // （MonsterSpecific.cpp:471-511，五条 case 各两句。）所以全是第五形态（任意函数）。
+  // ⚠ 于是这只 300 血的 Boss 的意图序列**完全钉死、一次 roll 都不看**：
+  //     召唤 → 连枷 → 增益 → 连枷 → 增益 → 超射线 → 眩晕 → 连枷 → 增益 → 连枷 → 增益 → 超射线 → …
+  //   而 `rng.ai` 每个怪物回合恰好 +1（开局那次 rollMove 也 +1）。次数抄错当场落在计数器上。
+  //
+  // ⚠⚠ 分岔靠 **`miscInfo`**，参考在增益那条 case 里把它绑成
+  //   `auto &lastBoostWasFlail = miscInfo;`（`:474`）——**这是 `miscInfo` 的第 N 种含义**。
+  //   到本批为止同一个字段同时是：虱子的咬击伤害、红奴隶主的 `usedEntangle`、地精巫师的
+  //   蓄力位、守卫者的模式切换阈值、六火幽魂的每击伤害（`deal_damage_rolled`）、
+  //   **突刺之书的乱刺段数**、**青铜球的「已用过停滞」**、**青铜自动机的「上次增益之后出的是
+  //   连枷吗」**。八种含义、一个字段——这正是参考的形状（Monster.h:66-81 那串注释），
+  //   所以不要按用途拆字段（第十六批已经把拆开的那次改回来过一遍）。
+  //
+  // ⚠ 增益那条的**顺序**照抄：先判 `lastBoostWasFlail`、再翻转它、再 setMove、最后 noOpRollMove。
+  //   翻转与 setMove 在参考里是同一个 if/else 的两句（`:475-481`）。
+  "bronze_automaton/boost": (bc, m) => {
+    if (m.miscInfo) {
+      setMove(m, "hyperbeam");
+      m.miscInfo = 0;
+    } else {
+      setMove(m, "flail");
+      m.miscInfo = 1;
+    }
+    bc.rng.aiRng.random(99); // ★ 消耗一次 aiRng（noOpRollMove，同步）
+  },
+  "bronze_automaton/flail": (bc, m) => {
+    setMove(m, "boost");
+    bc.rng.aiRng.random(99); // ★ 消耗一次 aiRng（noOpRollMove，同步）
+  },
+  // 超射线：⚠ asc19 **不进眩晕**，直接回增益（MonsterSpecific.cpp:494-498）。
+  //   当前 trace 全是 asc0，那一支走不到但照抄（与地精巫师 asc17 那条同族）。
+  "bronze_automaton/hyperbeam": (bc, m) => {
+    setMove(m, bc.ascension >= 19 ? "boost" : "stunned");
+    bc.rng.aiRng.random(99); // ★ 消耗一次 aiRng（noOpRollMove，同步）
+  },
+  "bronze_automaton/spawn_orbs": (bc, m) => {
+    setMove(m, "flail");
+    bc.rng.aiRng.random(99); // ★ 消耗一次 aiRng（noOpRollMove，同步）
+  },
+  // 眩晕：整条 case 就这两句，一个效果都没有（MonsterSpecific.cpp:508-511）。
+  "bronze_automaton/stunned": (bc, m) => {
+    setMove(m, "flail");
+    bc.rng.aiRng.random(99); // ★ 消耗一次 aiRng（noOpRollMove，同步）
+  },
+
+  // —— 青铜球（第二十八批）：三条 case 的收尾**三种形态各占一条** ——
+  //
+  // 光束   `addToBot(Actions::RollMove(idx))`（MonsterSpecific.cpp:515）→ 默认值，不写进来。
+  // 停滞   `miscInfo = 1; rollMove(bc);`（`:520-521`）——**同步的真 rollMove**。
+  // 支援   `rollMove(bc);`（`:526`）——同样是**同步的真 rollMove**。
+  //
+  // ⚠ 「同步的真 rollMove」与 `no_op_roll` 的差别：它**真的滚一个新意图**并前移 moveHistory，
+  //   所以下一回合出什么当场就定了、且能被 `lastTwoMoves` 看见。与秘法师那三条同族。
+  // ⚠ 停滞那条的两句**顺序可观察**：`miscInfo = 1` 必须排在 `rollMove` **之前**，
+  //   否则紧接着的 `getMoveForRoll` 会读到 `haveUsedStasis == 0`、有 75% 概率再出一次停滞。
+  "bronze_orb/stasis": (bc, m) => {
+    m.miscInfo = 1; // ★ 「已经用过停滞」——必须在 rollMove 之前置上
+    rollMove(bc, m); // ★ 消耗一次 aiRng（同步的真 rollMove）
+  },
+  "bronze_orb/orb_support": (bc, m) => {
+    rollMove(bc, m); // ★ 消耗一次 aiRng（同步的真 rollMove）
+  },
 };
 
 /**
@@ -2568,6 +2719,323 @@ function summonGremlins(bc: BattleContext): void {
 }
 
 /**
+ * 青铜自动机的召唤（对齐 `Monster::spawnBronzeOrbs`，MonsterSpecific.cpp:3443-3464）。
+ *
+ * 本项目**第二个「凭空加怪」的宿主**，而它与第二十七批的 `summonGremlins`
+ * **不共用任何代码，也不该共用**——参考那边是一个 `Action`、这边是 `takeTurn` 里的一个
+ * 成员函数，五处形状都不同。逐条照抄的点：
+ *
+ *  ①⚠⚠ **它是同步调用**：`case BRONZE_AUTOMATON_SPAWN_ORBS: spawnBronzeOrbs(bc); …`
+ *     （`:502-506`）——没有 `addToBot`。地精首领那条是 `addToBot(Actions::SummonGremlins())`。
+ *     差别可观察：同步意味着两颗球的血量、意图、以及那两次 aiRng / 四次 monsterHpRng
+ *     都掷在**本回合排的动作执行之前**（而召唤这条 case 一个入队效果都没有，
+ *     所以队列本来就空——但顺序仍然照抄，理由见 WORKFLOW 第二十六批那条判据）。
+ *  ②⚠ **落位下标写死 0 与 2**（`auto &orb1 = arr[0]; auto &orb2 = arr[2];`）：
+ *     没有「按 1,2,0 找空位」那套搜索、也**不判 `isDying()`**。1 号位是自动机自己，跳过。
+ *     ⚠ 这与史莱姆王分裂的写死 0/2 形状相同、但那边还要改 `monsterCount` / `monsterTurnIdx`
+ *     的赋值，这边只 `++` 后者。
+ *  ③⚠ **怪种是固定的 `BRONZE_ORB`**，所以**一次 aiRng 都不为「挑种类」而掷**
+ *     （地精那条走 `getGremlin(bc.aiRng)`，两只各一次）。这颗球的 aiRng 只花在 rollMove 上。
+ *  ④⚠ **没有 `= Monster()` 重建**（地精那条有 `gremlin0 = Monster();`）。
+ *     在当前内容集合里等价：那两格从没被构造过（自动机的召唤整场只发生一次，见
+ *     `MOVE_RULES.bronze_automaton` 的「只调用一次」断言），所以格子上没有任何残留。
+ *     我们用「造一个全新实体再赋值」表达，等于「重建 + construct」——比参考更强，但同解。
+ *  ⑤ 每颗球照样走 `construct` → `initHp`，而青铜球带 `hpDiscardRoll`
+ *     （先白掷一次 `(52,58)` 再正式掷）→ **每颗 2 次 monsterHpRng，两颗共 4 次**。
+ *  ⑥ `buff<MS::MINION>()` 两颗都上，排在 construct 之后、rollMove 之前（与地精那条同序）。
+ *  ⑦ 两颗各自 `rollMove`（各一次 aiRng；`MOVE_RULES.bronze_orb` 不追加）。
+ *  ⑧ `monstersAlive += 2`，**`monsterCount` 一动不动**（那两格开局就在数组里）。
+ *     ⚠ 参考把这一句放在两次 rollMove **之后**——而 0 号球的出招规则不读 `monstersAlive`，
+ *     所以当前不可分辨；照抄位置。
+ *  ⑨⚠⚠ **末尾多一句 `++bc.monsterTurnIdx`**（`:3463`）。自动机在 1 号位，本回合的游标就是 1；
+ *     推到 2 之后，`doMonsterTurn` 末尾那次 `++` 把它推到 3 == `monsterCount`，循环结束
+ *     ——于是 **2 号位那颗球本回合不行动**（0 号位那颗本来就已经被游标走过了）。
+ *     我们的主循环把第二次 `+= 1` 放在调用方（对齐参考放在 `doMonsterTurn` 末尾），
+ *     所以这里只做第一次，与 `splitMonster` 同一套写法。
+ */
+function spawnBronzeOrbs(bc: BattleContext): void {
+  // ②⑤ 下标写死、每颗两次 monsterHpRng。参考先 construct 0 号再 construct 2 号。
+  const orb1 = constructMonster(bc, "bronze_orb"); // ★ 2 次 monsterHpRng（白掷 + 正式）
+  bc.monsters[0] = orb1;
+  const orb2 = constructMonster(bc, "bronze_orb"); // ★ 2 次 monsterHpRng
+  bc.monsters[2] = orb2;
+  // ⑥ MINION 标记（进怪物快照）。
+  addPower(orb1.powers, "minion", 1);
+  addPower(orb2.powers, "minion", 1);
+  // TODO(后续PR): 贤者之石（PHILOSOPHERS_STONE）会给召唤出来的两颗各 +1 力量
+  //   （MonsterSpecific.cpp:3454-3457，与两个分裂函数、地精召唤里那一支同源）。
+  //   harness 的遗物轮换里没有它，写了也没有预言机走到。
+  // ⑦ 两颗各自 rollMove，排在 buff 之后。
+  rollMove(bc, orb1); // ★ 消耗一次 aiRng
+  rollMove(bc, orb2); // ★ 消耗一次 aiRng
+  // ⑧ 只动 monstersAlive（排在两次 rollMove 之后，照抄位置）。
+  bc.monstersAlive += 2;
+  // ⑨ 游标推一格：2 号位那颗球本回合不行动。
+  bc.monsterTurnIdx += 1;
+}
+
+// ============================================================================
+// 停滞（对齐 `Monster::stasisAction` / `stasisHelper` / `returnStasisCard`，
+// MonsterSpecific.cpp:3467-3565）。青铜球专用，参考里全项目只有它一个用户。
+// ============================================================================
+
+/**
+ * 参考的**卡牌稀有度**与**排序下标**（`Cards.h` 的 `cardRarities` / `cardSortedIdx`）。
+ *
+ * ⚠⚠ **这张表不能从 `CardDef.rarity` 派生**，这是本批最容易「省掉」的一处：
+ *  * 我们的 `CardDef.rarity` 表达的是「进哪个**奖励池**」（run 层语义），参考的
+ *    `cardRarities` 是游戏里那张**每张牌自带的稀有度**表，两者在 118 张已映射的牌里
+ *    **有 15 张不一致**——状态牌（伤口 / 灼伤 / 恍惚 / 黏液）在参考里是 **COMMON**
+ *    而我们是 `special`，另外 11 张（急躁 / 极限爆发 / 掘尸 / 未雨绸缪 / 鲁莽冲锋 /
+ *    幻影 / 多面手 / 启蒙 / 先见之明 / 施虐本性 / 炸弹）我们比参考低一档。
+ *    拿 `rarity` 顶替会让停滞挑错牌，而且**只在特定牌堆构成下才分岔**（静默错）。
+ *  * 判据与第二十三批的 `isMoveAttack` 白名单同一条：意图表是给渲染用的，
+ *    参考怎么判是另一件事，**两者必须分开存**。
+ *
+ * ⚠ `cardSortedIdx`（`Cards.h:427`）是「按游戏内部卡 id 字符串字典序」的下标——
+ * 与枚举名序**不完全一致**（`A_THOUSAND_CUTS` 是 0、`RUSHDOWN` 的内部 id 是 "Adaptation"
+ * 所以排在 3、`APPARITION` 的内部 id 是 "Ghostly" 所以排在 166）。所以它只能**照抄数值**，
+ * 不能在这边按名字重算。
+ *
+ * ⚠ 表里只列 harness 能真正塞进牌堆的那 118 张（= `test/sts-combat-trace.test.ts` 的 `CARD`
+ * 映射那一份）。查不到就**显式抛错**——与「未登记的卡显式抛错」同一条总纲：停滞挑错一张
+ * 比开不了战危险得多。
+ */
+const STASIS_CARD_INFO: Record<
+  string,
+  readonly [number, "common" | "uncommon" | "rare" | "other"]
+> = {
+  anger: [11, "common"],
+  apotheosis: [12, "rare"],
+  armaments: [13, "common"],
+  ascenders_bane: [14, "other"], // SPECIAL
+  bandage_up: [19, "uncommon"],
+  barricade: [22, "rare"],
+  bash: [23, "other"], // BASIC
+  battle_trance: [24, "uncommon"],
+  berserk: [28, "rare"],
+  bite: [31, "other"], // SPECIAL
+  blind: [34, "uncommon"],
+  blood_for_blood: [36, "uncommon"],
+  bloodletting: [37, "uncommon"],
+  bludgeon: [38, "rare"],
+  body_slam: [40, "common"],
+  brutality: [45, "rare"],
+  burn: [48, "common"], // ⚠ 状态牌在参考里是 COMMON，不是 special
+  burning_pact: [49, "uncommon"],
+  carnage: [54, "uncommon"],
+  chrysalis: [60, "rare"],
+  clash: [61, "common"],
+  cleave: [63, "common"],
+  clothesline: [65, "common"],
+  combust: [69, "uncommon"],
+  corruption: [80, "rare"],
+  dark_embrace: [89, "uncommon"],
+  dark_shackles: [90, "uncommon"],
+  dazed: [93, "common"], // ⚠ 同上
+  deep_breath: [97, "uncommon"],
+  defend: [98, "other"], // BASIC
+  demon_form: [104, "rare"],
+  disarm: [109, "uncommon"],
+  discovery: [110, "uncommon"],
+  double_tap: [116, "rare"],
+  dramatic_entrance: [118, "uncommon"],
+  dropkick: [119, "uncommon"],
+  dual_wield: [120, "uncommon"],
+  enlightenment: [128, "uncommon"],
+  entrench: [129, "uncommon"],
+  evolve: [136, "uncommon"],
+  exhume: [137, "rare"],
+  feed: [144, "rare"],
+  feel_no_pain: [145, "uncommon"],
+  fiend_fire: [146, "rare"],
+  finesse: [147, "uncommon"],
+  fire_breathing: [149, "uncommon"],
+  flame_barrier: [151, "uncommon"],
+  flash_of_steel: [152, "uncommon"],
+  flex: [154, "common"],
+  forethought: [162, "uncommon"],
+  apparition: [166, "other"], // SPECIAL；内部 id 是 "Ghostly"，故排在这里
+  ghostly_armor: [167, "uncommon"],
+  good_instincts: [171, "uncommon"],
+  hand_of_greed: [174, "rare"],
+  havoc: [175, "common"],
+  headbutt: [176, "common"],
+  heavy_blade: [178, "common"],
+  hemokinesis: [181, "uncommon"],
+  immolate: [185, "rare"],
+  impatience: [186, "uncommon"],
+  impervious: [187, "rare"],
+  infernal_blade: [189, "uncommon"],
+  inflame: [191, "uncommon"],
+  intimidate: [195, "uncommon"],
+  iron_wave: [196, "common"],
+  jax: [197, "other"], // SPECIAL
+  jack_of_all_trades: [198, "uncommon"],
+  juggernaut: [200, "rare"],
+  limit_break: [206, "rare"],
+  madness: [211, "uncommon"],
+  magnetism: [212, "rare"],
+  master_of_strategy: [214, "rare"],
+  mayhem: [217, "rare"],
+  metallicize: [221, "uncommon"],
+  metamorphosis: [222, "rare"],
+  mind_blast: [224, "uncommon"],
+  offering: [233, "rare"],
+  panacea: [238, "uncommon"],
+  panache: [239, "rare"],
+  panic_button: [240, "uncommon"],
+  perfected_strike: [243, "common"],
+  pommel_strike: [248, "common"],
+  power_through: [249, "uncommon"],
+  pummel: [256, "uncommon"],
+  purity: [257, "uncommon"],
+  rage: [259, "uncommon"],
+  rampage: [262, "uncommon"],
+  reaper: [264, "rare"],
+  reckless_charge: [267, "uncommon"],
+  rupture: [277, "uncommon"],
+  sadistic_nature: [278, "rare"],
+  searing_blow: [285, "uncommon"],
+  second_wind: [286, "uncommon"],
+  secret_technique: [287, "rare"],
+  secret_weapon: [288, "rare"],
+  seeing_red: [289, "uncommon"],
+  sentinel: [292, "uncommon"],
+  sever_soul: [294, "uncommon"],
+  shockwave: [297, "uncommon"],
+  shrug_it_off: [298, "common"],
+  slimed: [303, "common"], // ⚠ 同上
+  spot_weakness: [306, "uncommon"],
+  strike: [316, "other"], // BASIC（`STRIKE_RED`；四个角色的起始打击共用这一条）
+  swift_strike: [323, "uncommon"],
+  sword_boomerang: [325, "common"],
+  the_bomb: [331, "rare"],
+  thinking_ahead: [332, "rare"],
+  thunderclap: [336, "common"],
+  transmutation: [338, "rare"],
+  trip: [339, "uncommon"],
+  true_grit: [340, "common"],
+  twin_strike: [342, "common"],
+  uppercut: [346, "uncommon"],
+  violence: [351, "rare"],
+  warcry: [354, "common"],
+  whirlwind: [359, "uncommon"],
+  wild_strike: [361, "common"],
+  wound: [366, "common"], // ⚠ 同上
+};
+
+function stasisCardInfo(
+  defId: string,
+): readonly [number, "common" | "uncommon" | "rare" | "other"] {
+  const info = STASIS_CARD_INFO[defId];
+  if (info === undefined) {
+    throw new Error(`sts-combat 停滞：暂未登记卡牌的参考稀有度 / 排序下标: ${defId}`);
+  }
+  return info;
+}
+
+/**
+ * 从一个牌堆里挑出「被停滞扣住」的那一张的下标（对齐 `stasisHelper`，
+ * MonsterSpecific.cpp:3474-3513）。**恰好消耗一次 `cardRandomRng`**（两条路径都是）。
+ *
+ * 逐条照抄：
+ *  ① 先数一遍稀有度，按 **RARE → UNCOMMON → COMMON** 的优先级选一个目标稀有度；
+ *  ② 三种一张都没有（整堆只有 BASIC / SPECIAL / CURSE）→ **直接** `rng.random(n-1)`
+ *     在**整堆**里平均挑，不再过滤。⚠ 这是唯一不看稀有度的一支。
+ *  ③ 否则把该稀有度的牌收成 `{堆内下标, cardSortedIdx}`，按 `cardSortedIdx` **稳定排序**，
+ *     再 `rng.random(size-1)` 取一个，返回它的**堆内下标**。
+ *     ⚠ 排序是必要的：它把「取到第几个」从「牌堆里的物理顺序」换成了「卡 id 的字典序」。
+ * ⚠ 参考的 `idxList` 是 `fixed_list<StasisPair, CardManager::MAX_GROUP_SIZE = 64>` 且
+ *   `fixed_list` **没有越界检查**——同一稀有度的牌在一个牌堆里超过 64 张就是静默内存破坏。
+ *   当前 harness 给自动机的牌组只有 22 张，够不到；将来把它配大牌组时要先数一遍。
+ */
+function stasisHelper(bc: BattleContext, pile: CombatCard[]): number {
+  const counts = { common: 0, uncommon: 0, rare: 0, other: 0 };
+  for (const c of pile) {
+    counts[stasisCardInfo(c.defId)[1]] += 1;
+  }
+  const target =
+    counts.rare !== 0
+      ? "rare"
+      : counts.uncommon !== 0
+        ? "uncommon"
+        : counts.common !== 0
+          ? "common"
+          : null;
+  if (target === null) {
+    return bc.rng.cardRandomRng.random(pile.length - 1); // ★ 消耗一次 cardRandomRng
+  }
+  const idxList: { groupIdx: number; idOrder: number }[] = [];
+  for (let i = 0; i < pile.length; i += 1) {
+    const [idOrder, rarity] = stasisCardInfo(pile[i]?.defId ?? "");
+    if (rarity === target) {
+      idxList.push({ groupIdx: i, idOrder });
+    }
+  }
+  // `std::stable_sort`：等值时保持原有相对顺序。`cardSortedIdx` 逐 id 唯一，所以
+  // 只有「同一张牌的多份副本」会等值，而它们本来就按堆内顺序排着——用稳定排序照抄。
+  idxList.sort((a, b) => a.idOrder - b.idOrder);
+  const pick = bc.rng.cardRandomRng.random(idxList.length - 1); // ★ 消耗一次 cardRandomRng
+  const chosen = idxList[pick];
+  if (chosen === undefined) {
+    throw new Error(`sts-combat 停滞取样越界: ${pick}/${idxList.length}`);
+  }
+  return chosen.groupIdx;
+}
+
+/**
+ * 停滞：把玩家的一张牌从牌堆里扣住（对齐 `Monster::stasisAction`，MonsterSpecific.cpp:3515-3549）。
+ *
+ * 逐条照抄：
+ *  ①⚠ **抽牌堆与弃牌堆都空时直接 return**：不掷 RNG、不上 `STASIS`、什么都不做。
+ *     （这一支真的会走到——被停滞的球活到玩家把牌打空的时候。）
+ *  ②⚠ **抽牌堆空才去弃牌堆**，不是「两堆合起来挑」。
+ *  ③ 取走之后 `notifyRemoveFromCombat`（会减 `strikeCount` —— 完美打击的伤害读它）。
+ *  ④⚠ 槽位是 **`min(1, idx)`**：0 号位的球存槽 0，2 号位的球存槽 1（1 号位是自动机自己，
+ *     不会调这个函数）。两颗球各占一格，所以两张牌能同时被扣住。
+ *  ⑤ 最后 `buff<MS::STASIS>()` —— 它进怪物快照，也是 `monsterDie` 还牌的开关。
+ */
+function stasisAction(bc: BattleContext, m: CombatMonster): void {
+  if (bc.drawPile.length === 0 && bc.discardPile.length === 0) {
+    return; // ① 两堆都空：一次 RNG 都不掷
+  }
+  const fromDiscard = bc.drawPile.length === 0; // ②
+  const pile = fromDiscard ? bc.discardPile : bc.drawPile;
+  const removeIdx = stasisHelper(bc, pile); // ★ 消耗一次 cardRandomRng
+  const card = pile[removeIdx];
+  if (card === undefined) {
+    throw new Error(`sts-combat 停滞：取牌下标越界 ${removeIdx}`);
+  }
+  pile.splice(removeIdx, 1);
+  notifyRemoveFromCombat(bc, card); // ③
+  const slot = Math.min(1, bc.monsters.indexOf(m)); // ④
+  bc.stasisCards[slot] = card;
+  addPower(m.powers, "stasis", 1); // ⑤
+}
+
+/**
+ * 把被扣住的牌还回手牌（对齐 `Monster::returnStasisCard`，MonsterSpecific.cpp:3552-3565）。
+ * 由 `monsterDie` 的 else-if 链调用。
+ *
+ * ⚠ 三处照抄：① 槽位同样是 `min(idx, 1)`；② `notifyAddCardToCombat` 在
+ * `moveToHandHelper` **之前**（`strikeCount` 先加回来）；③ 走 `moveToHandHelper`，
+ * 所以**手牌满 10 张时它进弃牌堆**而不是被丢掉。
+ * ⚠ 参考在还完之后把槽位写回 `INVALID`（我们置 null）——一颗球只会死一次，
+ * 但那一句是参考写着的，照抄。
+ */
+function returnStasisCard(bc: BattleContext, m: CombatMonster): void {
+  const slot = Math.min(bc.monsters.indexOf(m), 1);
+  const card = bc.stasisCards[slot];
+  if (card === undefined || card === null) {
+    throw new Error(`sts-combat 停滞：${slot} 号槽是空的，却要还牌（哪一处漏了 stasisAction？）`);
+  }
+  notifyAddCardToCombat(bc, card);
+  moveToHandHelper(bc, card);
+  bc.stasisCards[slot] = null;
+}
+
+/**
  * 「先把候选全部造出来，再挑一个」（对齐 `MonsterGroup::createWeakWildlife` /
  * `createStrongHumanoid`，MonsterGroup.cpp:497 / :477）。
  *
@@ -2757,6 +3225,28 @@ const ENCOUNTER_BUILDERS: Record<string, EncounterBuilder> = {
     // 占位，真相在这里）。
     createMonster(bc, "gremlin_leader"); // ★ 消耗一次 monsterHpRng
   },
+
+  // 青铜自动机（第二十八批）：对齐 MonsterGroup.cpp:173-177。
+  //
+  // ⚠⚠ **参考这三句要照抄，别「整理」**：
+  //   ```cpp
+  //   monsterCount = 1;                              // ← 先把游标推到 1
+  //   createMonster(bc, MonsterId::BRONZE_AUTOMATON); // ← 于是它落在 arr[1]，count → 2
+  //   ++monsterCount;                                // ← 再空出一格，count → 3
+  //   ```
+  //   净效果是「**0 号位与 2 号位都是预留空位**，自动机在中间的 1 号位，`monsterCount = 3`、
+  //   `monstersAlive = 1`」。那两格正是 `spawnBronzeOrbs` 要往里填的。
+  // ⚠ 与地精首领那个预留写法**形状不同**（那边只留 0 号位，而且 `monstersAlive` /
+  //   `monsterCount` 是手动赋值的 3 / 4）。两处各写各的，照抄邻居必错。
+  // ⚠ 顺序的可观察面：自动机在 **1 号位**，所以青铜球的支援光束那句写死的 `arr[1]`
+  //   正好指着它；而 harness 的策略恒打 0 号位，于是召唤之前打自动机、召唤之后打 0 号球。
+  // ⚠ 两个空格都不参与 `MonsterGroup::init` 的后两个循环（门是 `arr[i].idx != -1`），
+  //   见 `initCombat` 里那两处的 `EMPTY_MONSTER_SLOT` 跳过条件。
+  automaton: (bc) => {
+    bc.monsters.push(emptyMonsterSlot()); // 0 号位：预留（`monsterCount = 1` 跳过的那一格）
+    createMonster(bc, "bronze_automaton"); // 1 号位 ★ 消耗一次 monsterHpRng
+    bc.monsters.push(emptyMonsterSlot()); // 2 号位：预留（末尾那句 `++monsterCount`）
+  },
 };
 
 // ============================================================================
@@ -2932,6 +3422,40 @@ const PRE_BATTLE_ACTION: Record<string, PreBattleAction> = {
   gremlin_leader: (_bc, m) => {
     addPower(m.powers, "minion_leader", 1);
   },
+
+  // —— 第二十八批 ——
+
+  // 突刺之书（对齐 MonsterSpecific.cpp:177-180，参考在那行注了
+  // `// game adds PainfulStabsPower`）。**不消耗 RNG、没有 asc 分档**，两句都要：
+  //     buff<MS::PAINFUL_STABS>();
+  //     ++miscInfo; // stab count
+  //
+  // ⚠⚠ **第二句是乱刺的段数起点，而且它跑在开局那次 `rollMove` 之后**
+  //   （`MonsterGroup::init` 是 createMonsters → 逐怪 rollMove → 逐怪 preBattleAction）。
+  //   于是开局那次出招规则看到的是 `miscInfo == 0`：
+  //     * roll >= 15 且没连续两次乱刺 → 规则自己 `++` 到 1，preBattleAction 再 `++` → **段数 2**
+  //     * roll < 15（首回合 `lastMove` 是空、不是重刺）→ 出重刺，段数停在 **1**
+  //   两条都对得上 trace。⚠ 把这两句的**顺序**或**时点**抄错，第一发乱刺的段数就差一段。
+  // ⚠ `PAINFUL_STABS` 是纯 bool（`isBooleanPower` 为真），harness 按 1 输出，会进怪物快照。
+  //   它的读点在**玩家侧**（`dealDamageToPlayer` 里，见那个函数的注释）。
+  book_of_stabbing: (_bc, m) => {
+    addPower(m.powers, "painful_stabs", 1);
+    m.miscInfo += 1; // ★ 乱刺段数的起点（参考的 `++miscInfo; // stab count`）
+  },
+
+  // 青铜自动机（对齐 MonsterSpecific.cpp:217-221）。**不消耗 RNG、没有 asc 分档**，两句都要：
+  //     buff<MS::MINION_LEADER>();
+  //     buff<MS::ARTIFACT>(3);
+  //
+  // ⚠ `MINION_LEADER` 是本项目**第二个**宿主（第一个是地精首领）：它一死当场判胜，
+  //   两颗球还站着也算赢。⚠ `ARTIFACT 3` 是**第二个**宿主（第一个是第二十三批的球状守卫者）
+  //   ——怪物神器抵挡玩家施加的减益。
+  // ⚠ 青铜球**没有** preBattleAction（`Monster::preBattleAction` 的 switch 里没有它的 case）
+  //   ——它的 `MINION` 是召唤函数里加的，见 `spawnBronzeOrbs`。
+  bronze_automaton: (_bc, m) => {
+    addPower(m.powers, "minion_leader", 1);
+    addPower(m.powers, "artifact", 3);
+  },
 };
 
 type EncounterSetup = (bc: BattleContext) => void;
@@ -3098,6 +3622,25 @@ function overwriteMove(m: CombatMonster, move: string): void {
  *     写，但秘法师那三条只挑了 ATTACK_DEBUFF 一条、位置在 `:475` 而不是 `:475-477`）。
  *     本批另外两个新编队（`THREE_CULTIST` / `CULTIST_AND_CHOSEN` / `SENTRY_AND_SPHERE`）
  *     里的怪全是已登记的，白名单一条都不用加。
+ *   * **第二十七批的两只**（`MonsterMoves.h:459` / `:512`）：`GREMLIN_LEADER_STAB` 与
+ *     `TASKMASTER_SCOURING_WHIP` 在；`GREMLIN_LEADER_RALLY` / `_ENCOURAGE` 不在。
+ *   * **第二十八批的三只**（逐条核对 `MonsterMoves.h:431-435`）：
+ *     | 参考招式                                | 在白名单？ | 我们的键                        | 数据表 intent |
+ *     | --------------------------------------- | ---------- | ------------------------------- | ------------- |
+ *     | `BOOK_OF_STABBING_MULTI_STAB` (`:431`)  | **是**     | `book_of_stabbing/multi_stab`   | attack        |
+ *     | `BOOK_OF_STABBING_SINGLE_STAB` (`:432`) | **是**     | `book_of_stabbing/big_stab`     | attack        |
+ *     | `BRONZE_AUTOMATON_FLAIL` (`:433`)       | **是**     | `bronze_automaton/flail`        | attack        |
+ *     | `BRONZE_AUTOMATON_HYPER_BEAM` (`:434`)  | **是**     | `bronze_automaton/hyperbeam`    | attack        |
+ *     | `BRONZE_AUTOMATON_BOOST`                | 否         | —                               | buff          |
+ *     | `BRONZE_AUTOMATON_SPAWN_ORBS`           | 否         | —                               | unknown       |
+ *     | `BRONZE_AUTOMATON_STUNNED`              | 否         | —                               | unknown       |
+ *     | `BRONZE_ORB_BEAM` (`:435`)              | **是**     | `bronze_orb/orb_beam`           | attack        |
+ *     | `BRONZE_ORB_STASIS`                     | 否         | —                               | debuff        |
+ *     | `BRONZE_ORB_SUPPORT_BEAM`               | 否         | —                               | defend        |
+ *     ⚠ 白名单里这五条是**连续**的（`:431-435`），因为枚举声明序恰好把突刺之书两条、
+ *     自动机五条、球三条排在一起，而白名单又按枚举名字典序写——但**仍然要按名字核**：
+ *     自动机的 `BOOST` / `SPAWN_ORBS` / `STUNNED` 与球的 `STASIS` / `SUPPORT_BEAM` 五条
+ *     被跳过了，位置上并不连续。
  *
  * ⚠⚠ **第二十四批起这张表第一次有预言机**：`isMonsterAttacking` 的唯一读者是觅敌之弱，
  * 而第十三批之后的编队都走 `ENC_V0`（只有 variant 0 那副 21 张牌组，里面没有它）。
@@ -3125,6 +3668,16 @@ const MONSTER_ATTACK_MOVES: ReadonlySet<string> = new Set([
   "byrd/peck",
   "byrd/swoop",
   "byrd/headbutt",
+  // 突刺之书（`:431-432`，第二十八批）。两招都是攻击，一条不落。
+  "book_of_stabbing/multi_stab",
+  "book_of_stabbing/big_stab",
+  // 青铜自动机（`:433-434`，第二十八批）。⚠ **五招里只有两条在**：
+  //   连枷 / 超射线 → 在；增益（力量+格挡）/ 召唤青铜球 / 眩晕 → **不在**。
+  "bronze_automaton/flail",
+  "bronze_automaton/hyperbeam",
+  // 青铜球（`:435`，第二十八批）。⚠ **三招里只有光束在**：支援光束（给 1 号位加格挡）
+  //   与停滞（扣牌）都不在。
+  "bronze_orb/orb_beam",
   // 蓝 / 红奴隶主（`:428-429` / `:484-485`）
   "blue_slaver/stab",
   "blue_slaver/rake",
@@ -4924,8 +5477,18 @@ function monsterDie(bc: BattleContext, m: CombatMonster): void {
   if (getPower(m.powers, "spore_cloud") > 0) {
     const isSourceMonster = bc.turnHasEnded;
     addToTop(bc, (c) => debuffPlayer(c, "vulnerable", 2, isSourceMonster));
+  } else if (getPower(m.powers, "stasis") > 0) {
+    // 停滞（青铜球，第二十八批）：把它扣住的那张牌还回手牌。
+    // ⚠⚠ 它与孢子云在**同一条 else-if 链**上（Monster.cpp:299-310），中间还夹着一格
+    //   **重生**（REGROW，暗黑之种，尚未登记）：
+    //       if (SPORE_CLOUD) … else if (REGROW) … else if (STASIS) …
+    //   所以这里必须是 `else if`（一只怪不可能同时带两位，但链的形状照抄）。
+    //   登记暗黑之种那一批要把 REGROW 插在**中间**，不是接在末尾。
+    // ⚠ 还牌是**同步**的（参考那一句是裸调用 `returnStasisCard(bc);`），不是入队——
+    //   于是这一击若还排着别的动作，牌在它们执行**之前**就已经回到手里了。
+    returnStasisCard(bc, m);
   }
-  // TODO(后续PR): 重生（暗黑之种）/ 尸爆 / 停滞 / 地精角 / 活体样本，以及觉醒者的假死。
+  // TODO(后续PR): 重生（暗黑之种）/ 尸爆 / 地精角 / 活体样本，以及觉醒者的假死。
 }
 
 /**
@@ -8545,7 +9108,10 @@ function takeTurn(bc: BattleContext, m: CombatMonster): string | null {
       //   还有别人」，**不是**「1 号位那只活着」——两者在两怪编队里同解，参考写的是前者。
       // ⚠ 目标不判活：门是 `monstersAlive > 1`，进门之后直接 `arr[1].addBlock(...)`。
       //   给一只已死的怪加格挡在参考里是无害的（它不会再行动），照抄不要顺手补判活。
-      if (bc.monstersAlive > 1) {
+      // ⚠ `noAliveGate`（第二十八批）：青铜球的支援光束**连那道门都没有**，整条 case 就是
+      //   `bc.monsters.arr[1].addBlock(12);`（MonsterSpecific.cpp:525）。在当前内容集合里
+      //   两者同解且可证（见 `Effect` 里那条注释），但形状照抄——参考真的没写那个 if。
+      if (eff.noAliveGate === true || bc.monstersAlive > 1) {
         const ally = bc.monsters[1];
         if (ally !== undefined) {
           ally.block += ascValue(bc, eff.amount, eff.ascAmount);
@@ -8624,6 +9190,15 @@ function takeTurn(bc: BattleContext, m: CombatMonster): string | null {
       addToBot(bc, (c) => {
         summonGremlins(c);
       });
+    } else if (eff.kind === "summon_bronze_orbs") {
+      // 召唤两颗青铜球（青铜自动机，第二十八批）。参考是**裸的同步调用**
+      // `spawnBronzeOrbs(bc);`（MonsterSpecific.cpp:503）——**不是** addToBot，
+      // 与地精首领那条恰好相反。逐条形状见 `spawnBronzeOrbs`。
+      spawnBronzeOrbs(bc);
+    } else if (eff.kind === "stasis") {
+      // 停滞（青铜球，第二十八批）。参考是裸的同步调用 `stasisAction(bc);`
+      // （MonsterSpecific.cpp:519），排在同一条 case 里 `miscInfo = 1` 与 `rollMove` 之前。
+      stasisAction(bc, m);
     } else if (eff.kind === "steal_gold") {
       // 偷金：**同步**执行（参考的 `stealGoldFromPlayer` 是裸调用，不是 addToBot），
       // 排在同一条 case 里的 attackPlayerHelper **之前**。
@@ -8960,6 +9535,23 @@ function dealDamageToPlayer(bc: BattleContext, amount: number, attackerIdx = -1)
   // 唯一的读者是吸血攻击（见 `vampireAttack`）。
   if (unblocked > 0) {
     bc.player.lastAttackUnblockedDamage = unblocked;
+    // 痛苦突刺（突刺之书，第二十八批）：对齐 Player.cpp:250-252
+    //   `if (bc.monsters.arr[enemyIdx].hasStatus<MS::PAINFUL_STABS>()) {`
+    //   `    bc.addToBot( Actions::MakeTempCardInDiscard({CardId::WOUND}) ); }`
+    // ⚠ 四处照抄：
+    //  ① 它在 `if (damage > 0)` **里面**——被格挡完全吃掉的那一击**一张都不塞**；
+    //  ② 判的是**攻击者身上**的 Power，不是玩家身上的（所以要 `attackerIdx`）；
+    //  ③ 位置在「记 `lastAttackUnblockedDamage`（+ 玩家镀甲递减）」之后、`hpWasLost` **之前**
+    //     ——`hpWasLost` 可能触发别的入队动作，顺序因此可观察；
+    //  ④ **每段各判一次**：多段攻击是多条独立的 `AttackPlayer` 动作，乱刺 3 段最多塞 3 张伤口，
+    //     其中被挡住的那几段不塞。这与「一次出招塞一张」是完全不同的形状。
+    // ⚠ 伤口**打不出**（`CardInstance.cpp:329` 的例外只放行黏液），所以它只躺在弃牌堆快照里。
+    const attacker = attackerIdx >= 0 ? bc.monsters[attackerIdx] : undefined;
+    if (attacker !== undefined && getPower(attacker.powers, "painful_stabs") > 0) {
+      addToBot(bc, (c) => {
+        makeTempCardInDiscard(c, "wound", 1);
+      });
+    }
     playerHpWasLost(bc, unblocked, false);
   } else {
     bc.player.lastAttackUnblockedDamage = 0;
@@ -9401,6 +9993,14 @@ export const SUPPORTED_ENCOUNTERS: readonly string[] = [
   //   ⚠ 同样**只有 asc0 的背书**（地精首领与工头的 `ascCalibrated` 都没置）。
   "gremlin_leader",
   "slavers",
+  // —— 第二十八批：突刺之书（第二幕最后一个精英）+ 青铜自动机（第二个召唤宿主）。
+  //   走 harness 新追加的 variant 28，牌组同样是 `BATCH_1 + SPOT_WEAKNESS`。
+  //   ⚠ `automaton` 是**编队** id（对齐 `MonsterEncounter::AUTOMATON`），它建的**怪**
+  //     才叫 `bronze_automaton`；0 号位与 2 号位都是预留空位（`monsterCount = 3`、
+  //     `monstersAlive = 1`），由 `spawnBronzeOrbs` 往里填。
+  //   ⚠ 同样**只有 asc0 的背书**（三只新怪的 `ascCalibrated` 都没置）。
+  "book_of_stabbing",
+  "automaton",
 ];
 
 export function isEncounterSupported(encounterId: string): boolean {

@@ -367,6 +367,13 @@ const ENCOUNTER: Record<string, string> = {
   //   `SLAVERS` 的顺序是蓝奴隶主 / 工头 / 红奴隶主——**工头在中间**。
   GREMLIN_LEADER: "gremlin_leader",
   SLAVERS: "slavers",
+  // —— 第二十八批：突刺之书（第二幕最后一个精英）+ 青铜自动机（第二个召唤宿主），走 variant 28。
+  // ⚠ `AUTOMATON` 是**编队**名，它建的**怪**才叫 `BRONZE_AUTOMATON`——我们这边的编队 id
+  //   本批跟着改成了参考的名字（原先叫 `bronze_automaton`，与怪同名）。
+  // ⚠ 这个编队 0 号位与 2 号位都是**预留空位**（`monsterCount = 3` / `monstersAlive = 1`），
+  //   所以快照里一开始有两个 `INVALID = 0`；自动机第一招把它们填成两颗青铜球。
+  BOOK_OF_STABBING: "book_of_stabbing",
+  AUTOMATON: "automaton",
 };
 const MONSTER: Record<string, string> = {
   CULTIST: "cultist",
@@ -431,6 +438,11 @@ const MONSTER: Record<string, string> = {
   //   `SLAVERS` 里的蓝 / 红奴隶主同样前面已有。
   GREMLIN_LEADER: "gremlin_leader",
   TASKMASTER: "taskmaster",
+  // —— 第二十八批。⚠ `BRONZE_ORB` **不在 `MonsterGroup.cpp` 的任何建怪列表里**——
+  //   它唯一的来源是青铜自动机的 `spawnBronzeOrbs`，填进开局预留的 0 号位与 2 号位。
+  BOOK_OF_STABBING: "book_of_stabbing",
+  BRONZE_AUTOMATON: "bronze_automaton",
+  BRONZE_ORB: "bronze_orb",
   // ⚠ **分裂留下的空格**。参考的 `MonsterGroup::arr` 是定长 5 的数组，`monsterCount` 只是
   // 「dump 到第几格」；史莱姆王分裂时 `arr[0]` 与 `arr[2]` 被写、`monsterCount = 3`，
   // 于是 1 号格那只**从没被构造过**的默认 `Monster` 也被 dump 出来
@@ -578,6 +590,23 @@ const MOVE: Record<string, string> = {
   GREMLIN_LEADER_ENCOURAGE: "encourage",
   GREMLIN_LEADER_STAB: "gl_stab",
   TASKMASTER_SCOURING_WHIP: "scouring_whip",
+  // —— 第二十八批：突刺之书两条 + 青铜自动机五条 + 青铜球三条 ——
+  // ⚠ `BOOK_OF_STABBING_SINGLE_STAB` 在我们这边叫 `big_stab`（旧近似表起的名，
+  //   与参考枚举名不同但招式 id 只需在本只怪里唯一，改名会白白扰动数据表）。
+  BOOK_OF_STABBING_MULTI_STAB: "multi_stab",
+  BOOK_OF_STABBING_SINGLE_STAB: "big_stab",
+  // ⚠ 自动机的 `stunned` 与拜鸟 / 带壳寄生虫的 `stunned` 同名，但那两个是**受击时**被
+  //   写进去的，这个是超射线的收尾自己 setMove 出来的。招式 id 逐怪唯一即可。
+  BRONZE_AUTOMATON_BOOST: "boost",
+  BRONZE_AUTOMATON_FLAIL: "flail",
+  BRONZE_AUTOMATON_HYPER_BEAM: "hyperbeam",
+  BRONZE_AUTOMATON_SPAWN_ORBS: "spawn_orbs",
+  BRONZE_AUTOMATON_STUNNED: "stunned",
+  // ⚠ 青铜球带 `orb_` 前缀：裸名 `beam` 已经被哨卫用了（数据表是一张平表）。
+  //   停滞没有前缀（`stasis` 没人用过）。
+  BRONZE_ORB_BEAM: "orb_beam",
+  BRONZE_ORB_STASIS: "stasis",
+  BRONZE_ORB_SUPPORT_BEAM: "orb_support",
   // 分裂留下的空格：那只默认 `Monster` 的 `moveHistory[0]` 是 `MMID::INVALID`
   // （`monsterMoveStrings[0] == "INVALID"`，MonsterMoves.h:215）。我们的空占位
   // `currentMove` 是空串。⚠ 这一条只有那个空格用得到——所有真怪在 `MonsterGroup::init`
@@ -743,6 +772,17 @@ const POWER: Record<string, string> = {
   // 随从首领：同样是纯 bool，地精首领 preBattleAction 里上的。
   // ⚠ 它**有**一个决定性的读者：`Monster::die` 判它 → 首领一死当场判胜，小鬼还站着也算赢。
   MINION_LEADER: "minion_leader",
+  // —— 第二十八批 ——
+  // 痛苦突刺：**怪物身上**的纯 bool 标记，突刺之书 preBattleAction 里上的。
+  // ⚠ 读点在**玩家侧**（`Player::attacked` 的 `damage > 0` 分支）：每一次打穿格挡的攻击
+  //   往弃牌堆塞一张伤口，多段攻击**每段各一张**。
+  PAINFUL_STABS: "painful_stabs",
+  // 停滞：**怪物身上**的纯 bool 标记，青铜球放完停滞才有（不是开局自带）。
+  // ⚠ 唯一的读点是 `Monster::die` 的 else-if 链——带这一位的球死掉时把它扣住的牌还回手牌。
+  // ⚠ 「已经用过停滞」在参考里**另有一份记录**：出招规则读的是 `miscInfo`，不是这一位。
+  STASIS: "stasis",
+  // ⚠ ARTIFACT / MINION_LEADER 早就在表里，本批是它们第一次同时出现在**同一只**怪身上
+  //   （青铜自动机 `MINION_LEADER: 1` + `ARTIFACT: 3`）。同一个映射直接复用。
 };
 
 const mapPotion = (p: string): string | null => (p in POTION ? POTION[p]! : p);

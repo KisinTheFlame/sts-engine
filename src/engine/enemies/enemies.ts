@@ -1360,7 +1360,12 @@ const ENEMY_LIST: EnemyDef[] = [
         id: "flail",
         name: "连枷",
         effects: [
-          { kind: "deal_damage_multi", amount: 7, times: 2, ascAmount: [{ atLeast: 4, amount: 8 }] },
+          {
+            kind: "deal_damage_multi",
+            amount: 7,
+            times: 2,
+            ascAmount: [{ atLeast: 4, amount: 8 }],
+          },
         ],
         intent: "attack",
       },
