@@ -1262,68 +1262,151 @@ const ENEMY_LIST: EnemyDef[] = [
     intentRule: { scripted: [], weighted: [] },
   },
 
-  // —— 第二幕 Boss：冠军（半血暴怒）——
+  // —— 第二幕 Boss：冠军（第二十九批）——
+  //
+  // `monsterHpRange[THE_CHAMP] = {{420,420},{440,440}}`（MonsterIds.h:209）。
+  // ⚠ 旧近似表写的是 `420~440`——那是把**两组**区间当成一个区间了，低档其实是 `{420,420}`。
+  //   同族的错法在第二十八批的青铜自动机上也出现过一次，本批校正。
+  // ⚠ 上下界相同**照样掷一次** monsterHpRng（`Random::random(420,420)` 无条件 `++counter`），
+  //   所以它**不**带 `hpNoRoll`。阈值是 **Boss 档 asc>=9**（MonsterSpecific.cpp:76-89），
+  //   本批不校准爬升度（`ascCalibrated` 不置），故也不填 `hpHigh`——两者必须同进同退。
+  //
+  // ⚠⚠ **它的二阶段是「血量阈值锁存」，而且不在 `Monster::onHpLost` 里**——那个 switch
+  //   **压根没有 `THE_CHAMP` 这一格**（Monster.cpp:499-535 只有三种大史莱姆 + 守卫者）。
+  //   锁存整条住在 `getMoveForRoll`（MonsterSpecific.cpp:2900-2918），见
+  //   `MOVE_RULES.champ`。于是「掉到半血以下」这件事只在**下一次 rollMove** 才被发现，
+  //   不像守卫者的模式切换那样在挨打那一瞬间改意图。
+  // ⚠ `miscInfo` 在这只怪身上**一个字段两种用途**（参考 Monster.h:73 那行注释就叫
+  //   `champ phase2`）：bit 0~1 是防御姿态的**已用次数**（上限 2）、bit 2 是二阶段标志。
   {
     id: "champ",
     name: "冠军",
     hpMin: 420,
-    hpMax: 440,
+    hpMax: 420,
     moves: [
       {
+        // 重斩：`attackPlayerHelper(bc, asc4 ? 18 : 16)`（MonsterSpecific.cpp:1295-1299）。
+        // 收尾是入队的 `addToBot(Actions::RollMove(idx))` = `MOVE_TURN_END` 的默认值。
         id: "champ_slash",
         name: "重斩",
-        effects: [{ kind: "deal_damage", amount: 16 }],
+        effects: [{ kind: "deal_damage", amount: 16, ascAmount: [{ atLeast: 4, amount: 18 }] }],
         intent: "attack",
       },
       {
+        // 扇脸：`attackPlayerHelper(bc, asc4 ? 14 : 12)` 之后**先脆弱再易伤**，两条都入队
+        //（MonsterSpecific.cpp:1280-1286）。
+        // ⚠ 旧近似表写的是「虚弱 + 脆弱」——**虚弱是错的**（参考给的是易伤），本批校正。
+        // ⚠ 顺序照抄（脆弱在前）：两条都是 `addToBot`，谁先入队谁先落地。
         id: "face_slap",
         name: "扇脸",
         effects: [
-          { kind: "deal_damage", amount: 12 },
-          { kind: "apply_power", power: "weak", amount: 2, on: "target" },
+          { kind: "deal_damage", amount: 12, ascAmount: [{ atLeast: 4, amount: 14 }] },
           { kind: "apply_power", power: "frail", amount: 2, on: "target" },
+          { kind: "apply_power", power: "vulnerable", amount: 2, on: "target" },
         ],
         intent: "attack",
       },
       {
+        // 防御姿态：`addBlock(blockAmts[buffIdx])` + `buff<METALLICIZE>(metallicizeAmts[buffIdx])`
+        //（MonsterSpecific.cpp:1259-1272）。两句都是**同步**的成员调用，故格挡带 `sync: true`。
+        // ⚠⚠ **分档索引是 `getTriIdx(bc.ascension, 9, 19)`，不是 takeTurn 顶部那个
+        //   `bossDiffIdx`（4 / 19）**。同一只怪身上并存两族阈值，照抄邻居必错。
+        // ⚠ 它的**次数上限 2** 由出招规则里的 `miscInfo & 0x3` 管，不是数据。
         id: "champ_defend",
         name: "防御姿态",
         effects: [
-          { kind: "gain_block", amount: 15 },
-          { kind: "apply_power", power: "metallicize", amount: 5, on: "self" },
+          {
+            kind: "gain_block",
+            amount: 15,
+            sync: true,
+            ascAmount: [
+              { atLeast: 9, amount: 18 },
+              { atLeast: 19, amount: 20 },
+            ],
+          },
+          {
+            kind: "apply_power",
+            power: "metallicize",
+            amount: 5,
+            on: "self",
+            ascAmount: [
+              { atLeast: 9, amount: 6 },
+              { atLeast: 19, amount: 7 },
+            ],
+          },
         ],
         intent: "defend",
       },
       {
+        // 处决：`attackPlayerHelper(bc, 10, 2)`（MonsterSpecific.cpp:1274-1278）。
+        // **没有 asc 分档**（两个实参都是字面量）。
         id: "execute",
         name: "处决",
         effects: [{ kind: "deal_damage_multi", amount: 10, times: 2 }],
         intent: "attack",
       },
       {
+        // 自夸：`buff<STRENGTH>(strAmts[bossDiffIdx])`，`{3,4,5}`（MonsterSpecific.cpp:1288-1293）。
+        // ⚠ 分档索引是 `bossDiffIdx` = `getTriIdx(asc, 4, 19)`，与防御姿态那条的 9 / 19 不同。
         id: "gloat",
         name: "自夸",
-        effects: [{ kind: "apply_power", power: "strength", amount: 3, on: "self" }],
+        effects: [
+          {
+            kind: "apply_power",
+            power: "strength",
+            amount: 3,
+            on: "self",
+            ascAmount: [
+              { atLeast: 4, amount: 4 },
+              { atLeast: 19, amount: 5 },
+            ],
+          },
+        ],
         intent: "buff",
       },
       {
+        // 暴怒（二阶段的开场招）：`removeDebuffs(); buff<STRENGTH>(strAmts[bossDiffIdx]);`
+        //（MonsterSpecific.cpp:1251-1257），`{6,9,12}`。两句都同步、**顺序照抄**
+        // （先清减益再加力量——当前不可分辨，因为清的那几条里没有力量的正值项，
+        //  但 `removeDebuffs` 会把**负**力量抬回 0，所以顺序在有黑暗镣铐时是可观察的）。
         id: "anger",
         name: "暴怒",
-        effects: [{ kind: "apply_power", power: "strength", amount: 6, on: "self" }],
+        effects: [
+          { kind: "remove_debuffs" },
+          {
+            kind: "apply_power",
+            power: "strength",
+            amount: 6,
+            on: "self",
+            ascAmount: [
+              { atLeast: 4, amount: 9 },
+              { atLeast: 19, amount: 12 },
+            ],
+          },
+        ],
         intent: "buff",
       },
+      {
+        // 嘲讽（旧近似表**压根没有这一招**，本批补）：
+        //   `bc.player.debuff<PS::WEAK>(2, true); bc.player.debuff<PS::VULNERABLE>(2, true);`
+        //（MonsterSpecific.cpp:1301-1307）
+        // ⚠⚠ 两句都是**同步的** `player.debuff`，不是 `addToBot(Actions::DebuffPlayer)`
+        //   ——这是本项目第一只「同步给玩家上减益」的怪（拉加维林的吸魂是
+        //   `.actFunc(bc)`，形状相同但写法不同）。故两条都带 `sync: true`。
+        // ⚠ 第二个实参 `true` 就是 `isSourceMonster`，与入队那族一致（跳过首次递减）。
+        id: "taunt",
+        name: "嘲讽",
+        effects: [
+          { kind: "apply_power", power: "weak", amount: 2, on: "target", sync: true },
+          { kind: "apply_power", power: "vulnerable", amount: 2, on: "target", sync: true },
+        ],
+        intent: "debuff",
+      },
     ],
-    // 半血暴怒（一次性）由 sts-combat.ts 的 MOVE_RULES 登记 champ（待迁移）；其余走 weighted。
-    intentRule: {
-      scripted: [],
-      weighted: [
-        { move: "champ_slash", weight: 30, maxInARow: 2 },
-        { move: "face_slap", weight: 20, maxInARow: 1 },
-        { move: "champ_defend", weight: 20, maxInARow: 1 },
-        { move: "execute", weight: 15, maxInARow: 1 },
-        { move: "gloat", weight: 15, maxInARow: 1 },
-      ],
-    },
+    // 出招规则见 sts-combat.ts 的 `MOVE_RULES.champ`（MonsterSpecific.cpp:2892-2946）。
+    // 旧近似表那份加权（重斩 30 / 扇脸 20 / 防御 20 / 处决 15 / 自夸 15）与参考完全不同，
+    // 本批弃用。
+    intentRule: { scripted: [], weighted: [] },
   },
 
   // —— 第二幕 Boss：青铜自动机（第二十八批）——
@@ -1460,35 +1543,85 @@ const ENEMY_LIST: EnemyDef[] = [
     intentRule: { scripted: [], weighted: [] },
   },
 
-  // —— 第二幕 Boss：收藏家（召唤火把头 + 群体减益）——
+  // —— 第二幕 Boss：收藏家（第二十九批）——
+  //
+  // `monsterHpRange[THE_COLLECTOR] = {{282,282},{300,300}}`（MonsterIds.h:210）。
+  // ⚠ 旧近似表写的 `282~300` 同样是把两组区间当成一个（与冠军同一处错法），本批校正。
+  // ⚠ 阈值是 **Boss 档 asc>=9**，本批不校准爬升度，故不填 `hpHigh`。
+  // ⚠ 开局 Power 是 `MINION_LEADER`（MonsterSpecific.cpp:272-274）——它的**第三个宿主**
+  //   （前两个是地精首领与青铜自动机），于是收藏家一死**当场判胜**，火炬头还站着也算赢
+  //   （`Monster::die`，Monster.cpp:293-297）。见 `PRE_BATTLE_ACTION.the_collector`。
   {
     id: "the_collector",
     name: "收藏家",
     hpMin: 282,
-    hpMax: 300,
+    hpMax: 282,
     moves: [
       {
+        // 召唤火炬头：`addToBot(Actions::SpawnTorchHeads())`（MonsterSpecific.cpp:1339-1342）
+        // ——**入队**（与地精首领的集结同侧、与青铜自动机的同步召唤相反）。
+        // ⚠ 这是本项目**第三条召唤路径**，与前两条八处形状不同，逐条见 sts-combat.ts 的
+        //   `summonTorchHeads`。旧近似表那个通用 `summon` kind 到此废弃。
         id: "spawn_torches",
-        name: "召唤火把头",
-        effects: [{ kind: "summon", defIds: ["torch_head", "torch_head"] }],
+        name: "召唤火炬头",
+        effects: [{ kind: "summon_torch_heads" }],
         intent: "unknown",
       },
       {
+        // 火球：`attackPlayerHelper(bc, asc4 ? 21 : 18)`（MonsterSpecific.cpp:1327-1330）。
         id: "fireball",
         name: "火球",
-        effects: [{ kind: "deal_damage", amount: 18 }],
+        effects: [{ kind: "deal_damage", amount: 18, ascAmount: [{ atLeast: 4, amount: 21 }] }],
         intent: "attack",
       },
       {
+        // 增幅：`MonsterSpecific.cpp:1310-1325` 三句，全部**同步**、顺序照抄：
+        //   ① `for (i = 0; i < 2; ++i) if (!arr[i].isDying()) arr[i].buff<STRENGTH>(str);`
+        //      ——只给**前两格**（火炬头的两个位置）加力量，**不加格挡**；
+        //   ② `buff<MS::STRENGTH>(str);`   自己也加同样的力量（无条件）；
+        //   ③ `addBlock(block);`           自己加格挡（**只有自己有**）。
+        // ⚠ 与地精首领的鼓舞（`buff_minions`）**不是同一族**：那条遍历 0..**2** 三格、
+        //   给随从**加格挡**、自己**不加格挡**。范围与谁拿格挡两处都不同，故单开一个 kind。
+        // ⚠ 两个数都走 `bossDiffIdx`（`getTriIdx(asc, 4, 19)`）：力量 `{3,4,5}`、
+        //   格挡 `{15,18,23}`——注意格挡的第三档是 **23**（不是 20），别按等差补。
+        // ⚠ 旧近似表把顺序写成「先格挡后力量」且没有给随从那一段，本批全部校正。
         id: "collector_buff",
         name: "增幅",
         effects: [
-          { kind: "gain_block", amount: 15 },
-          { kind: "apply_power", power: "strength", amount: 3, on: "self" },
+          {
+            kind: "buff_torch_heads",
+            power: "strength",
+            amount: 3,
+            ascAmount: [
+              { atLeast: 4, amount: 4 },
+              { atLeast: 19, amount: 5 },
+            ],
+          },
+          {
+            kind: "apply_power",
+            power: "strength",
+            amount: 3,
+            on: "self",
+            ascAmount: [
+              { atLeast: 4, amount: 4 },
+              { atLeast: 19, amount: 5 },
+            ],
+          },
+          {
+            kind: "gain_block",
+            amount: 15,
+            sync: true,
+            ascAmount: [
+              { atLeast: 4, amount: 18 },
+              { atLeast: 19, amount: 23 },
+            ],
+          },
         ],
         intent: "buff",
       },
       {
+        // 巨型削弱：三条 `addToBot(Actions::DebuffPlayer<...>(3, true))`，顺序是
+        // **虚弱 → 易伤 → 脆弱**（MonsterSpecific.cpp:1332-1337）。旧近似表的顺序恰好一致。
         id: "mega_debuff",
         name: "巨型削弱",
         effects: [
@@ -1499,33 +1632,43 @@ const ENEMY_LIST: EnemyDef[] = [
         intent: "debuff",
       },
     ],
-    // 首招召唤两个火把头，之后 火球/增幅/巨型削弱。
-    intentRule: {
-      scripted: ["spawn_torches"],
-      weighted: [
-        { move: "fireball", weight: 40, maxInARow: 2 },
-        { move: "collector_buff", weight: 25, maxInARow: 1 },
-        { move: "mega_debuff", weight: 35, maxInARow: 1 },
-      ],
-    },
+    // 出招规则见 sts-combat.ts 的 `MOVE_RULES.the_collector`（MonsterSpecific.cpp:2948-2986）。
+    // 旧近似表那份 `scripted: ["spawn_torches"]` + 加权（40/25/35）与参考完全不同，本批弃用。
+    intentRule: { scripted: [], weighted: [] },
   },
+  // 火炬头（第二十九批）：`monsterHpRange[TORCH_HEAD] = {{38,40},{40,45}}`（MonsterIds.h:214）。
+  // ⚠ 它**不在 `MonsterGroup.cpp` 的任何建怪列表里**——唯一来源是收藏家的
+  //   `Actions::SpawnTorchHeads`（青铜球同族）。
+  // ⚠⚠ 它的血量阈值是 **Boss 档 asc>=9**（`MonsterSpecific.cpp:76-89` 那一组 case 里真的
+  //   有 `TORCH_HEAD`），尽管它是个随从。别按「随从 = 普通怪 asc>=7」猜。
+  // ⚠⚠ **一次召唤消耗两次 monsterHpRng**：`SpawnTorchHeads` 在 `construct`（内部已经
+  //   `initHp` 过一次）之后**又显式调了一次** `torchHead.initHp(...)`，参考在那行注了
+  //   `// bug somewhere in game`（Actions.cpp:513）。**保留的是第二次的取值。**
+  //   ⚠ 这与 `hpDiscardRoll` **不是一族**：那一族的白掷在 `initHp` **内部**、且恒用低档区间，
+  //     这里是整个 `initHp` 跑两遍（asc>=9 时两次都用高档区间）。所以不能拿
+  //     `hpDiscardRoll` 顶替，实现写在 `summonTorchHeads` 里。
   {
     id: "torch_head",
-    name: "火把头",
+    name: "火炬头",
     hpMin: 38,
     hpMax: 40,
     moves: [
       {
+        // 冲撞：整条 case 就是 `attackPlayerHelper(bc, 7);` 然后 `break`
+        //（MonsterSpecific.cpp:1388-1390）——**没有任何收尾语句**，也没有 asc 分档。
+        // 于是它一辈子只出这一招、`aiRng` 一次都不再消耗（`MOVE_TURN_END` 记作 `"none"`，
+        // 与分裂 / 鬼祟地精 / 抢劫者逃跑同为第四形态）。
         id: "torch_tackle",
         name: "冲撞",
         effects: [{ kind: "deal_damage", amount: 7 }],
         intent: "attack",
       },
     ],
-    intentRule: {
-      scripted: [],
-      weighted: [{ move: "torch_tackle", weight: 1, maxInARow: 99 }],
-    },
+    // ⚠ 参考的 `getMoveForRoll` 对 `TORCH_HEAD` 落在 `default` 上、返回 `INVALID`
+    //   （MonsterSpecific.cpp:3364 那行注着 `// setting in collector spawn move`）
+    //   ——它的意图**只由 `setMove` 写入**，`rollMove` 一次都不会被调用。
+    //   见 `MOVE_RULES.torch_head`：被调用就是我们哪条收尾抄错了，直接抛错。
+    intentRule: { scripted: [], weighted: [] },
   },
 
   // —— 第三幕（超越）普通敌人 ——
@@ -3056,7 +3199,15 @@ const ENCOUNTERS: Record<string, EncounterDef> = {
   //   （对齐 `MonsterId::BRONZE_AUTOMATON`）——编队与怪同名只是别的编队的巧合。
   //   同族的先例：第十九批 `guardian`→`the_guardian`、第二十五批 `shell_parasite`。
   automaton: { id: "automaton", enemies: ["bronze_automaton"], isBoss: true },
-  the_collector: { id: "the_collector", enemies: ["the_collector"], isBoss: true },
+  // ⚠ 第二十九批把它从 `the_collector` 改名成 `collector`：编队 id 必须与参考的
+  //   `MonsterEncounter::COLLECTOR` 同名（trace 文件名就是它，`SUPPORTED_ENCOUNTERS`
+  //   与 wiring 测试按文件名双向对齐）。**怪**的 id 仍然是 `the_collector`
+  //   （对齐 `MonsterId::THE_COLLECTOR`）。同族的先例：第二十五批 `shell_parasite`、
+  //   第二十八批 `automaton`。
+  // ⚠ `enemies` 这一栏只是旧近似战斗的占位——真相在 `ENCOUNTER_BUILDERS.collector`：
+  //   参考写的是 `monsterCount = 2; createMonster(THE_COLLECTOR);`（MonsterGroup.cpp:198-201），
+  //   所以 0 号位与 1 号位都是**预留空位**、收藏家在**2 号位**。
+  collector: { id: "collector", enemies: ["the_collector"], isBoss: true },
   // 第三幕
   exploder: { id: "exploder", enemies: ["exploder"], isBoss: false },
   spiker: { id: "spiker", enemies: ["spiker"], isBoss: false },
@@ -3239,11 +3390,11 @@ const BOSS_ENCOUNTER_POOL: readonly WeightedEncounter[] = [
   { id: "slime_boss", weight: 1 },
 ];
 
-// Act2 Boss 池（切片：冠军；后续补 青铜自动机 / 收藏家）。
+// Act2 Boss 池：冠军 / 青铜自动机 / 收藏家（三个都已登记，第二十九批收官）。
 const ACT2_BOSS_POOL: readonly WeightedEncounter[] = [
   { id: "champ", weight: 1 },
   { id: "automaton", weight: 1 },
-  { id: "the_collector", weight: 1 },
+  { id: "collector", weight: 1 },
 ];
 
 // Act3 Boss 池（切片：铎努与迪卡；后续补 觉醒者 / 时间吞噬者）。

@@ -306,7 +306,12 @@ export type Effect =
   // `buff<MS::X>()`）。给玩家上减益同样有两种写法并存：绝大多数是
   // `addToBot(Actions::DebuffPlayer<...>)`，而拉加维林的吸取灵魂写的是
   // `Actions::DebuffPlayer<PS::DEXTERITY>(-1).actFunc(bc)`（MonsterSpecific.cpp:882-883）
-  // ——**当场执行**。省略 = 入队（既有怪都是这一种）。与 `gain_block` 的 sync 同族。
+  // ——**当场执行**。省略 = 入队（绝大多数怪都是这一种）。与 `gain_block` 的 sync 同族。
+  // ⚠ 第二十九批多了**第三种写法**：冠军的嘲讽写的是裸的
+  //   `bc.player.debuff<PS::WEAK>(2, true);`（MonsterSpecific.cpp:1302-1303）
+  //   ——连 `Actions::DebuffPlayer` 都没经过，直接调 `Player::debuff`。它与拉加维林那种
+  //   `.actFunc(bc)` 逐位等价（那个 Action 的函数体就是 `player.debuff<s>(amount,
+  //   isSourceMonster)`，BattleContext.h:229-234），所以这边同样用 `sync: true` 表达。
   // ascAmount：敌人专用的爬升度分档，覆盖 `amount`（见 AscTier）。
   // minAscension：敌人专用——**整条效果**只在 `ascension >= minAscension` 时才结算。
   //   参考里这是「case 里多出来的一句 `if (asc17) addToBot(...)`」，与「同一个数换个值」
@@ -374,10 +379,12 @@ export type Effect =
   //   这个是「0 号位与自己」——三只以上的编队里两者会分岔（当前没有这样的编队）。
   | { kind: "buff_ally"; power: PowerId; amount: number; ascAmount?: AscTier[] }
   // 敌人用：召唤若干敌人加入战斗。⚠ **这是旧近似战斗留下的占位**，唯一的读者是数据表
-  // 自己——三个还没登记的怪（收藏家的火炬头 / 青铜机器人的青铜球 / 蜥蜴法师的匕首）用它。
-  // 它们在参考里各是**一个专门的 Action**（`SpawnTorchHeads` / `SummonOrbs` /
-  // `reptomancerSummon`），落位规则、RNG 消耗、要不要 `initHp`、要不要跳过本回合各不相同，
-  // 所以登记它们时也要各开一个 kind，别拿这条通用形状去凑。
+  // 自己——只剩蜥蜴法师的匕首（`reptomancerSummon`）还在用它。
+  // 参考里每个召唤宿主各是**一段专门的代码**（`Actions::SummonGremlins` /
+  // `Monster::spawnBronzeOrbs` / `Actions::SpawnTorchHeads` / `reptomancerSummon`），
+  // 落位规则、RNG 消耗、要不要 `initHp`、用 `rollMove` 还是 `setMove`、要不要跳过本回合
+  // 各不相同——前三个已经登记，**没有任何两个能共用代码**（并列表见 WORKFLOW）。
+  // 所以登记第四个时同样要单开一个 kind，别拿这条通用形状去凑。
   | { kind: "summon"; defIds: string[] }
   // 敌人用：**地精首领的召唤**（第二十七批）。对齐 `Actions::SummonGremlins`
   //（Actions.cpp:459-497）——参考里全项目只有它一个用户，写死了地精首领的场地形状。
@@ -404,6 +411,60 @@ export type Effect =
   // 相同的只有两件事：`buff<MS::MINION>()`、以及每只各自 `rollMove`（各一次 aiRng 起）。
   // ⚠ 每颗球照样在 `construct` 里掷血量，而青铜球带 `hpDiscardRoll` → 每颗 **2 次** monsterHpRng。
   | { kind: "summon_bronze_orbs" }
+  // 敌人用：**收藏家的召唤**（第二十九批）。对齐 `Actions::SpawnTorchHeads`
+  //（Actions.cpp:500-527）——本项目**第三条召唤路径**。
+  //
+  // ⚠⚠ **它与前两条一处都不共用，八处形状全不同**（照搬邻居必错，并列表见 WORKFLOW）：
+  //   ① **召几只不是常数**：`spawnCount = 3 - bc.monsters.monstersAlive`——这是全参考项目
+  //      **唯一**按 `monstersAlive` 决定召唤数量的地方，所以它也是「预留空位不算活怪」
+  //      这件事的预言机（把空位算成活的 → 开局一只都不召）。
+  //   ② **落位表是 `spawnIdxs[2] {(arr[1].isDying() ? 1 : 0), 0}`**：先 1 号位（空着的话）、
+  //      再 0 号位。既不是地精那套「按 1,2,0 搜索」，也不是青铜球那种「写死 0 与 2」。
+  //      ⚠ 第二格恒是 **0**（不是搜索出来的），所以两只时必然填 1 与 0。
+  //   ③ **有 `= Monster()` 整只重建**（青铜球那条没有）。
+  //   ④⚠⚠ **`construct` 之后又显式 `initHp` 了一次**（参考那行注着 `// bug somewhere in
+  //      game`），于是每只火炬头消耗 **2 次** monsterHpRng、**保留第二次的取值**。
+  //      这**不是** `hpDiscardRoll`：那一族的白掷在 `initHp` 内部、恒用低档区间，
+  //      这里是整个 `initHp` 跑两遍（asc>=9 时两次都用高档）。
+  //   ⑤ **意图靠 `setMove(TORCH_HEAD_TACKLE)`，不是 `rollMove`**——前两条召唤都是 rollMove。
+  //      于是召唤本身**一次 aiRng 都不掷**。
+  //   ⑥ **aiRng 在末尾统一还**：`for (i < spawnCount) bc.noOpRollMove();`——按**只数**
+  //      掷同样多次 `random(99)` 并全部丢掉。次数与召几只绑定，抄成固定 2 次会在
+  //      「只死了一只」的那些回合错位。
+  //   ⑦ `++monstersAlive` 在循环**里面**（每召一只加一次），不是末尾一次 `+= 2`。
+  //   ⑧ **没有 `++monsterTurnIdx`**（青铜球那条有）：收藏家在**最后一格**，新召的两只
+  //      本回合本来就轮不到。
+  // 与前两条相同的只有两件事：`buff<MS::MINION>()`、以及 `monsterCount` 一动不动。
+  | { kind: "summon_torch_heads" }
+  // 敌人用：给**前两格**（火炬头的两个位置）加一个 Power（收藏家的增幅，第二十九批）。
+  // 对齐 `MonsterSpecific.cpp:1310-1321` 那个 for 循环：
+  //   ```cpp
+  //   for (int i = 0; i < 2; ++i) {
+  //       auto &torchHead = bc.monsters.arr[i];
+  //       if (!torchHead.isDying()) {
+  //           torchHead.buff<MS::STRENGTH>(strAmounts[bossDiffIdx]);
+  //       }
+  //   }
+  //   ```
+  // ⚠ 与地精首领的 `buff_minions` **不是同一族**，两处不同：① 范围是 0..**1** 两格
+  //   （首领那条是 0..2 三格）；② **不给随从加格挡**（首领那条给 `asc3 ? 10 : 6`）。
+  //   收藏家自己的力量与格挡是循环**之后**两句独立语句，在数据表里用 `apply_power` +
+  //   `gain_block sync` 表达，与这条一一对应参考的三句。
+  // ⚠ 门是 `!isDying()` = **血 > 0**（不是 `alive`）：开局那两个空格血 0，天然跳过；
+  //   刚死的火炬头也跳过。全部**同步**，不入队。
+  | { kind: "buff_torch_heads"; power: PowerId; amount: number; ascAmount?: AscTier[] }
+  // 敌人用：**清掉自己身上的减益**（冠军的暴怒，第二十九批）。对齐 `Monster::removeDebuffs`
+  //（Monster.cpp:522-535）——参考里怪物侧只有它与觉醒者的假死两个调用点。
+  //
+  // ⚠ 它**不是「清空所有 Power」**，而是一张写死的名单：
+  //   ① `if (getStatus<STRENGTH>() < 0) setStatus<STRENGTH>(0);` ——**只抬负值**，
+  //      正的力量原样保留（所以暴怒不会把自己刚加的力量清掉）；
+  //   ② `removeStatus<>()` 九条：BLOCK_RETURN / CHOKED / CORPSE_EXPLOSION / LOCK_ON /
+  //      MARK / POISON / SHACKLED / VULNERABLE / WEAK。
+  //   `removeStatus` 同时清数值与 statusBits（Monster.h:495-501），所以我们整条摘掉。
+  // ⚠ 名单里 `BLOCK_RETURN` / `CORPSE_EXPLOSION` 在我们的 `PowerId` 里**还不存在**
+  //   （它们的来源——束缚之球 / 尸爆——都没登记）。登记那两张牌时要回来把它们加进这一条。
+  | { kind: "remove_debuffs" }
   // 敌人用：**停滞**——把玩家的一张牌从牌堆里扣住（青铜球，第二十八批）。对齐
   // `Monster::stasisAction`（MonsterSpecific.cpp:3515-3549）。不带参数：取哪一张、扣到哪里、
   // 什么时候还回来全写在 sts-combat.ts 的 `stasisAction` / `returnStasisCard` 里。
