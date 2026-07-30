@@ -344,6 +344,35 @@ monsterCount = 4;`，**0 号位从没被构造过**（`MonsterGroup.cpp:248-259`
   蜷缩（CURL_UP）在 `attackedUnblockedHelper` 里，只有破了格挡才触发。第十七批把狂怒挪到
   蜷缩那个位置红 30 例——**只有 30 例**，所以这类「挪位置」的变异必须单独量，
   不能拿「整条删掉红 302 例」代替。
+- ⚠⚠ **「亡语」这个词在参考里只对应 `Monster::die` 那条链，别把「死的时候会炸」当成亡语。**
+  第三十二批的爆破怪：真实游戏里它是「爆炸」倒计时 Power，参考把整件事建模成**一条招式**
+  （`EXPLODER_EXPLODE` = `addToBot(DamagePlayer(30))` + `addToBot(SuicideAction(idx, true))`，
+  `MonsterSpecific.cpp:1394-1398`），由撞击的收尾 `if (lastTwoMoves(SLAM)) setMove(EXPLODE)`
+  在第三个怪物回合定出来。⚠ **差别是可观察的：被玩家打死的爆破怪一点伤害都不造成。**
+  旧近似表把它写成 `EnemyDef.deathEffects`，两处都不对（时机不对、触发条件也不对）。
+  ⚠ 判据：`Monster::die` 里那条 else-if 链（孢子云 / 重生 / 停滞）**是完整名单**，
+  不在名单里的都不是亡语。`preBattleAction` 里那个空的 `case MonsterId::EXPLODER: break;`
+  （参考注着 `// game adds explosive power`）正是「参考选择不用 Power 表达」的痕迹。
+- ⚠⚠ **`Actions::SuicideAction(idx, true)` 走的是正常的伤害路径，不是「把血置 0」。**
+  函数体是 `if (m.isAlive()) { m.damage(bc, m.curHp); }`（`Actions.cpp:923-933`）——所以
+  死亡链（亡语 / 地精角 / 活体样本）**照常触发**，那个参数名 `triggerRelics` 就是这个意思。
+  ⚠ 它里面**没有** `bc.checkCombat()`（与 `Actions::DamageEnemy` 的末尾正相反），
+  所以这只怪若是最后一只，判胜之后**队列不被清扫**。抄的时候别顺手接一个「带 checkCombat」
+  的封装（我们这边就是 `damageEnemyNonAttack` 与 `monsterDamage` 的差别）。
+- ⚠⚠ **同一族的两个招式可能一个在 `isMoveAttack` 白名单里、一个不在，判据是「用了哪个 Action」。**
+  第三十二批撞上最刺眼的一格：爆破怪的自爆打 **30 点却不算攻击**（走
+  `Actions::DamagePlayer`），而匕首的自爆**算**（走 `attackPlayerHelper(bc, 25)`，`:1632-1636`）。
+  两条 case 的形状几乎一样（打人 + `SuicideAction`），差别只在那一个函数名。
+  ⚠ 由此得到一条更强的判据：**`isMoveAttack` 收的就是「走 `attackPlayerHelper` /
+  `Actions::AttackPlayer` 的那些招」**——比第二十三批那条「不能从 intent 推」更可操作。
+  ⚠ 而真实游戏里爆破怪显示的是攻击意图，所以这一格是「参考与真实游戏可能分歧」的候选，
+  三条判据只过了第①条（补丁没有预言机），**照抄参考、记进待裁定**。
+- ⚠ **怪物侧的荆棘（THORNS）与守卫者的「尖锐外壳」（SHARP_HIDE）不是一回事，形状像、时点完全不同。**
+  荆棘在 `attackedUnblockedHelper` 的 else-if 链里（**被攻击**且**破了格挡**才触发，
+  `Monster.cpp:384-386`，第六格）；尖锐外壳在 `BattleContext::onUseAttackCard` 的最末
+  （**打出攻击牌**就触发，哪怕这一击被格挡吃光、哪怕打的是别的怪）。
+  两者都走 `DamagePlayer(层数)`、都是 `addToTop`/`addToBot` 的一条动作，所以看代码片段
+  分不出来——**必须看它挂在哪个函数里**。旧近似表把尖刺客的荆棘写成了 `sharp_hide`。
 - ⚠ **怪物往玩家牌堆塞状态牌时，别照抄黏液那一套。** 黏液是**唯一**不需要医疗包就能打出的
   （`CardInstance.cpp:329` 的例外只放行 `SLIMED`），所以它必须进 `CARD_RULES`；
   恍惚 / 伤口 / 灼伤**打不出**，于是 ① 不进 `CARD_RULES`、② **不能**进
@@ -516,11 +545,15 @@ tools/regen-traces.sh --check
 
 ```cpp
 emitProduct(variants, encounters);          // 第一幕，20 个编队，冻结
-emitProduct(act2Variants, act2Encounters);  // 第二幕，必须排在最后
+emitProduct(act2Variants, act2Encounters);  // 第二幕，当年必须排在最后
 ```
 
 `traceIdx` / `firstTrace` 按引用捕获，所以第二幕的下标接在第一幕之后，第一幕的遗物/药水
-轮换一位都没动。第三幕照此再追加第三个乘积。
+轮换一位都没动。
+
+✅ **现在一共有四个乘积**（第三十一批加了目标策略、第三十二批开了第三幕），
+完整清单与「谁必须排在最后」见下方「新轴必须挂成新的乘积」。⚠ 本节这句
+「第二幕必须排在最后」是**当年**的说法，现在最后一个是第三幕那个。
 
 - `act2Encounters` **一次列全了 19 个**第二幕编队。这样是安全的，因为 filter 不命中的编队
   在 seed 循环之前 `continue`、**不消耗 traceIdx**——所以往这个列表里加编队是免费的，
@@ -556,6 +589,9 @@ ENC_V0="small_slimes lots_of_slimes large_slime blue_slaver red_slaver looter ex
 第二幕的乘积里每个文件只有一个 variant，`variant0-rows.mjs` 因此返回整份长度。
 与 `@asc19` 那批同构（脚本不需要为此改任何逻辑，加名字即可）。
 ✅ 第三十批的 19 个 `<第二幕编队>@asc19` 同样如此（`ENC_V0_ACT2_ASC19`）。
+✅ 第三十一批的 23 个 `<编队>@tgt1`（`ENC_V0_TGT1`）与第三十二批的第三幕编队
+（`ENC_V0_ACT3`）也一样——**凡是走「自己的乘积、每份文件只有一个 variant」的，
+都自动等于整份冻结**，脚本一行都不用改，加名字即可。
 
 为什么怪物走 variant 0：
 
@@ -793,15 +829,26 @@ trace 的 `initial` 快照取在 `BattleContext::init` **之后**，而 `init` �
 
 ```cpp
 emitProduct(variants, encounters);          // 第一幕，冻结
-emitProduct(act2Variants, act2Encounters);  // 第二幕
-emitProduct(tgtVariants, tgtEncounters);    // 目标策略，必须最后
+emitProduct(act2Variants, act2Encounters);  // 第二幕，冻结
+emitProduct(tgtVariants, tgtEncounters);    // 目标策略，冻结
+emitProduct(act3Variants, act3Encounters);  // 第三幕（第三十二批），**必须最后**
 ```
 
-⚠ **推论：从此往 `variants` / `act2Variants` 里追加 variant 都不再免费**——那会让第三个
-乘积的 23 个文件全部作废。新东西一律另开乘积挂到最后。
-⚠ 第三个乘积的编队列表是**第一幕的 ++ 第二幕的（39 个全列）**，安全性理由与
-`act2Encounters` 列全 19 个相同：variant 没点名的编队在种子循环之前 `continue`、**不消耗
-`traceIdx`**，所以往**乘积的**列表里加编队是免费的，往**variant 的**列表里加不是。
+⚠ **推论：从此往 `variants` / `act2Variants` / `tgtVariants` 里追加 variant 都不再免费**
+——那会让排在它后面的乘积的文件全部作废。新东西一律另开乘积挂到最后。
+⚠ 新乘积的编队列表可以**一次列全**（第三个是第一幕 ++ 第二幕的 39 个、第四个是第三幕的
+15 个），安全性理由与 `act2Encounters` 列全 19 个相同：variant 没点名的编队在种子循环之前
+`continue`、**不消耗 `traceIdx`**，所以往**乘积的**列表里加编队是免费的，往**variant 的**
+列表里加不是。
+
+⚠⚠ **「必须最后」在第三幕期间是一条持续约束，不只是加它那一批的规矩。**
+第二 / 三个乘积各自只在**开张那一批**追加过 variant（第二幕后来每批都追加，那时它还是
+最后一个）；第四个乘积不同——**第三幕的每一批都要往 `act3Variants` 里追加一个 variant**，
+而往「不是最后一个」的乘积里追加会平移其后所有 `traceIdx`。
+**所以第三幕做完之前，不许在它后面再挂任何新乘积。**
+真要在第三幕期间开一条新轴（比如 `asc19 × tgt1` 那一格），只有两条路：
+① 等第三幕装满；② 把新轴挂进 `act3Variants` **之前**是不行的，只能**先**挂新乘积、
+**再**开第三幕——而第三幕已经开了，所以实际上只剩 ①。排批次时先认下这一点。
 
 ⚠ **诊断线索（复核方补）**：这类错误不会静默——`--check` 会红——但它红的样子很容易误判。
 表现是**某一整个乘积的文件一次性全红，而它之前的乘积一个都没红**。

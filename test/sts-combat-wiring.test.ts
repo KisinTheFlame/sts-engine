@@ -638,7 +638,12 @@ describe("接线：尚未迁移的内容显式抛错", () => {
   // ⚠ 原先用的是 `gremlin_nob`，第十八批把它登记了，故换掉。别换成 `the_guardian` /
   //   `hexaghost` / `slime_boss`——它们就在 harness 的列表里，第十九/二十批已经登记了。
   // ⚠ 第二十批之后那 20 个编队**全部**登记完毕，所以这个样本只能来自第二/三幕，
-  //   而覆盖第二/三幕要先给 harness 追加一遍循环——在那之前 `giant_head` 是安全的。
+  //   而覆盖第二/三幕要先给 harness 追加一遍循环。第二十九批把第二幕装满了，
+  //   **第三十二批开了第三幕的乘积**——所以 `giant_head` 现在是「随时会被顶掉」的样本。
+  // ⚠⚠ **装 `giant_head` 那一批（TODOS 的建议排在第三十六批）必须先换掉这个样本。**
+  //   它不会静默失败（这条用例会当场红），但换的时候要挑一个「参考项目里存在、而 harness
+  //   的四个乘积都不覆盖」的编队——最稳的是**第四幕**的 `shield_and_spear` / `the_heart`，
+  //   或者事件编队（`MASKED_BANDITS_EVENT` 那一族）。
   it("未迁移的编队：startCombat 抛错，且不留半个战斗状态", () => {
     const state = runAtMap();
     expect(() => startCombat(state, "giant_head")).toThrow(/giant_head/);
