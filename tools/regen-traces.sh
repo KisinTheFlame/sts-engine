@@ -245,8 +245,32 @@ ENC_ALL="cultist jaw_worm jaw_worm_horde three_louse two_louse"
 #     **排在判胜 `return` 之前**的一格，与暗影客的重生（在 `return` 之后）正好相反；
 #     另有 **CURIOSITY**（参考里读点被整段注释掉的纯标记）与 **REGEN**（怪物侧、一层不掉），
 #     以及第一张「抽到时有效果」的状态牌**虚无**（抽到 -1 能量）。
+# 第三十八批：第三幕 Boss **时间吞噬者**（走**新追加的 variant 38**，variant 37 的 encounters
+#   一个字没动，`awakened_one.jsonl` 逐字节不变）。40 种子、**爬升度 0**、**目标策略 0**。
+#   ⚠⚠ 它带来 **TIME_WARP**——本项目第一条**改回合结构**的 Power。结算点在
+#     `BattleContext::onAfterUseCard`（:1974-1985）那条共享出牌路径上、且在
+#     `item.triggerOnUse` 那道门里面，读的是写死的 `monsters.arr[0]`：计数到 **11** 的下一张
+#     （即第 12 张）归零 + 此怪 `buff<STRENGTH>(2)` + **`callEndTurnEarlySequence()`**。
+#     最后那一句在**出牌中途强制结束玩家回合**：它排空出牌队列，把
+#     `autoplay && !purgeOnUse` 的项转成 `Actions::TimeEaterPlayCardQueueItem`
+#     （按 `triggerOnUse = false` 走一遍 `onAfterUseCard` = **牌白翻、直接进弃牌堆**），
+#     其余（二连击的复制项）**直接丢弃**，然后把 endTurn 项推到队**首**。
+#   ⚠ 另有 **DRAW_REDUCTION**（玩家侧：数值住在 `cardDrawPerTurn`、Power 只是 bool 标记，
+#     回合开始 skipFirst 归还，且归还排在入队抽牌**之后**）。
+#   ⚠⚠ **牌组第二次为「让新代码被走到」而设计**（第一次是第三十七批），而且是量出来的：
+#     `BATCH_1 + SPOT_WEAKNESS`（22 张）下时间吞噬者 **120 / 120 条一次都没掉到半血**，
+#     `TIME_EATER_HASTE` 出现 0 / 执行 0 —— `--install` 会直接拒绝。最终用的是 **59 张
+#     全升级**牌组：第三十七批那 45 张 + 4 张飞刀式 0 费循环牌（钢铁闪光 / 灵巧各补到 6 张，
+#     TIME_WARP 数的是**出牌张数**，所以 0 费轮转牌才是那个旋钮）+ **浩劫 ×4 与二连击 ×2**。
+#     ⚠ 后两者是**全项目仅有的两种「`onAfterUseCard` 跑的时候出牌队列还非空」的产出者**
+#     （浩劫塞 `autoplay` 项、二连击塞 `purgeOnUse && autoplay` 项），没有它们
+#     `callEndTurnEarlySequence` 的排空循环整段不可达。实测四副牌组的对比表见 harness 注释。
+#   ⚠ 牌组变了 ⇒ variant 指纹变了，与 variant 24~37 的 encounters 撞不上（双保险：
+#     `TIME_EATER` 本来也没有别的 variant 点名）。
+#   ⚠ `time_eater` 是**单怪**编队（`MonsterGroup.cpp:441-443` 一句 createMonster），
+#     与觉醒者那种「邪教徒 ×2 + Boss」不同——策略从第一张牌起就在打 Boss 本人。
 ENC_V0_ACT2="spheric_guardian chosen snake_plant three_byrds two_thieves chosen_and_byrds shell_parasite shelled_parasite_and_fungi snecko centurion_and_healer three_cultist cultist_and_chosen sentry_and_sphere gremlin_leader slavers book_of_stabbing automaton champ collector"
-ENC_V0_ACT3="three_shapes four_shapes sphere_and_two_shapes orb_walker spire_growth maw three_darklings transient writhing_mass giant_head nemesis reptomancer awakened_one"
+ENC_V0_ACT3="three_shapes four_shapes sphere_and_two_shapes orb_walker spire_growth maw three_darklings transient writhing_mass giant_head nemesis reptomancer awakened_one time_eater"
 ENC_V0_ACT2_ASC19="spheric_guardian@asc19 chosen@asc19 snake_plant@asc19 three_byrds@asc19 two_thieves@asc19 chosen_and_byrds@asc19 shell_parasite@asc19 shelled_parasite_and_fungi@asc19 snecko@asc19 centurion_and_healer@asc19 three_cultist@asc19 cultist_and_chosen@asc19 sentry_and_sphere@asc19 gremlin_leader@asc19 slavers@asc19 book_of_stabbing@asc19 automaton@asc19 champ@asc19 collector@asc19"
 ENC_V0_ASC0="small_slimes lots_of_slimes large_slime blue_slaver red_slaver looter exordium_thugs exordium_wildlife gremlin_gang gremlin_nob lagavulin three_sentries the_guardian slime_boss hexaghost $ENC_V0_ACT2"
 ENC_V0_TGT1="jaw_worm_horde@tgt1 two_louse@tgt1 three_louse@tgt1 small_slimes@tgt1 lots_of_slimes@tgt1 large_slime@tgt1 gremlin_gang@tgt1 exordium_thugs@tgt1 exordium_wildlife@tgt1 three_sentries@tgt1 slime_boss@tgt1 three_byrds@tgt1 two_thieves@tgt1 chosen_and_byrds@tgt1 sentry_and_sphere@tgt1 cultist_and_chosen@tgt1 three_cultist@tgt1 shelled_parasite_and_fungi@tgt1 centurion_and_healer@tgt1 gremlin_leader@tgt1 slavers@tgt1 automaton@tgt1 collector@tgt1"

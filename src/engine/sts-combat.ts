@@ -2406,6 +2406,84 @@ const MOVE_RULES: Record<string, MoveForRoll> = {
     }
     return !lastTwoMoves(m, "aw_tackle") ? "aw_tackle" : "sludge";
   },
+
+  // —— 第三十八批：第三幕 Boss 时间吞噬者 ——
+  //
+  // 对齐 MonsterSpecific.cpp:3231-3270。它是本项目**追加 aiRng 次数最多**的一条出招规则
+  // （单次 rollMove 可以消耗 1、2 或 3 次），三处追加各不相同：
+  //
+  //     const bool usedHaste   = miscInfo;
+  //     const bool underHalfHp = curHp < maxHp/2;
+  //     if (!usedHaste && underHalfHp) return HASTE;
+  //
+  //     auto myRoll = roll;
+  //     if (myRoll < 45) {
+  //         if (!lastTwoMoves(REVERBERATE)) return REVERBERATE;
+  //         myRoll = bc.aiRng.random(50,99);          // ← 追加①：重掷进 [50,99]
+  //     }
+  //     if (myRoll < 80) {
+  //         if (!lastMove(HEAD_SLAM)) return HEAD_SLAM;
+  //         if (bc.aiRng.randomBoolean(0.66f)) return REVERBERATE;   // ← 追加②
+  //         return RIPPLE;
+  //     }
+  //     if (lastMove(RIPPLE)) {
+  //         myRoll = bc.aiRng.random(74);             // ← 追加③：单参 random(74) = [0,74]
+  //         if (myRoll < 45) return REVERBERATE;
+  //         else             return HEAD_SLAM;
+  //     }
+  //     return RIPPLE;
+  //
+  // ⚠ 七处照抄：
+  //  ①⚠⚠ **加速那道门排在最前面，而且它是个「一次性」门**：`miscInfo` 由加速那条 case
+  //     自己置起（`set_misc_info`），所以整场最多滚出一次加速。⚠ 血量读的是
+  //     **`curHp < maxHp/2`**（严格小于，C++ 整除），而 `maxHp` 恒是 456 —— 228 血是分界。
+  //  ②⚠⚠ **第一段的重掷不是「再滚一次同样的 roll」**：`aiRng.random(50,99)` 的取值
+  //     区间是 **[50, 99]**，恒 ≥ 50。所以重掷之后第二段那道 `myRoll < 80` 仍有可能命中
+  //     （50~79），而第三段（≥ 80）也有可能。写成 `random(99)` 会让分布整个变形。
+  //  ③⚠ **第二段用的是 `lastMove`（上一格），第一段用的是 `lastTwoMoves`（最近两格都是）**
+  //     ——同一只怪上两种谓词并存，与觉醒者同族。抄串了只在「刚出过一次头槌」的回合分岔。
+  //  ④⚠ `randomBoolean(0.66f)` 的 **true 那一支是混响**（不是涟漪）。⚠ 它是 `float`
+  //     字面量，必须走 `Math.fround`——这条流的取值靠 `nextFloat() < chance` 比较。
+  //  ⑤⚠⚠ **第三段的 `random(74)` 是单参重载**（`Random::random(int range)` = 闭区间
+  //     `[0, 74]`，75 个取值），不是 `random(0, 74)` 之外的什么东西——两者同解，但别抄成
+  //     `random(74, 99)` 或 `random(73)`。它只在「上一招是涟漪」时才掷，所以这一段的
+  //     aiRng 消耗**逐回合不同**。
+  //  ⑥⚠ 第三段那道门读的是 `lastMove(RIPPLE)`：**不满足就直接返回涟漪、一次都不掷**。
+  //     所以「roll >= 80」这一档的 aiRng 消耗是 0 次或 1 次两种。
+  //  ⑦ 三个字面量分界 **45 / 80 / 45** 各自独立（第一段的 45 与第三段的 45 同值但是两处），
+  //     别合并成一个常量。
+  time_eater: (bc, m, roll) => {
+    const usedHaste = m.miscInfo !== 0;
+    const underHalfHp = m.hp < Math.trunc(m.maxHp / 2);
+    if (!usedHaste && underHalfHp) {
+      return "haste";
+    }
+    let myRoll = roll;
+    if (myRoll < 45) {
+      if (!lastTwoMoves(m, "te_reverberate")) {
+        return "te_reverberate";
+      }
+      myRoll = bc.rng.aiRng.random(50, 99); // ★ 追加一次 aiRng（重掷进 [50,99]）
+    }
+    if (myRoll < 80) {
+      if (!lastMove(m, "te_head_slam")) {
+        return "te_head_slam";
+      }
+      if (bc.rng.aiRng.randomBoolean(Math.fround(0.66))) {
+        // ★ 追加一次 aiRng
+        return "te_reverberate";
+      }
+      return "te_ripple";
+    }
+    if (lastMove(m, "te_ripple")) {
+      myRoll = bc.rng.aiRng.random(74); // ★ 追加一次 aiRng（单参重载 = [0,74]）
+      if (myRoll < 45) {
+        return "te_reverberate";
+      }
+      return "te_head_slam";
+    }
+    return "te_ripple";
+  },
 };
 
 // ============================================================================
@@ -3369,6 +3447,32 @@ const MOVE_TURN_END: Record<string, MoveTurnEnd> = {
   "awakened_one/rebirth": (bc, m) => {
     setMove(m, "dark_echo");
     bc.rng.aiRng.random(99); // ★ 消耗一次 aiRng（noOpRollMove，**同步**，意图不变）
+  },
+
+  // —— 第三十八批：时间吞噬者 ——
+  //
+  // 四条 case **两种形态并存**（MonsterSpecific.cpp:1638-1671），照抄别统一：
+  //   混响 / 头槌   `addToBot(Actions::RollMove(idx));` —— 默认值 `"roll"`，不写进来
+  //   涟漪 / 加速   `rollMove(bc);`                     —— 第六形态：**同步的真 rollMove**
+  //
+  // ⚠ 判据仍是那句老话：**照着 case 从上到下读**——分界不在「这一招打不打人」上
+  //   （混响与头槌都入队 RollMove，而涟漪与加速都同步），而在参考写了哪一句。
+  // ⚠ 两条同步收尾都是**真** rollMove（掷 `aiRng.random(99)` 并选新意图，出招规则里
+  //   还可能再追加 1 次），不是 `noOpRollMove` 那种掷完丢掉。
+  //
+  // 涟漪：整条 case 是「同步加格挡 + 三句同步 debuff + 同步 rollMove」。
+  // ⚠ 顺序可观察性：加格挡与减益都排在 rollMove **之前**，而时间吞噬者的出招规则
+  //   不读玩家状态、也不读自己的格挡——所以这一处当前观察不到；形状照抄。
+  "time_eater/te_ripple": (bc, m) => {
+    rollMove(bc, m); // ★ 消耗一次 aiRng（同步的真 rollMove，不是 no_op）
+  },
+  // 加速：整条 case 是「置锁存位 + 抬血到半血 + (asc19 格挡) + 清减益 + 同步 rollMove」。
+  // ⚠⚠ **这里的顺序真的可观察**：紧接着的 `getMoveForRoll` 读的正是刚被置起的 `miscInfo`
+  //   （`usedHaste`）与刚被抬到 `maxHp/2` 的 `curHp`（`underHalfHp`）。两个字段都在
+  //   「加速那道门」上，所以把 rollMove 提到效果之前会让加速**当场再滚出一次自己**、
+  //   下一个怪物回合再加速一遍（血量会被反复压回半血）。
+  "time_eater/haste": (bc, m) => {
+    rollMove(bc, m); // ★ 消耗一次 aiRng（同步的真 rollMove）
   },
 };
 
@@ -4686,6 +4790,13 @@ const ENCOUNTER_BUILDERS: Record<string, EncounterBuilder> = {
     bc.monsters.push(emptyMonsterSlot()); // 3 号位：预留（第二句 `++monsterCount`）
     createMonster(bc, "dagger"); // 4 号位 ★ 消耗一次 monsterHpRng
   },
+
+  // 时间吞噬者（第三十八批）：对齐 MonsterGroup.cpp:441-443，一句
+  // `createMonster(bc, MonsterId::TIME_EATER);`——**单怪**，没有预留空位、没有候选池。
+  // ⚠ 与觉醒者不同（那个是邪教徒 ×2 + Boss 三只），所以策略从第一张牌起就在打 Boss 本人。
+  time_eater: (bc) => {
+    createMonster(bc, "time_eater"); // ★ 消耗一次 monsterHpRng
+  },
 };
 
 // ============================================================================
@@ -5093,6 +5204,21 @@ const PRE_BATTLE_ACTION: Record<string, PreBattleAction> = {
     }
     addPower(m.powers, "curiosity", bc.ascension >= 19 ? 2 : 1);
     addPower(m.powers, "regen", bc.ascension >= 19 ? 15 : 10);
+  },
+
+  // 时间吞噬者（MonsterSpecific.cpp:223-226，第三十八批）：整条 case 只有一句
+  // `buff<MS::TIME_WARP>(0);`。
+  // ⚠⚠ **这是「开局 Power 的第三种写法」**（`buff` 到「位置上、层数 0」）：
+  //   `Monster::buff` 对 TIME_WARP 走的是 `setHasStatus(true); uniquePower0 += 0;`
+  //   （Monster.h:545-558），与蠕动血块的反应 / 巨头的缓慢那两条
+  //   `setHasStatus(true); setStatus(0);` 数值终态相同。三条形状差别是承重的：
+  //   ① **它平时不进快照**（harness 的 `getStatusInternal` 返回 0 就被 `v == 0` 折叠），
+  //      所以开局那一帧看不见 TIME_WARP——第一次见到它是玩家打出第一张牌之后的 `TIME_WARP: 1`；
+  //   ② **`onAfterUseCard` 里的读点必须用 `hasPower`（条目在不在）而不是「层数 > 0」**，
+  //      否则计数器一次都涨不起来（0 > 0 恒假）。
+  // ⚠ 参考没有给它任何别的开局 buff：456 血的 Boss 开局身上一个 Power 都看不见。
+  time_eater: (_bc, m) => {
+    addPower(m.powers, "time_warp", 0);
   },
 };
 
@@ -5529,6 +5655,15 @@ const MONSTER_ATTACK_MOVES: ReadonlySet<string> = new Set([
   "awakened_one/dark_echo",
   "awakened_one/sludge",
   "awakened_one/aw_tackle",
+  // 时间吞噬者（`:524-525`，第三十八批）。⚠ **四招里只有两条在**，而且两条挨着写：
+  //   `TIME_EATER_REVERBERATE` / `TIME_EATER_HEAD_SLAM` → 在（两条都走 `attackPlayerHelper`）；
+  //   `TIME_EATER_RIPPLE` / `TIME_EATER_HASTE`          → **不在**（一点伤害都不带）。
+  // ⚠ 头槌在列的理由与觉醒者的污泥同族：判据是**有没有走 `attackPlayerHelper`**，
+  //   不是「这一招还顺手做了别的没有」——头槌还会上抽牌削减、asc19 还塞两张黏液，照样算攻击。
+  // ⚠ 涟漪在真实游戏里显示的是「防御 + debuff」双意图，而加速显示的是「buff」；
+  //   两者都不带伤害，所以参考不把它们收进白名单，与我们的 `intent` 字段无关。
+  "time_eater/te_reverberate",
+  "time_eater/te_head_slam",
 ]);
 
 /**
@@ -10140,12 +10275,50 @@ function onAfterUseCard(
   //
   // ⚠ 参考读的是 `monsters.arr[0]`：**写死 0 号位、不判死活**，与激怒 / 尖锐外壳同一个写法。
   //   缓慢全参考项目只有巨头一个宿主，而它是单怪编队，所以这里永远不会产生分歧。
-  // ⚠ `triggerOnUse` 在能走到这里的路径上**恒为真**（`CardQueueItem::triggerOnUse` 默认 true，
+  // ⚠ `triggerOnUse` 在**玩家出牌**那条路径上恒为真（`CardQueueItem::triggerOnUse` 默认 true，
   //   而 `playCardQueueItem` 只在 `purgeOnUse || (triggerOnUse && …)` 时才调 `useCard`，
-  //   `purgeOnUse` 那一族又不改这一位）。唯一的假值来源是 `Actions::TimeEaterPlayCardQueueItem`
-  //   （时间吞噬者，尚未登记）。照抄这道门，别因为「当前恒真」就省掉。
+  //   `purgeOnUse` 那一族又不改这一位）。唯一的假值来源是
+  //   `Actions::TimeEaterPlayCardQueueItem`（第三十八批装上，见 `callEndTurnEarlySequence`）
+  //   ——时间扭曲结束回合时被丢回来的那些牌**不再**推进计数器，否则一次结束回合会连锁触发。
   if (triggerOnUse) {
     const m0 = bc.monsters[0];
+    // 时间扭曲（TIME_WARP，时间吞噬者，第三十八批）。对齐 BattleContext.cpp:1974-1985：
+    //     if (m.hasStatus<MS::TIME_WARP>()) {
+    //         auto timeWarp = m.getStatus<MS::TIME_WARP>();
+    //         if (timeWarp == 11) {
+    //             m.setStatus<MS::TIME_WARP>(0);
+    //             m.buff<MS::STRENGTH>(2);
+    //             callEndTurnEarlySequence();
+    //         } else {
+    //             m.setStatus<MS::TIME_WARP>(timeWarp + 1);
+    //             ++timeWarp;          // ← 局部变量自增，之后没有任何人读它
+    //         }
+    //     }
+    // ⚠ 六处照抄：
+    //  ①⚠⚠ **阈值是 `== 11` 而不是 `>= 11`**。计数从 0 起（`preBattleAction` 的
+    //     `buff<TIME_WARP>(0)`），第 1 张牌把它写成 1……第 11 张写成 11，**第 12 张**
+    //     才命中。写成 `>=` 在正常路径上同解，但那是巧合——真正钉住它的是「12 张」这个周期。
+    //  ②⚠⚠ **`setStatus<TIME_WARP>(0)` 只写数值、不碰 statusBits**（Monster.h:255-275），
+    //     所以归零之后这条 Power **还在位置上**、计数继续从 0 涨。写成 `removeStatus`
+    //     （整条摘掉）会让第二次时间扭曲永远不触发。⚠ 归零那一帧快照里看不见它
+    //     （harness 折叠 `v == 0`），这与开局那一帧同理。
+    //  ③⚠ **`++timeWarp` 是第 N 种死代码**：`timeWarp` 是 `auto`（值拷贝）的局部变量，
+    //     自增之后函数就走到底了，没有任何人读它。照抄参考的实际行为 = 什么都不做。
+    //  ④ 力量是 `buff<MS::STRENGTH>(2)`——**同步**、直接加在数值字段上，不过神器、不入队。
+    //  ⑤⚠⚠ **读的是写死的 `monsters.arr[0]`、且不判死活**，与激怒 / 尖锐外壳 / 缓慢
+    //     同一个写法。时间吞噬者全参考只出现在 `TIME_EATER`（单怪）里，所以不产生分歧。
+    //  ⑥⚠⚠ 顺序照抄：**时间扭曲 → 缓慢 → 死亡节拍**。三者共用同一道 `triggerOnUse` 门。
+    if (m0 !== undefined && hasPower(m0.powers, "time_warp")) {
+      const timeWarp = getPower(m0.powers, "time_warp");
+      if (timeWarp === 11) {
+        setPower(m0.powers, "time_warp", 0);
+        addPower(m0.powers, "strength", 2);
+        callEndTurnEarlySequence(bc, card);
+      } else {
+        setPower(m0.powers, "time_warp", timeWarp + 1);
+        // ⚠ 参考这里还有一句 `++timeWarp;`——局部变量自增、之后无人读。照抄 = 不写。
+      }
+    }
     // 缓慢（SLOW，巨头，第三十五批）：`if (m.hasStatus<MS::SLOW>()) m.buff<MS::SLOW>(1);`
     // ⚠ 三处照抄：
     //  ① 时点是 `Actions::OnAfterCardUsed` 这条**排队动作**执行的那一刻（`useCard` 末尾
@@ -10808,6 +10981,82 @@ export function endTurn(bc: BattleContext): EndTurnResult {
 }
 
 /**
+ * **出牌中途强制结束玩家回合**（对齐 `BattleContext::callEndTurnEarlySequence`，
+ * BattleContext.cpp:2152-2161）。全参考项目**只有时间扭曲**调它。
+ *
+ * ```cpp
+ * void BattleContext::callEndTurnEarlySequence() {
+ *     while (!cardQueue.isEmpty()) {
+ *         auto item = cardQueue.popFront();
+ *         if (item.autoplay && !item.purgeOnUse) {
+ *             addToBot( Actions::TimeEaterPlayCardQueueItem(item) );
+ *         }
+ *     }
+ *     addToTopCard(CardQueueItem::endTurnItem());
+ *     endTurnQueued = true;
+ * }
+ * ```
+ *
+ * 它与 `endTurn()`（玩家点结束回合）的关系值得单写一段，因为形状差三处：
+ *
+ *  1. **`endTurn()` 往队尾推、这里往队首推**（`addToBotCard` vs `addToTopCard`）。当前同解
+ *     ——上面那个 `while` 刚把队列抽空了——但形状照抄。
+ *  2. **`endTurn()` 里那句 `energyWasted += player.energy` 这里没有**（我们还没登记任何
+ *     读它的东西，两边都只是记账）。
+ *  3. **`endTurn()` 带 `assert(!endTurnQueued)`，这里没有**。走到这里时玩家回合必然还没结束
+ *     （出牌只在 `player_normal` 受理），所以两者当前同解。
+ *
+ * ⚠⚠ **队列里那些牌的去向是这个函数唯一的观察面，而三类去向各不相同**：
+ *   * `autoplay && !purgeOnUse`（浩劫 / 混乱从抽牌堆顶翻出来、还没轮到结算的那张）
+ *     → 排一条动作，把它按 **`triggerOnUse = false`** 走一遍 `onAfterUseCard`：
+ *       **不结算效果**、不推进时间扭曲计数器，只是进弃牌堆（或消耗堆）。
+ *       所以「浩劫翻出一张牌，同一瞬间时间扭曲结束了回合」的表现是：那张牌**白翻**了。
+ *   * `purgeOnUse`（二连击的复制项）→ **直接丢弃**，连 `onAfterUseCard` 都不走。
+ *       原牌早已带着第一次的结算进了弃牌堆，副本就此蒸发（复制的那一击**不会**打出去）。
+ *   * 其余（当前只有 `isEndTurn`，走不到）→ 同样直接丢弃。
+ *
+ * ⚠ `exhaustOnUse` 那一句是参考的一处「读了个奇怪的东西」，照抄：
+ *   `item.exhaustOnUse |= bc.curCardQueueItem.card.doesExhaust();`（Actions.cpp:896-904）
+ *   ——它读的是**当前正在结算的那张牌**（即触发时间扭曲的那一张），不是队列项自己的牌。
+ *   而那条动作紧接着又把 `curCardQueueItem` 覆写成自己这一项，所以**第二条起读到的是
+ *   前一条的牌**。这条链在我们这边是在建动作那一刻**静态**算出来的，两者严格等价：
+ *   这些动作全部在下一次 `playCardQueueItem` 之前执行完（主循环先抽干动作队列才看出牌队列，
+ *   而没有任何动作会直接调 `playCardQueueItem`），所以中间没人能改写 `curCardQueueItem`。
+ * ⚠ `Actions::TimeEaterPlayCardQueueItem` 的 `clearOnCombatVictory` 是 **false**
+ *   （Actions.cpp:903 那行的第二个参数），与 `OnAfterCardUsed` 一致——打完这张牌就赢了的话
+ *   那张牌照样要落进弃牌堆。
+ */
+function callEndTurnEarlySequence(bc: BattleContext, currentCard: CombatCard): void {
+  // 「参考读到的 `curCardQueueItem.card`」在这条链上的取值：第一条是触发时间扭曲的那张牌，
+  // 之后每一条都是前一项的牌。见上面那段等价性论证。
+  let prevCard = currentCard;
+  while (!bc.cardQueue.isEmpty()) {
+    const item = bc.cardQueue.popFront();
+    if (!item.autoplay || item.purgeOnUse) {
+      continue; // 复制项与 endTurn 项直接丢弃（参考的 `if` 没有 else）
+    }
+    const card = item.card;
+    if (card === null) {
+      continue; // 只有 endTurn 项没有牌，而它的 autoplay 恒假——防御性分支
+    }
+    const exhaustOnUse =
+      item.exhaustOnUse || exhaustsOf(getCardDef(prevCard.defId), prevCard.upgraded);
+    prevCard = card;
+    // desc 与普通的 OnAfterCardUsed 完全同形（同一个函数、同一组实参），所以复用
+    // `after_use_card` 这一条描述即可，不必新开一种 ActionDesc。
+    addToBot(bc, (c) => onAfterUseCard(c, card, exhaustOnUse, false, false), false, {
+      kind: "after_use_card",
+      card,
+      exhaustOnUse,
+      purgeOnUse: false,
+      triggerOnUse: false,
+    });
+  }
+  bc.cardQueue.pushFront(endTurnItem());
+  bc.endTurnQueued = true;
+}
+
+/**
  * 回合末动作（对齐 BattleContext::callEndOfTurnActions，BattleContext.cpp:2032）。
  *
  * 触发点是 cardQueue 里的 endTurn 项——所以它排在 onTurnEnding **之前**：先把
@@ -11197,10 +11446,15 @@ function takeTurn(bc: BattleContext, m: CombatMonster): string | null {
     // 爬升度门（第二十一批）：参考里「case 里多出来的一句 `if (asc17) addToBot(...)`」。
     // ⚠ 它必须**在 outcome 判断之前**跳过，否则会白占一次循环——不过两者都不消耗 RNG，
     //   放在这里只是为了让「这条效果压根不存在」这个语义最直白。
-    if (eff.kind === "apply_power" && eff.minAscension !== undefined) {
-      if (bc.ascension < eff.minAscension) {
-        continue;
-      }
+    // ⚠ 第三十八批把这道门从 `apply_power` 铺到 `gain_block` 与 `add_card`（时间吞噬者的
+    //   加速 asc19 加 32 格挡、头槌 asc19 塞两张黏液，都是「case 里多出来的一整句」）。
+    //   三种 `kind` 共用同一段判断，不再各写各的。
+    if (
+      (eff.kind === "apply_power" || eff.kind === "gain_block" || eff.kind === "add_card") &&
+      eff.minAscension !== undefined &&
+      bc.ascension < eff.minAscension
+    ) {
+      continue;
     }
     // 同理：一旦分出胜负，后续排队效果在参考里也不会再执行。
     if (bc.outcome !== "undecided") {
@@ -11472,6 +11726,17 @@ function takeTurn(bc: BattleContext, m: CombatMonster): string | null {
           addPower(torchHead.powers, power, buffAmount);
         }
       }
+    } else if (eff.kind === "set_hp_half_max") {
+      // 把当前生命**直接写成** `maxHp / 2`（时间吞噬者的加速，第三十八批）。对齐
+      // `MonsterSpecific.cpp:1639` 那一句 `curHp = maxHp / 2;`。
+      // ⚠ 三处照抄：
+      //  ① 它是**赋值**不是 `Monster::heal`——heal 那一族（秘法师 / 冠军）会钳上限、
+      //     还会把 `halfDead` 翻回来。当前两者同解（出招门是 `curHp < maxHp/2`，
+      //     所以恒是回血、且结果恰好等于上限的一半，不可能溢出），形状照抄。
+      //  ② C++ **整数除法**（向零截断）：456 / 2 = 228。
+      //  ③ **同步**（那条 case 一个 addToBot 都没有），所以紧随其后的同步 rollMove
+      //     读到的是抬完血之后的 `curHp`——这正是「加速不会连出两次」的实现。
+      m.hp = Math.trunc(m.maxHp / 2);
     } else if (eff.kind === "remove_debuffs") {
       // 清掉自己身上的减益（冠军的暴怒，第二十九批）。对齐 `Monster::removeDebuffs`
       //（Monster.cpp:522-535）——**同步**，参考那条 case 里没有任何 addToBot。
@@ -11777,6 +12042,37 @@ function debuffPlayer(
     artifact.amount -= 1;
     if (artifact.amount === 0) {
       bc.player.powers.splice(bc.player.powers.indexOf(artifact), 1);
+    }
+    return;
+  }
+  // 抽牌削减（DRAW_REDUCTION，时间吞噬者的头槌，第三十八批）。对齐 Player.h:385-390：
+  //     if (s == PlayerStatus::DRAW_REDUCTION) {
+  //         --cardDrawPerTurn;
+  //         setJustApplied<PS::DRAW_REDUCTION>(true);
+  //         setHasStatus<PS::DRAW_REDUCTION>(true);
+  //         return;
+  //     }
+  // ⚠ 五处照抄：
+  //  ①⚠⚠ **`amount` 被完全丢掉**：无论传几，`cardDrawPerTurn` 都只减 **1**。参考在头槌
+  //     那里传的实参是 1，两者当前同值——但形状照抄（`Actions::DebuffPlayer<DRAW_REDUCTION>`
+  //     的模板参数决定走这一支，实参只喂给顶部那道 `amount == 0` 的门）。
+  //  ②⚠⚠ **真正的数值住在 `cardDrawPerTurn`，Power 本身只是个 bool 标记**：参考走
+  //     `setHasStatus` 而不写 `statusMap`，所以 harness 的 `playerStatusValue` 按 1 输出，
+  //     我们也存 1。叠加两次 → `cardDrawPerTurn` 再减 1，快照里还是 `DRAW_REDUCTION: 1`。
+  //  ③ 位置在神器那道门**之后**——头槌的抽牌削减照样会被神器（古代药水）吃掉，
+  //     而且被吃掉时 `cardDrawPerTurn` **一点都不减**。
+  //  ④ `justApplied` 在这里是**无条件**置真的（上面那段 `isSourceMonster && !hasStatus`
+  //     的通用逻辑对它是冗余的），所以「施加的那个回合不递减」恒成立。
+  //  ⑤ 归还在 `afterMonsterTurns` 里（见那里的 skipFirst 段），**排在入队抽牌之后**
+  //     ——所以本次抽牌真的少抽一张。
+  if (power === "draw_reduction") {
+    bc.player.cardDrawPerTurn -= 1;
+    const existing = bc.player.powers.find((x) => x.id === "draw_reduction");
+    if (existing === undefined) {
+      bc.player.powers.push({ id: "draw_reduction", amount: 1, justApplied: true });
+    } else {
+      existing.amount = 1;
+      existing.justApplied = true;
     }
     return;
   }
@@ -12350,7 +12646,36 @@ function afterMonsterTurns(bc: BattleContext): void {
   // DRAW_REDUCTION 会改这个字段，读晚了就会多抽。
   const drawCount = bc.player.cardDrawPerTurn;
   addToBot(bc, (c) => drawCards(c, drawCount));
-  // TODO(后续PR): DRAW_REDUCTION 的 skipFirst 递减；applyStartOfTurnPostDrawRelics（怀表 / 扭曲钳）。
+  // 抽牌削减的 skipFirst 归还（第三十八批）。对齐 BattleContext.cpp:2227-2233：
+  //     if (player.hasStatus<PS::DRAW_REDUCTION>()) {
+  //         if (player.wasJustApplied<PS::DRAW_REDUCTION>()) {
+  //             player.setJustApplied<PS::DRAW_REDUCTION>(false);
+  //         } else {
+  //             player.removeStatus<PS::DRAW_REDUCTION>();
+  //             ++player.cardDrawPerTurn;
+  //         }
+  //     }
+  // ⚠ 四处照抄：
+  //  ①⚠⚠ **位置在 `addToBot(DrawCards(cardDrawPerTurn))` 之后**——张数在入队那一刻就已经
+  //     取好（上面那行 `drawCount`），所以「归还」发生在本回合抽完之后、不影响本回合。
+  //     把它提到抽牌之前会让削减一次都生效不了。
+  //  ②⚠ 它是**两个回合边界**：头槌在第 N 个怪物回合施加 → 第 N+1 个玩家回合少抽一张
+  //     （这一次只清 justApplied）→ 第 N+2 个玩家回合恢复。所以一次头槌只削减**一个回合**，
+  //     而这个 Power 在快照里会连着出现两帧组的时间。
+  //  ③ 走的是 `removeStatus`（整条摘掉）而不是 `decrementStatus`——它没有层数可减。
+  //  ④ `++cardDrawPerTurn` 与 `Player::debuff` 里那句 `--cardDrawPerTurn` 配对，
+  //     叠加两次头槌就要归还两次（每个回合末只归还一层，因为 Power 只有一条）。
+  //     ⚠ 这正是参考的行为：两次削减只会被归还一次，`cardDrawPerTurn` 永久少 1。照抄。
+  const drawReduction = bc.player.powers.find((p) => p.id === "draw_reduction");
+  if (drawReduction !== undefined) {
+    if (drawReduction.justApplied === true) {
+      drawReduction.justApplied = false;
+    } else {
+      bc.player.powers.splice(bc.player.powers.indexOf(drawReduction), 1);
+      bc.player.cardDrawPerTurn += 1;
+    }
+  }
+  // TODO(后续PR): applyStartOfTurnPostDrawRelics（怀表 / 扭曲钳）。
   applyStartOfTurnPostDrawPowers(bc);
   bc.player.energy = bc.player.energyPerTurn;
   // ⚠⚠ **这里原先有一句「场上没有活怪就判胜」，第三十七批删掉了——参考的
@@ -12766,6 +13091,24 @@ export const SUPPORTED_ENCOUNTERS: readonly string[] = [
   //     两个新 Power，以及第一张「抽到时有效果」的状态牌**虚无**（抽到 -1 能量）。
   //   ⚠ 这个编队**只有 asc0 的背书**：觉醒者的 `ascCalibrated` 没有置。
   "awakened_one",
+  // —— 第三十八批：第三幕 Boss **时间吞噬者**（走 harness 新追加的 variant 38，
+  //   variant 37 的 encounters 一个字没动，`awakened_one.jsonl` 逐字节不变）。
+  //   40 种子、**爬升度 0**、**目标策略 0**。
+  //   ⚠⚠ 它带来 **TIME_WARP**——本项目第一条**改回合结构**的 Power：玩家每打出 12 张牌，
+  //     这只怪 +2 力量并**当场结束玩家回合**（`BattleContext::callEndTurnEarlySequence`，
+  //     BattleContext.cpp:2152）。读点与缓慢同在 `onAfterUseCard` 那条共享出牌路径上，
+  //     顺序是**时间扭曲 → 缓慢 → 死亡节拍**（第三条是第四幕的，留 TODO）。
+  //   ⚠ 另外三样都是新的：`Player::debuff<DRAW_REDUCTION>`（数值住在 `cardDrawPerTurn`、
+  //     Power 本身只是 bool 标记，回合开始 skipFirst 归还）、
+  //     `set_hp_half_max`（加速那句 `curHp = maxHp / 2`，赋值而非 heal）、
+  //     以及 `minAscension` 从 `apply_power` 铺到 `gain_block` / `add_card`。
+  //   ⚠⚠ **牌组是本批第二次为「让新代码被走到」而设计的**（第一次是第三十七批）：
+  //     `BATCH_1 + SPOT_WEAKNESS`（22 张）下时间吞噬者 **120 / 120 条一次都没掉到半血**，
+  //     `TIME_EATER_HASTE` 出现 0 / 执行 0。最终用的是 59 张全升级牌组，见 harness 注释。
+  //     牌组里的浩劫 ×4 与二连击 ×2 是**专为 `callEndTurnEarlySequence` 的排空循环加的**
+  //     ——它们是全项目仅有的两种「出牌队列里还压着东西」的产出者。
+  //   ⚠ 这个编队**只有 asc0 的背书**：时间吞噬者的 `ascCalibrated` 没有置。
+  "time_eater",
 ];
 
 export function isEncounterSupported(encounterId: string): boolean {

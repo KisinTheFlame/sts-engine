@@ -334,8 +334,19 @@ export type PowerId =
   | "hello_world" // 你好世界：每个玩家回合开始，将 = 层数张随机普通牌加入手牌（机器人）
   | "no_card_block" // 无法格挡：牌产生的格挡被抑制（层数即剩余生效回合数，回合末 -1，应急按钮）
   | "electrodynamics" // 电动力学：闪电球伤害命中所有敌人（机器人）
-  | "time_warp" // 时间扭曲：玩家每打出 timeWarpEvery 张牌，此敌人 +2 力量并立即结束玩家回合（时间吞噬者，敌人身上·计数）
-  | "draw_reduction" // 抽牌削减：下个玩家回合少抽 = 层数张（时间吞噬者头槌，玩家身上·一次性）
+  // 时间扭曲（时间吞噬者，**敌人身上·计数器**，第三十八批）。
+  // ⚠ 层数是「本场已打出多少张牌」的计数，不是强度：`preBattleAction` 里 `buff<TIME_WARP>(0)`
+  //   开局置 0，玩家每打出一张牌 +1，**数到 11 的那一次**（即第 12 张）归零、此敌人 +2 力量、
+  //   并**立即结束玩家回合**。结算点在 `onAfterUseCard` 那条共享出牌路径上，见那里的注释。
+  // ⚠ 与缓慢（SLOW）同族的「位置上、层数 0」写法：0 层时不进快照，读点必须用 `hasPower`。
+  | "time_warp"
+  // 抽牌削减（时间吞噬者的头槌，**玩家身上·一次性**，第三十八批）。
+  // ⚠ 它是个**纯 bool 标记**，真正的数值住在 `CombatPlayer.cardDrawPerTurn`：
+  //   `Player::debuff<DRAW_REDUCTION>` 无视 amount、恒 `--cardDrawPerTurn` 并置位
+  //   （Player.h:385-390），回合开始那次 skipFirst 到期时再 `++cardDrawPerTurn` 并摘掉
+  //   （BattleContext.cpp:2227-2233）。所以层数恒是 1（harness 也按 1 输出），叠加两次
+  //   只会让 `cardDrawPerTurn` 再少 1，快照里还是 1。
+  | "draw_reduction"
   | "duplication"; // 复制：接下来 = 层数张打出的牌各额外结算一次（复制药水；每张 -1 层）
 
 /**
@@ -486,7 +497,16 @@ export type Effect =
   // sync：敌人专用。参考的怪物加格挡有**两种写法并存**——绝大多数是**同步** `addBlock(n)`
   // （拾荒者烟雾弹 MonsterSpecific.cpp:937 等 20 余处），少数是 `addToBot(MonsterGainBlock)`
   // （颚虫的猛击/咆哮 :858/:865 等 6 处）。省略 = 入队（既有怪都是这一种）。
-  | { kind: "gain_block"; amount: number; sync?: boolean; ascAmount?: AscTier[] }
+  // minAscension：敌人专用，语义与 `apply_power` 上那一位相同（**整条效果**只在
+  // `ascension >= minAscension` 时才结算）。第三十八批加的宿主是时间吞噬者的加速——
+  // `if (asc19) { addBlock(32); }`（MonsterSpecific.cpp:1640-1642），一条多出来的语句。
+  | {
+      kind: "gain_block";
+      amount: number;
+      sync?: boolean;
+      ascAmount?: AscTier[];
+      minAscension?: number;
+    }
   // 玩家用：当前格挡翻倍（坚守）。
   | { kind: "double_block" }
   // 玩家用：充能一颗指定类型的球（机器人；球槽满则先唤醒最左侧的球）。
@@ -830,6 +850,10 @@ export type Effect =
   //   `MakeTempCardInDiscard({DAZED}, asc18 ? 3 : 2)`（哨卫射钉 MonsterSpecific.cpp:1064）与
   //   `MakeTempCardInDiscard({SLIMED}, asc19 ? 5 : 3)`（史莱姆王黏液喷射 :1112）都是分张数。
   //   ⚠ 与 `upgradedAfterTurn` 正交：一个管**几张**、一个管**升不升级**，两条分档互不影响。
+  // minAscension：敌人专用，语义与 `apply_power` / `gain_block` 上那一位相同（**整条效果**
+  //   只在 `ascension >= minAscension` 时才结算）。第三十八批加的宿主是时间吞噬者的头槌——
+  //   `if (asc19) { addToBot(MakeTempCardInDiscard(SLIMED, 2)); }`（MonsterSpecific.cpp:1651-1653），
+  //   一条多出来的语句，与「同一个 `count` 换个值」（`ascAmount`）是两回事。
   | {
       kind: "add_card";
       cardId: string;
@@ -838,6 +862,7 @@ export type Effect =
       sync?: boolean;
       upgradedAfterTurn?: number;
       ascAmount?: AscTier[];
+      minAscension?: number;
     }
   // —— X 费牌：xValue = 打出时的能量，以下效果按 X 次 / X 倍结算 ——
   | { kind: "deal_damage_all_x"; amount: number } // 对所有敌人造成 amount 伤害，X 次（旋风斩）
@@ -974,7 +999,15 @@ export type Effect =
   | { kind: "exhaust_hand_gain_energy" } // 消耗手牌中费用最高的一张，获得 = 其费用的能量（回收；自动取最贵）
   | { kind: "double_energy" } // 获得等同于当前能量的能量（双倍能量）
   | { kind: "retain_hand" } // 本回合结束时保留全部手牌（平衡）
-  | { kind: "boss_haste" } // 敌人自身：回复生命到最大值的一半、清除自身减益（时间吞噬者加速）
+  // 敌人自身：**把当前生命直接写成 `maxHp / 2`**（时间吞噬者的加速，第三十八批）。
+  // 对齐 `MMID::TIME_EATER_HASTE` 那条 case 的第二句 `curHp = maxHp / 2;`
+  //（MonsterSpecific.cpp:1639）。⚠ 三处照抄：
+  //  ① 它是**赋值**不是 `heal()`——参考那一族（秘法师 / 冠军）走的是 `Monster::heal`
+  //     （带上限钳制、还会清 `halfDead`），这一句只写数值字段。当前两者同解（出招门是
+  //     `curHp < maxHp/2`，所以恒是回血且不可能超上限），形状照抄。
+  //  ② 是 C++ 的**整数除法**（向零截断）：456 / 2 = 228。
+  //  ③ **同步**（那条 case 一个 addToBot 都没有）。
+  | { kind: "set_hp_half_max" }
   | { kind: "fill_potion_slots" } // 玩家：把所有空药水槽填满随机药水（熵酿）
   | { kind: "channel_orb_per_slot"; orbType: OrbType } // 玩家：每个球槽充能 1 颗指定球（暗影精华）
   | { kind: "randomize_hand_costs" } // 玩家：将手牌费用随机改为 0~3（本场有效，蛇油药水）
@@ -1172,17 +1205,12 @@ export type EnemyDef = {
   //      ——被玩家打死的爆破怪一点伤害都不会造成。写成 `deathEffects` 是两处都不对。
   /** 半血分裂：降到 ≤maxHp/2 时分裂成这些敌人（各自 HP = 分裂瞬间当前 HP）。 */
   splitInto?: string[];
-  /**
-   * 复活：首次死亡时以此 HP 复活并获得力量（觉醒者二阶段），仅触发一次。
-   *
-   * ⚠⚠ **第三十七批起这个字段没有任何写入者、也没有任何读者，是旧近似战斗的遗留。**
-   * 唯一的宿主（觉醒者）本批按参考逐位校准之后不再用它——二阶段的血量是复活那条 case 里
-   * **另一个写死的字面量**（`maxHp = asc9 ? 320 : 300`，MonsterSpecific.cpp:1712），
-   * 与数据表那次 `setRandomHp` 并列，不是同一份真相。实现见 `Effect` 的 `awakened_rebirth`。
-   * ⚠ 字段本身**没有删**：动 `EnemyDef` 的类型定义按 WORKFLOW 第 5 步属于「不自行拍板」，
-   * 报进报告。删它是安全的（`grep -rn reviveHp src test` 只剩这一行）。
-   */
-  reviveHp?: number;
+  // ⚠ 第三十八批删掉了 `reviveHp`（第三十七批留下的账）。它自觉醒者按参考校准之后就没有
+  //   任何写入者、也没有任何读者：二阶段的血量是复活那条 case 里**另一个写死的字面量**
+  //   （`maxHp = asc9 ? 320 : 300`，MonsterSpecific.cpp:1712），与数据表那次 `setRandomHp`
+  //   并列、不是同一份真相。实现见 `Effect` 的 `awakened_rebirth`。
+  //   与第十九批删 `modeShiftThreshold`、第三十二批删 `deathEffects`、第三十六批删
+  //   `intangibleAfterMove` 同一条判据：**只剩一个错误的或零个用户的字段就是第二份真相**。
   // ⚠ 第三十六批删掉了 `intangibleAfterMove`（复仇魔那条「出招后补虚无缥缈」）。
   //   它是旧近似战斗的字段，与参考对不上：参考把这件事写在**三条 case 各自的尾部**
   //   （`if (!hasStatus<MS::INTANGIBLE>())`），而且**三条的形状不一样**——多重打击与巨镰是
@@ -1190,8 +1218,11 @@ export type EnemyDef = {
   //   灼烧诅咒却是**同步**的 `buff<MS::INTANGIBLE>(2)`、排在同步的 rollMove 之后
   //   （MonsterSpecific.cpp:1585-1607）。一个数据字段表达不了这三种时序，真相在 `MOVE_TURN_END`。
   //   与第十九批删守卫者 `modeShift`、第三十二批删 `deathEffects` 同一条理由。
-  /** 时间吞噬者：玩家每打出这么多张牌，此敌人 +2 力量并立即结束玩家回合。省略=无。 */
-  timeWarpEvery?: number;
+  // ⚠ 第三十八批删掉了 `timeWarpEvery`（旧近似战斗给时间吞噬者起的字段）。真相不是一个
+  //   「每 N 张」的周期数，而是 `BattleContext::onAfterUseCard` 里那段状态机
+  //   （BattleContext.cpp:1974-1985）：门是**字面量 `timeWarp == 11`**（不是 `>=`、
+  //   也不是可配置的模），命中时归零 + `buff<STRENGTH>(2)` + `callEndTurnEarlySequence()`。
+  //   把周期写进数据表就是第二份真相——与本批删 `reviveHp` 同一条判据，先例见上一条注释。
 };
 
 /** 充能球类型（机器人专属）：闪电/冰霜/暗/等离子。 */

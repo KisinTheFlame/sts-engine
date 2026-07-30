@@ -450,6 +450,10 @@ const ENCOUNTER: Record<string, string> = {
   //   ⚠ 编队与它建的 Boss **同名**，但它一共建**三只**：`CULTIST` / `CULTIST` /
   //     `AWAKENED_ONE`（MonsterGroup.cpp:179-184），觉醒者在**最后一格（2 号位）**。
   AWAKENED_ONE: "awakened_one",
+  // —— 第三十八批：走 harness 新追加的 variant 38（variant 37 的 encounters 一个字没动）。
+  //   ⚠ 编队与它建的 Boss **同名**，而且是**单怪**（`MonsterGroup.cpp:441-443` 一句
+  //     `createMonster`）——与觉醒者那种「邪教徒 ×2 + Boss」不同。
+  TIME_EATER: "time_eater",
 };
 const MONSTER: Record<string, string> = {
   CULTIST: "cultist",
@@ -566,6 +570,12 @@ const MONSTER: Record<string, string> = {
   //     只剩 `REGEN: 10`。复活那一帧 `hp/maxHp` 直接回到 300/300 并多出 `MINION_LEADER: 1`。
   //   ⚠ `REGEN` 整场恒是 10：怪物侧的再生**不递减**。
   AWAKENED_ONE: "awakened_one",
+  // —— 第三十八批：时间吞噬者（单怪编队，不分裂、不召唤、不逃跑）。
+  //   ⚠ 它开局快照里**一个 power 都没有**：`buff<TIME_WARP>(0)` 是「位置上、层数 0」，
+  //     被 harness 的 `v == 0` 折叠掉。玩家打出第一张牌之后才出现 `TIME_WARP: 1`，
+  //     之后一路涨到 11、**第 12 张牌那一帧归零**（又被折叠）并多出 `STRENGTH: 2`。
+  //   ⚠ 加速那一帧最显眼：`hp` 直接跳回 `maxHp / 2 = 228`，身上的虚弱 / 易伤 / 枷锁全消失。
+  TIME_EATER: "time_eater",
   // ⚠ **分裂留下的空格**。参考的 `MonsterGroup::arr` 是定长 5 的数组，`monsterCount` 只是
   // 「dump 到第几格」；史莱姆王分裂时 `arr[0]` 与 `arr[2]` 被写、`monsterCount = 3`，
   // 于是 1 号格那只**从没被构造过**的默认 `Monster` 也被 dump 出来
@@ -823,6 +833,17 @@ const MOVE: Record<string, string> = {
   AWAKENED_ONE_DARK_ECHO: "dark_echo",
   AWAKENED_ONE_SLUDGE: "sludge",
   AWAKENED_ONE_TACKLE: "aw_tackle",
+  // —— 第三十八批：时间吞噬者四条 ——
+  // ⚠ **加速一场仗最多出一次**（出招规则的门是 `!usedHaste && curHp < maxHp/2`，而它自己
+  //   会把 `miscInfo` 置起、还把血抬回半血）。它的收尾是**同步的真 rollMove**，所以
+  //   加速那一帧的快照里 `move` 已经是下一招了。
+  // ⚠ 混响 / 头槌 / 涟漪三条互相牵制：第一段读 `lastTwoMoves(混响)`、第二段读
+  //   `lastMove(头槌)`、第三段读 `lastMove(涟漪)`——所以连续两帧同一招很常见，
+  //   连续三帧同一招则要看具体分支。
+  TIME_EATER_REVERBERATE: "te_reverberate",
+  TIME_EATER_HEAD_SLAM: "te_head_slam",
+  TIME_EATER_RIPPLE: "te_ripple",
+  TIME_EATER_HASTE: "haste",
   // 分裂留下的空格：那只默认 `Monster` 的 `moveHistory[0]` 是 `MMID::INVALID`
   // （`monsterMoveStrings[0] == "INVALID"`，MonsterMoves.h:215）。我们的空占位
   // `currentMove` 是空串。⚠ 这一条只有那个空格用得到——所有真怪在 `MonsterGroup::init`
@@ -1053,6 +1074,19 @@ const POWER: Record<string, string> = {
   // ⚠ 假死期间它照旧挂着（`removeDebuffs` 的名单里没有它），但不生效——
   //   回合末那两个循环跳过 `hp == 0` 的怪。
   REGEN: "regen",
+  // —— 第三十八批 ——
+  // 时间扭曲：**怪物身上**，时间吞噬者 preBattleAction 里 `buff<TIME_WARP>(0)`。
+  // ⚠ 与缓慢同族的「位置上、层数 0」，所以开局那一帧看不见它；玩家每打出一张牌 +1，
+  //   **涨到 11 的下一张**（第 12 张）归零 + 此怪 +2 力量 + 当场结束玩家回合。
+  //   于是它在快照里是 1、2、…、11、（消失）、1、2、… 的锯齿。
+  // ⚠ 它**只挂在 0 号位**（参考 `onAfterUseCard` 读的是 `monsters.arr[0]`），
+  //   时间吞噬者是单怪编队，当前无分歧。
+  TIME_WARP: "time_warp",
+  // 抽牌削减：**玩家身上**，时间吞噬者的头槌上的。
+  // ⚠ 它是纯 bool（参考走 `setHasStatus`、不写 statusMap），harness 因此恒输出 1；
+  //   真正的数值住在 `Player::cardDrawPerTurn`（快照里看不到，只能从「下回合抽了几张」
+  //   间接看出来）。⚠ 它带 skipFirst：施加的那个回合末不摘，下一个回合开始抽完牌才摘。
+  DRAW_REDUCTION: "draw_reduction",
 };
 
 const mapPotion = (p: string): string | null => (p in POTION ? POTION[p]! : p);

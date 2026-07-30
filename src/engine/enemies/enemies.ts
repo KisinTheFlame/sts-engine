@@ -2294,7 +2294,7 @@ const ENEMY_LIST: EnemyDef[] = [
     //   与守卫者的 `{240,240}` 同族，不是 `hpNoRoll`。
     // ⚠ 二阶段的血量**不读这张表**：复活那条 case 写死 `maxHp = asc9 ? 320 : 300`
     //   （MonsterSpecific.cpp:1712），是与这里并列的**第二个字面量**。旧近似表那个
-    //   `reviveHp` 字段本批删掉——它从来没有被任何代码读过。
+    //   `reviveHp` 字段第三十七批起就没有任何读者，**第三十八批把它从 `EnemyDef` 里删掉了**。
     hpMin: 300,
     hpMax: 300,
     // preBattleAction 见 sts-combat.ts 的 `PRE_BATTLE_ACTION.awakened_one`
@@ -2379,54 +2379,130 @@ const ENEMY_LIST: EnemyDef[] = [
     intentRule: { scripted: [], weighted: [] },
   },
 
-  // —— 第三幕 Boss：时间吞噬者（时间扭曲 + 半血加速）——
+  // —— 第三幕 Boss：时间吞噬者（第三十八批按参考逐位校准）——
   {
     id: "time_eater",
     name: "时间吞噬者",
+    // MonsterIds.h:213 `{{456,456},{480,480}}`；`setRandomHp(hpRng, asc >= 9)`
+    //（MonsterSpecific.cpp:76-89，**Boss** 那一档）。
+    // ⚠ 上下界相同**照样掷一次**（`Random::random(int,int)` 无条件 `++counter`）——
+    //   与守卫者的 `{240,240}` 同族，不是 `hpNoRoll`。
     hpMin: 456,
     hpMax: 456,
-    timeWarpEvery: 12,
+    // preBattleAction 见 sts-combat.ts 的 `PRE_BATTLE_ACTION.time_eater`
+    //（MonsterSpecific.cpp:223-226）：整条只有一句 `buff<MS::TIME_WARP>(0)`。
+    // ⚠ 那是「位置上、层数 0」的第三种写法（与蠕动血块的反应、巨头的缓慢同族），
+    //   所以开局快照里**看不到** TIME_WARP——它要等玩家打出第一张牌才现身。
+    // ⚠ 旧近似表那个 `timeWarpEvery: 12` 字段本批删掉：真相是
+    //   `onAfterUseCard` 里写死的 `timeWarp == 11`，不是一个可配置的周期。
     moves: [
       {
+        // 混响（MonsterSpecific.cpp:1657-1660）：`attackPlayerHelper(bc, asc4 ? 8 : 7, 3)`
+        // ——三段、每段 7（asc4 是 8）。分档挂在**第一个**实参上，段数恒 3
+        //（`MonsterMoveDamage.cpp:189` 那张表写的也是 `{asc4 ? 8 : 7, 3}`）。
+        // ⚠ 分档是 **asc4**（**Boss** 那一族 `getTriIdx(asc, 4, 19)` 的低阈值），
+        //   不是走廊小怪的 asc2、也不是精英的 asc3——照搬邻居必错。
+        // 收尾是裸的 `addToBot(Actions::RollMove(idx))`，即 `MOVE_TURN_END` 的默认值。
         id: "te_reverberate",
         name: "混响",
-        effects: [{ kind: "deal_damage_multi", amount: 7, times: 3 }],
-        intent: "attack",
-      },
-      {
-        id: "te_head_slam",
-        name: "头槌",
         effects: [
-          { kind: "deal_damage", amount: 26 },
-          { kind: "apply_power", power: "draw_reduction", amount: 1, on: "target" },
+          {
+            kind: "deal_damage_multi",
+            amount: 7,
+            times: 3,
+            ascAmount: [{ atLeast: 4, amount: 8 }],
+          },
         ],
         intent: "attack",
       },
       {
+        // 头槌（MonsterSpecific.cpp:1648-1655）：
+        //     attackPlayerHelper(bc, asc4 ? 32 : 26);
+        //     bc.addToBot( Actions::DebuffPlayer<PS::DRAW_REDUCTION>(1, true) );
+        //     if (asc19) { bc.addToBot( Actions::MakeTempCardInDiscard(CardId::SLIMED, 2) ); }
+        //     bc.addToBot( Actions::RollMove(idx) );
+        // ⚠ 三处照抄：
+        //  ① 抽牌削减是**入队**的（不是 `.actFunc(bc)`），排在伤害之后、收尾之前；
+        //  ② 那个 `1` 其实被参考丢掉了——`Player::debuff<DRAW_REDUCTION>` 无视 amount、
+        //     恒 `--cardDrawPerTurn`（Player.h:385-390）。写 1 是为了与参考的实参一致；
+        //  ③ asc19 那两张黏液是**多出来的一整条效果**（`minAscension`），不是「换个数」。
+        //     黏液是唯一不需要医疗包就能打出的状态牌，所以它进 `CARD_RULES`——但 asc0
+        //     走不到这一支。
+        id: "te_head_slam",
+        name: "头槌",
+        effects: [
+          { kind: "deal_damage", amount: 26, ascAmount: [{ atLeast: 4, amount: 32 }] },
+          { kind: "apply_power", power: "draw_reduction", amount: 1, on: "target" },
+          { kind: "add_card", cardId: "slimed", pile: "discard", count: 2, minAscension: 19 },
+        ],
+        // ⚠ `intent` 只管渲染（真实游戏这一格是「攻击 + debuff」双意图，而我们的
+        //   `EnemyIntentKind` 五个值互斥）。**攻击分类走 `MONSTER_ATTACK_MOVES` 白名单**。
+        intent: "attack",
+      },
+      {
+        // 涟漪（MonsterSpecific.cpp:1662-1671）：
+        //     addBlock(20);
+        //     bc.player.debuff<PS::WEAK>(1, true);
+        //     bc.player.debuff<PS::VULNERABLE>(1, true);
+        //     if (asc19) { bc.player.debuff<PS::FRAIL>(1, true); }
+        //     rollMove(bc);
+        // ⚠ 四处照抄：
+        //  ① 加格挡是**同步** `addBlock`（`sync: true`），不是 `addToBot(MonsterGainBlock)`；
+        //  ② 三条减益是**裸的** `bc.player.debuff<...>(n, true)`（第三种写法，与冠军的嘲讽
+        //     同族），同样同步 → 全部 `sync: true`；
+        //  ③ 脆弱那条是 asc19 才有的**多出来的一整条效果**（`minAscension`）；
+        //  ④ 收尾是**同步的真 rollMove**（第六形态），见 `MOVE_TURN_END`。
+        // ⚠ 这一整招**不在** `isMoveAttack` 白名单里（它一点伤害都不带）。
         id: "te_ripple",
         name: "涟漪",
         effects: [
-          { kind: "gain_block", amount: 20 },
-          { kind: "apply_power", power: "weak", amount: 1, on: "target" },
-          { kind: "apply_power", power: "vulnerable", amount: 1, on: "target" },
+          { kind: "gain_block", amount: 20, sync: true },
+          { kind: "apply_power", power: "weak", amount: 1, on: "target", sync: true },
+          { kind: "apply_power", power: "vulnerable", amount: 1, on: "target", sync: true },
+          {
+            kind: "apply_power",
+            power: "frail",
+            amount: 1,
+            on: "target",
+            sync: true,
+            minAscension: 19,
+          },
         ],
         intent: "defend",
       },
       {
+        // 加速（MonsterSpecific.cpp:1638-1646）：
+        //     miscInfo = true;        // set have used haste true
+        //     curHp = maxHp / 2;
+        //     if (asc19) { addBlock(32); }
+        //     removeDebuffs();        // also removes shackled here
+        //     rollMove(bc);
+        // ⚠ 五处照抄：
+        //  ① `miscInfo` 是**一次性锁存位**——出招规则的门是 `!usedHaste && curHp < maxHp/2`，
+        //     所以一场仗最多加速一次；
+        //  ② `curHp = maxHp / 2` 是**赋值**（整数除法），不是 `heal`，见 `set_hp_half_max`；
+        //  ③ asc19 的 32 点格挡是**多出来的一整条语句**（`minAscension`），同步 `addBlock`；
+        //  ④ `removeDebuffs()` 与冠军的暴怒是同一个函数（`Monster::removeDebuffs`）；
+        //  ⑤ 收尾是**同步的真 rollMove**（第六形态），而它读的正是刚被置起的 `miscInfo`
+        //     与刚被抬到半血的 `curHp`——所以加速之后**绝不会**再滚出加速。
+        // ⚠ 顺序也照抄：`set_misc_info` 必须排在 `set_hp_half_max` 之前吗？参考是先置位
+        //   再改血，两句互不相干（门读的是收尾那次 rollMove 时的值，那时两句都跑完了）。
+        //   照抄书写顺序即可。
+        // ⚠ 这一招**不在** `isMoveAttack` 白名单里。
         id: "haste",
         name: "加速",
-        effects: [{ kind: "boss_haste" }],
+        effects: [
+          { kind: "set_misc_info", amount: 1 },
+          { kind: "set_hp_half_max" },
+          { kind: "gain_block", amount: 32, sync: true, minAscension: 19 },
+          { kind: "remove_debuffs" },
+        ],
         intent: "buff",
       },
     ],
-    intentRule: {
-      scripted: [],
-      weighted: [
-        { move: "te_reverberate", weight: 45, maxInARow: 2 },
-        { move: "te_head_slam", weight: 35, maxInARow: 1 },
-        { move: "te_ripple", weight: 20, maxInARow: 1 },
-      ],
-    },
+    // 出招规则见 sts-combat.ts 的 `MOVE_RULES.time_eater`（MonsterSpecific.cpp:3231-3270）。
+    // 旧近似表那份加权（45/35/20 + maxInARow）与参考的四段式规则完全不同，本批弃用。
+    intentRule: { scripted: [], weighted: [] },
   },
 
   // —— 第三幕精英：复仇魔（隔回合虚无缥缈，第三十六批按参考逐位校准）——
