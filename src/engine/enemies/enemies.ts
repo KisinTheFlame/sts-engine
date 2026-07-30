@@ -853,27 +853,44 @@ const ENEMY_LIST: EnemyDef[] = [
   },
 
   {
+    // —— 第二十五批：带壳寄生虫（第二幕，`SHELL_PARASITE` / `SHELLED_PARASITE_AND_FUNGI`）——
+    //
+    // ⚠ **镀甲（PLATED_ARMOR）整条不写在这张表里**，写在 sts-combat.ts 的两处：
+    //   `PRE_BATTLE_ACTION.shelled_parasite`（开局 14 层 + 14 点格挡）与
+    //   `monsterDamageUnblocked` 的 else-if 链（受击 -1，归零改出 `stunned`），
+    //   回合末加格挡在 `applyMonsterEndOfTurnTriggers`。数据表只描述招式。
+    // ⚠ **爬升度分档本批不写**（与第二十三/二十四批那几只同理）：`ascCalibrated` 没置，
+    //   `constructMonster` 在 `ascension > 0` 时直接抛错，写了也没有预言机。
+    //   参考的分档记在各招式注释里，留给「第二幕爬升度」那一批一次性转写。
     id: "shelled_parasite",
     name: "带壳寄生虫",
+    // MonsterIds.h:193 `{{68,72},{70,75}}`；普通怪阈值 `setRandomHp(hpRng, asc >= 7)`
+    // （MonsterSpecific.cpp:62）。高档那一组本批不写，理由同上。
     hpMin: 68,
     hpMax: 72,
     moves: [
       {
+        // MonsterSpecific.cpp:1072-1075 `attackPlayerHelper(bc, asc2 ? 7 : 6, 2)`。
         id: "double_strike",
         name: "双重打击",
         effects: [{ kind: "deal_damage_multi", amount: 6, times: 2 }],
         intent: "attack",
       },
       {
+        // MonsterSpecific.cpp:1088-1091 `addToBot(VampireAttack(calculateDamageToPlayer(bc,
+        // asc2 ? 12 : 10)))`。
+        // ⚠⚠ **不是「攻击 + 回固定血」**：回血量是 `min(伤害, 这一击未被格挡的部分)`，
+        //   所以格挡挡住多少就少回多少、全挡住一点不回。旧近似表写的是
+        //   「10 点伤害 + 固定回 10」，两处都错（那个 `heal_self` 效果原语本批一并删掉了，
+        //   留着就是关于这只怪的第二份、且是错的真相）。详见 `Effect.vampire_attack`。
         id: "suck",
         name: "吸取",
-        effects: [
-          { kind: "deal_damage", amount: 10 },
-          { kind: "heal_self", amount: 10 },
-        ],
+        effects: [{ kind: "vampire_attack", amount: 10 }],
         intent: "attack",
       },
       {
+        // MonsterSpecific.cpp:1077-1081：`attackPlayerHelper(bc, asc2 ? 21 : 18)` +
+        // `addToBot(DebuffPlayer<PS::FRAIL>(2, true))`。⚠ 脆弱是**入队**，排在伤害之后。
         id: "fell",
         name: "重击",
         effects: [
@@ -882,15 +899,24 @@ const ENEMY_LIST: EnemyDef[] = [
         ],
         intent: "attack",
       },
+      {
+        // MonsterSpecific.cpp:1083-1086：整条 case 只有 `setMove(FELL); rollMove(bc);`
+        // ——**一个效果都没有**（壳被打破那一回合什么也不做）。两句都在 `MOVE_TURN_END`。
+        // ⚠ 这个意图不是 `getMoveForRoll` 掷出来的，而是**受击时**由
+        //   `attackedUnblockedHelper` 在镀甲层数归零那一刻直接 `setMove` 写进去的。
+        // ⚠ id 与拜鸟的 `stunned` 同名：招式 id 只需在**本只怪**的 moves 里唯一，
+        //   比对逐怪进行，重名不要紧（`MOVE_TURN_END` 的键带怪物前缀）。
+        id: "stunned",
+        name: "眩晕",
+        effects: [],
+        intent: "unknown",
+      },
     ],
-    intentRule: {
-      scripted: [],
-      weighted: [
-        { move: "double_strike", weight: 45, maxInARow: 2 },
-        { move: "fell", weight: 30, maxInARow: 1 },
-        { move: "suck", weight: 25, maxInARow: 1 },
-      ],
-    },
+    // 出招规则见 sts-combat.ts 的 `MOVE_RULES.shelled_parasite`
+    //（首回合 50/50 双重打击或吸取；之后 20 / 60 两道阈值，且带一次会被短路吃掉的 roll2）。
+    // ⚠ 攻击白名单里是 `SHELLED_PARASITE_DOUBLE_STRIKE` / `_SUCK` / `_FELL`
+    //   （`MonsterMoves.h:490-492`），`_STUNNED` **不在**——与这里的 attack ×3 / unknown 一致。
+    intentRule: { scripted: [], weighted: [] },
   },
   {
     // —— 第二十三批：选民（第二幕，`CHOSEN` 单怪编队）——
@@ -958,34 +984,57 @@ const ENEMY_LIST: EnemyDef[] = [
     intentRule: { scripted: [], weighted: [] },
   },
   {
+    // —— 第二十五批：史尼克（第二幕，`SNECKO` 单怪编队）——
+    //
+    // ⚠ 它是全项目**唯一**会施加困惑（CONFUSED）的怪（另一个来源是遗物蛇眼，
+    //   `BattleContext.cpp:216`，遗物没登记）。困惑本身的效果**不在这张表里**：
+    //   它整条住在 `CardManager::draw`（CardManager.cpp:403-412），见 sts-combat.ts 的
+    //   `drawOneCard`。这里只有「施加它」这一下。
+    // ⚠ 爬升度分档本批不写，理由同带壳寄生虫。
     id: "snecko",
     name: "史尼克",
+    // MonsterIds.h:198 `{{114,120},{120,125}}`；普通怪阈值 asc>=7（MonsterSpecific.cpp:66）。
     hpMin: 114,
     hpMax: 120,
     moves: [
       {
+        // MonsterSpecific.cpp:1150-1153 `addToBot(DebuffPlayer<PS::CONFUSED>())`。
+        // ⚠ **两个实参都省略了**，取默认的 `amount = 1` 与 `isSourceMonster = true`
+        //   （Actions.h:35）；困惑是纯 bool，那个 1 只是形式上的层数（`Player::debuff`
+        //   对它走 `setHasStatus(true); return;`，再上一次也还是 1）。
+        // ⚠ 它是**入队**的，所以与同回合别的动作的先后看得见。
+        id: "perplexing_glare",
+        name: "惑目",
+        effects: [{ kind: "apply_power", power: "confused", amount: 1, on: "target" }],
+        intent: "debuff",
+      },
+      {
+        // MonsterSpecific.cpp:1145-1148 `attackPlayerHelper(bc, asc2 ? 18 : 15)`。
         id: "snecko_bite",
         name: "撕咬",
         effects: [{ kind: "deal_damage", amount: 15 }],
         intent: "attack",
       },
       {
+        // MonsterSpecific.cpp:1155-1163：`attackPlayerHelper(bc, asc2 ? 10 : 8)` +
+        // `addToBot(DebuffPlayer<VULNERABLE>(2, true))` + asc17 时**再多一条**
+        // `addToBot(DebuffPlayer<WEAK>(2, true))`。
+        // ⚠ 旧近似表把易伤写成了虚弱——参考这一招上的是**易伤**，虚弱是 asc17 才追加的
+        //   第二条（`minAscension` 那一族，本批不写：asc 分档未校准）。
         id: "tail_whip",
         name: "尾击",
         effects: [
           { kind: "deal_damage", amount: 8 },
-          { kind: "apply_power", power: "weak", amount: 2, on: "target" },
+          { kind: "apply_power", power: "vulnerable", amount: 2, on: "target" },
         ],
         intent: "attack",
       },
     ],
-    intentRule: {
-      scripted: [],
-      weighted: [
-        { move: "snecko_bite", weight: 60, maxInARow: 2 },
-        { move: "tail_whip", weight: 40, maxInARow: 1 },
-      ],
-    },
+    // 出招规则见 sts-combat.ts 的 `MOVE_RULES.snecko`（首回合必惑目，之后 40 那道阈值
+    // 加一条连续限制）。**不追加任何 aiRng**。
+    // ⚠ 攻击白名单里是 `SNECKO_TAIL_WHIP` / `SNECKO_BITE`（`MonsterMoves.h:497-498`），
+    //   `SNECKO_PERPLEXING_GLARE` **不在**——与这里的 debuff / attack / attack 一致。
+    intentRule: { scripted: [], weighted: [] },
   },
   {
     id: "mystic",
@@ -2703,7 +2752,13 @@ const ENCOUNTERS: Record<string, EncounterDef> = {
   spheric_guardian: { id: "spheric_guardian", enemies: ["spheric_guardian"], isBoss: false },
   centurion: { id: "centurion", enemies: ["centurion"], isBoss: false },
   two_centurions: { id: "two_centurions", enemies: ["centurion", "centurion"], isBoss: false },
-  shelled_parasite: { id: "shelled_parasite", enemies: ["shelled_parasite"], isBoss: false },
+  // ⚠ 编队 id 是 `shell_parasite`（**没有 ED**），怪物 id 才是 `shelled_parasite`——
+  //   参考的枚举就是这么不对称的：`MonsterEncounter::SHELL_PARASITE` 建的是
+  //   `MonsterId::SHELLED_PARASITE`（MonsterGroup.cpp:352-354）。第二十五批把我们这边
+  //   原先的 `shelled_parasite` 改成了参考的名字：trace 文件名由参考枚举名小写而来
+  //   （`split-traces.mjs`），而 `sts-combat-wiring.test.ts` 要求
+  //   `SUPPORTED_ENCOUNTERS` 与文件名一一对应，不改就装不上。
+  shell_parasite: { id: "shell_parasite", enemies: ["shelled_parasite"], isBoss: false },
   chosen: { id: "chosen", enemies: ["chosen"], isBoss: false },
   snecko: { id: "snecko", enemies: ["snecko"], isBoss: false },
   // 百夫长 + 秘法师：秘法师治疗/鼓舞百夫长，经典组合。
@@ -2876,7 +2931,7 @@ const ACT2_WEAK_POOL: readonly WeightedEncounter[] = [
   { id: "spheric_guardian", weight: 1 },
   { id: "snake_plant", weight: 1 },
   { id: "centurion", weight: 1 },
-  { id: "shelled_parasite", weight: 1 },
+  { id: "shell_parasite", weight: 1 },
   { id: "chosen", weight: 1 },
   { id: "three_byrds", weight: 1 },
 ];
@@ -2885,7 +2940,7 @@ const ACT2_STRONG_POOL: readonly WeightedEncounter[] = [
   { id: "chosen", weight: 2 },
   { id: "snecko", weight: 2 },
   { id: "centurion_mystic", weight: 2 },
-  { id: "shelled_parasite", weight: 2 },
+  { id: "shell_parasite", weight: 2 },
   { id: "snake_plant", weight: 1 },
   { id: "two_centurions", weight: 1 },
   { id: "spheric_guardian", weight: 1 },

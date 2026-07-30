@@ -681,6 +681,19 @@ export type CombatPlayer = {
    * 那样做会让一分钱都偷不到——见 `test/sts-combat-trace.test.ts` 的 `HARNESS_GOLD_BASELINE`。
    */
   gold: number;
+  /**
+   * 上一次**被攻击**时真正扣掉的血（对齐 `Player::lastAttackUnblockedDamage`，Player.h:86）。
+   *
+   * 参考在 `Player::attacked` 末尾维护它：扣掉格挡（以及缓冲 / 鸟居 / 钨钢棒）之后
+   * 若还剩伤害就记下那个值，否则记 **0**（Player.cpp:243-257）。
+   *
+   * ⚠ 唯一的读者是带壳寄生虫的吸取（`Actions::VampireAttack`，第二十五批）：
+   * 回血量是 `min(这一击的伤害, lastAttackUnblockedDamage)`，所以格挡挡住多少就少回多少。
+   * 它是个**跨调用的字段**而不是返回值，形状照抄参考——将来若有第二个「隔着动作队列
+   * 读上一击」的读者，返回值那种写法就会静默错。
+   * ⚠ 只有 `attacked`（怪物攻击）这条路写它；`damage` / `loseHp`（灼伤、自伤）**不写**。
+   */
+  lastAttackUnblockedDamage: number;
 };
 
 // ============================================================================
@@ -1342,6 +1355,64 @@ const MOVE_RULES: Record<string, MoveForRoll> = {
   // ⚠ 参考在这行同样注了 `// called first turn only`：劫匪四条 case 的收尾全是**同步
   //   setMove**（逃跑那条什么都没有），一次 RollMove 都不排，所以整场只调用它一次。
   mugger: () => "mug",
+
+  // —— 第二十五批 ——
+
+  // 带壳寄生虫：对齐 MonsterSpecific.cpp:2694-2736 SHELLED_PARASITE。
+  // ⚠ 四处照抄：
+  //  ① 首回合分两支：asc17 直接返回重击（**不掷 RNG**），否则
+  //     `aiRng.randomBoolean()` ——**无参**版本（= 50/50 的 `nextBoolean`，不是
+  //     `randomBoolean(float)`），true 是**双重打击**、false 是吸取。所以 asc0 的首回合
+  //     一定**追加一次 aiRng**，asc17 一次都不追加。
+  //  ② 连续限制**不同宽**：双重打击与吸取都看 `lastTwoMoves`（连两次才逼换），
+  //     重击只看 `lastMove`（连一次就逼换）。
+  //  ③ 阈值是 **20 / 60**。
+  //  ④⚠⚠ `roll2` 那次 `aiRng.random(20,99)` **照掷，但取值一定被短路吃掉**：它只在
+  //     `roll < 20` 的支里被赋值，而下面那句是 `roll < 60 || roll2 < 60` ——`roll < 20`
+  //     蕴含 `roll < 60`，所以 `||` 的左边恒真、右边永远不求值。于是这次掷骰**只影响
+  //     aiRng 计数器**，一点也不影响出招。这看着像参考的笔误（真实游戏是把同一个 `num`
+  //     覆盖掉再判，而这里 `roll` 是 `const int` 形参、改不了，作者才引入 `roll2`），
+  //     本批**照抄不改**、写进报告等裁定，详见 TODOS「已确认但尚未打补丁」。
+  //     ⚠ 千万别把它「优化」掉：次数是钉死的，去掉它 `rng.ai` 当场对不上。
+  shelled_parasite: (bc, m, roll) => {
+    if (firstTurn(m)) {
+      if (bc.ascension >= 17) {
+        return "fell";
+      }
+      return bc.rng.aiRng.randomBoolean() ? "double_strike" : "suck"; // ★ 追加一次 aiRng
+    }
+    let roll2 = 100;
+    if (roll < 20) {
+      if (!lastMove(m, "fell")) {
+        return "fell";
+      }
+      roll2 = bc.rng.aiRng.random(20, 99); // ★ 追加一次 aiRng（取值被下面的短路吃掉，只有计数器可观察）
+    }
+    if (roll < 60 || roll2 < 60) {
+      return lastTwoMoves(m, "double_strike") ? "suck" : "double_strike";
+    }
+    if (!lastTwoMoves(m, "suck")) {
+      return "suck";
+    }
+    return "double_strike";
+  },
+
+  // 史尼克：对齐 MonsterSpecific.cpp:2790-2803 SNECKO。**不追加任何 aiRng。**
+  // ⚠ 三处照抄：
+  //  ① 首回合恒为惑目（施加困惑），没有任何随机；
+  //  ② 第二支的条件是 `roll < 40 || lastTwoMoves(SNECKO_BITE)` ——**一个 `||`**，
+  //     即「掷到低段」或「撕咬连了两次」都出尾击。写成两个独立的 if 会改语义。
+  //  ③ 尾击自己**没有**连续限制（参考没有 `lastTwoMoves(TAIL_WHIP)` 那一支），
+  //     所以它理论上能连出很多次。照抄，别按「每招都该有上限」的直觉补。
+  snecko: (_bc, m, roll) => {
+    if (firstTurn(m)) {
+      return "perplexing_glare";
+    }
+    if (roll < 40 || lastTwoMoves(m, "snecko_bite")) {
+      return "tail_whip";
+    }
+    return "snecko_bite";
+  },
 };
 
 // ============================================================================
@@ -1819,6 +1890,35 @@ const MOVE_TURN_END: Record<string, MoveTurnEnd> = {
   //   「结局已定就直接返回」抢在收尾之前，于是 `"none"` 与 `"roll"` 分不开。
   //   `TWO_THIEVES` 里两只贼互为同伴，先逃的那只不会结束战斗，这一格第一次可观察。
   "mugger/flee": "none",
+
+  // —— 带壳寄生虫（第二十五批）：四条 case 里只有眩晕不是默认的 `roll` ——
+  //
+  // 双重打击 / 重击 / 吸取三条都是 `addToBot(Actions::RollMove(idx))`
+  // （MonsterSpecific.cpp:1074 / :1080 / :1090），即默认值，不写进表里。
+  //
+  // 眩晕：整条 case 是 `setMove(MMID::SHELLED_PARASITE_FELL); rollMove(bc);`
+  // （MonsterSpecific.cpp:1083-1086），两句都是**同步**的，所以它是第五形态（任意函数）。
+  // ⚠⚠ 这是**第一次**出现「同步的真 rollMove」：
+  //  ① `setMove` 与 `rollMove` **都**前移 moveHistory，所以一次眩晕推两格历史
+  //     （`[眩晕, 上一招]` → `[重击, 眩晕]` → `[新意图, 重击]`）；
+  //  ② `rollMove` 是**真的滚一个新意图**（消耗一次 `aiRng.random(99)`，还可能在
+  //     `getMoveForRoll` 里再追加一次），不是 `no_op_roll` 那种掷完丢掉；
+  //  ③ 顺序照抄且**这里的顺序真的可观察**：先 `setMove(重击)` 让 `lastMove` 变成重击，
+  //     紧接着的 `getMoveForRoll` 才读到它——于是「roll < 20 且刚重击过」那一支被点亮
+  //     （壳破之后不会立刻再来一次重击）。反过来写就没有这个效果。
+  //     这与球状守卫者 / 拜鸟那种「setMove + noOpRollMove」形状相似但语义完全不同，别照搬。
+  //  ④ 它是**同步**的，所以跑在本回合排的动作**执行之前**——但眩晕这条 case 一个效果都没有，
+  //     队列里本来就是空的。
+  "shelled_parasite/stunned": (bc, m) => {
+    setMove(m, "fell");
+    rollMove(bc, m); // ★ 消耗一次 aiRng（真 rollMove，不是 no_op；getMoveForRoll 还可能再追加一次）
+  },
+
+  // —— 史尼克（第二十五批）：三条 case 的收尾全是默认的 `roll` ——
+  //
+  // 撕咬 / 惑目 / 尾击都以 `addToBot(Actions::RollMove(idx))` 结尾
+  // （MonsterSpecific.cpp:1147 / :1152 / :1162），也就是这张表的默认值。
+  // 写进来反而多一份可以抄错的真相，所以留空（与第二十三批选民 / 食蛇草同理）。
 };
 
 /**
@@ -2438,6 +2538,26 @@ const PRE_BATTLE_ACTION: Record<string, PreBattleAction> = {
   mugger: (bc, m) => {
     addPower(m.powers, "thievery", bc.ascension >= 17 ? 20 : 15);
   },
+
+  // —— 第二十五批 ——
+
+  // 带壳寄生虫的镀甲（对齐 MonsterSpecific.cpp:242-246）。**不消耗 RNG、没有 asc 分档**，
+  // 两句都要：`buff<MS::PLATED_ARMOR>(14)` 与 `addBlock(14)`。
+  // ⚠ 与拉加维林的「金属化 8 + 格挡 8」同族：Power 只管「以后每个回合末加多少」，
+  //   开局那 14 点挡是**另一句**。少了后者，第一个玩家回合它是光着的。
+  // ⚠ 两个 14 是**两处独立的字面量**，改一个不会带动另一个。
+  // ⚠ 镀甲三处协同（缺一处就静默错）：
+  //   ① 这里的初值 14；
+  //   ② `monsterDamageUnblocked` 的 else-if 链里受击 -1（排**第二格**，蜷缩之前），
+  //      归零时因为这只怪是带壳寄生虫而把意图改成 `stunned`；
+  //   ③ `applyMonsterEndOfTurnTriggers` 每个回合末加 = 层数的格挡。
+  // ⚠ PLATED_ARMOR 会进 trace 的怪物 powers 快照（`PLATED_ARMOR: 14`），漏了当场抛
+  //   「未映射的 power」。
+  // ⚠ 史尼克**没有** preBattleAction（`Monster::preBattleAction` 的 switch 里没有它的 case）。
+  shelled_parasite: (_bc, m) => {
+    addPower(m.powers, "plated_armor", 14);
+    m.block += 14;
+  },
 };
 
 type EncounterSetup = (bc: BattleContext) => void;
@@ -2579,6 +2699,18 @@ function overwriteMove(m: CombatMonster, move: string): void {
  *     | `MUGGER_ESCAPE`                | 否         | —                    | unknown       |
  *     ⚠ 三条鸟的顺序在参考里是 PECK / SWOOP / **HEADBUTT**（不按枚举序），照抄时按名字找、
  *     别按位置数。
+ *   * **第二十五批的两只**（逐条核对 `MonsterMoves.h:490-492` / `:497-498`）：
+ *     | 参考招式                                    | 在白名单？ | 我们的键                         | 数据表 intent |
+ *     | ------------------------------------------- | ---------- | -------------------------------- | ------------- |
+ *     | `SHELLED_PARASITE_DOUBLE_STRIKE` (`:490`)   | **是**     | `shelled_parasite/double_strike` | attack        |
+ *     | `SHELLED_PARASITE_SUCK` (`:491`)            | **是**     | `shelled_parasite/suck`          | attack        |
+ *     | `SHELLED_PARASITE_FELL` (`:492`)            | **是**     | `shelled_parasite/fell`          | attack        |
+ *     | `SHELLED_PARASITE_STUNNED`                  | 否         | —                                | unknown       |
+ *     | `SNECKO_TAIL_WHIP` (`:497`)                 | **是**     | `snecko/tail_whip`               | attack        |
+ *     | `SNECKO_BITE` (`:498`)                      | **是**     | `snecko/snecko_bite`             | attack        |
+ *     | `SNECKO_PERPLEXING_GLARE`                   | 否         | —                                | debuff        |
+ *     ⚠ 寄生虫那三条在参考里的顺序是 DOUBLE_STRIKE / **SUCK** / FELL，而枚举声明序是
+ *     DOUBLE_STRIKE / FELL / STUNNED / SUCK——又一个「按名字找、别按位置数」的例子。
  *
  * ⚠⚠ **第二十四批起这张表第一次有预言机**：`isMonsterAttacking` 的唯一读者是觅敌之弱，
  * 而第十三批之后的编队都走 `ENC_V0`（只有 variant 0 那副 21 张牌组，里面没有它）。
@@ -2649,10 +2781,17 @@ const MONSTER_ATTACK_MOVES: ReadonlySet<string> = new Set([
   "mugger/lunge",
   // 哨卫（`:489`）
   "sentry/beam",
+  // 带壳寄生虫（`:490-492`，第二十五批）。⚠ 眩晕不在（那一回合它什么也不做）。
+  "shelled_parasite/double_strike",
+  "shelled_parasite/suck",
+  "shelled_parasite/fell",
   // 史莱姆王（`:494`）
   "slime_boss/slam",
   // 食蛇草（`:495`，第二十三批）
   "snake_plant/sp_chomp",
+  // 史尼克（`:497-498`，第二十五批）。⚠ 惑目不在（纯 debuff）。
+  "snecko/tail_whip",
+  "snecko/snecko_bite",
   // 球状守卫者（`:499-501`，第二十三批）。⚠ 硬化在列——它同时加格挡，这就是那个反例。
   "spheric_guardian/sg_slam",
   "spheric_guardian/sg_harden",
@@ -2711,10 +2850,52 @@ function shuffleCards(bc: BattleContext, cards: CombatCard[]): void {
  * ⚠ 腐化那条与状态/诅咒两条是**同一条 if/else-if 链**（技能牌 → 状态牌 → 诅咒牌），
  * 三者互斥。传的是 -9，`setCostForTurn` 夹成 0。
  *
- * TODO(后续PR): 困惑（抽到时掷 cardRandomRng 改费用，位置在这条链**之前**）、
- *   虚无（抽到时 -1 能量，位置在烈焰吐息之后）。两张都还没有入手途径。
+ * TODO(后续PR): 虚无（抽到时 -1 能量，位置在烈焰吐息之后）——那张状态牌还没有入手途径。
  */
 function drawOneCard(bc: BattleContext, card: CombatCard): void {
+  // 困惑（CONFUSED，第二十五批的史尼克）：对齐 `CardManager::draw` 的第一段
+  // （CardManager.cpp:403-412），位置在下面那条「技能 / 状态 / 诅咒」链**之前**。
+  //
+  //     if (bc.player.hasStatus<PS::CONFUSED>()) {
+  //         if (c.cost >= 0) {
+  //             const auto newCost = static_cast<std::int8_t>(bc.cardRandomRng.random(3));
+  //             if (c.cost != newCost) { c.costForTurn = newCost; c.cost = newCost; }
+  //             c.freeToPlayOnce = false;
+  //         }
+  //     }
+  //
+  // ⚠⚠ 四处非直觉、逐条照抄：
+  //  ①⚠ **每抽一张就消耗一次 `cardRandomRng`**，与新费用是否等于原费用**无关**——
+  //     那次 `random(3)` 写在 `if (c.cost != newCost)` 的**外面**。`cardRandomRng` 是共享流
+  //     （洗牌塞牌、随机弃牌、随机目标都在用），所以困惑一上身，此后所有 cardRandomRng
+  //     消费者的取值全部平移。`rng.cardRandom` 计数器在每一帧都盯着这件事。
+  //     ⚠ 把 `random(3)` 挪进那个 if 里是**最容易犯**的等价化错误：绝大多数时候新旧费用
+  //     不同、看着没差别，一旦掷出等于原费用的那一次，此后整条流就错位了。
+  //  ② **`cost` 与 `costForTurn` 都被改，而且是永久的**——不是「本回合」。与腐化 / 疯狂
+  //     那类只改 `costForTurn` 的降费不是一族：回合末 `resetAttributesAtEndOfTurn` 把
+  //     `costForTurn` 复位成 `cost`，而 `cost` 已经是新值了，所以改动跨回合留着。
+  //     ⚠ 这里是**直接赋值**，不走 `setCostForTurn`（那个有 `costForTurn >= 0` 的门与
+  //     `max(0, …)`，语义不同）；上面 `cost >= 0` 那道门已经保证了不会碰到哨兵值。
+  //  ③ **只在 `cost != newCost` 时才赋值**。语义上是空操作（相等时赋值也一样），
+  //     但形状照抄。
+  //  ④ `c.cost >= 0` 这道门排除**两种**哨兵：X 费牌（-1）与打不出的状态/诅咒牌（-2）
+  //     ——所以困惑既不会把 X 费牌变成定费，也不会让伤口变得能打。
+  //     参考在那行留了 `// todo status and curses affected by this?`，照抄它的判据。
+  // ⚠ `freeToPlayOnce = false` 那一句我们**没有对应字段**，而且它在参考里是**死代码**：
+  //   `freeToPlayOnce` 只有两个写入点——`playCardQueueItem` 里 `if (c.isFreeToPlay(*this))`
+  //   （而 `isFreeToPlay` = `freeToPlayOnce || (攻击牌 && FREE_ATTACK_POWER)`，
+  //   而 `PS::FREE_ATTACK_POWER` **全项目没有任何写入点**），以及 `chooseForethoughtCard`
+  //   （深谋远虑，参考没有实现完、我们永久跳过）。所以它恒为 false，这一句什么也没做。
+  //   ⚠ 将来登记「回身步」那类给 FREE_ATTACK_POWER 上层数的牌时，要连字段一起补。
+  if (getPower(bc.player.powers, "confused") > 0) {
+    if (card.cost >= 0) {
+      const newCost = bc.rng.cardRandomRng.random(3); // ★ 恒消耗一次 cardRandomRng（在 if 外面！）
+      if (card.cost !== newCost) {
+        card.costForTurn = newCost;
+        card.cost = newCost;
+      }
+    }
+  }
   const type = getCardDef(card.defId).type;
   if (type === "skill") {
     if (getPower(bc.player.powers, "corruption") > 0) {
@@ -3550,6 +3731,8 @@ export function initCombat(input: CombatInitInput): BattleContext {
       bomb3: 0,
       // 对齐 `BattleContext::init` 的 `player.gold = gc.gold`（BattleContext.cpp:55）。
       gold: input.gold ?? 0,
+      // 对齐 `Player::lastAttackUnblockedDamage` 的初值 0（Player.h:86）。
+      lastAttackUnblockedDamage: 0,
     },
     monsters: [],
     monstersAlive: 0,
@@ -4143,14 +4326,52 @@ function monsterAttacked(bc: BattleContext, m: CombatMonster, rawDamage: number)
 
 function monsterDamageUnblocked(bc: BattleContext, m: CombatMonster, damage: number): void {
   // onAttacked 链（对齐 attackedUnblockedHelper 的 if/**else-if**顺序，Monster.cpp:348-396）。
-  // 参考的顺序是：无敌 → 镀甲 → 蜷缩 → 飞行 → 易塑/反应 → 荆棘 → **沉睡** → 变换。
+  // 参考的顺序是：无敌 → **镀甲** → 蜷缩 → 飞行 → 易塑/反应 → 荆棘 → **沉睡** → 变换。
   // ⚠ 它是一条 **else-if 链**：同时带蜷缩与沉睡的怪只会触发排在前面的那一条。当前没有这种
   //   怪（虱子只有蜷缩、拉加维林只有沉睡），但形状照抄——写成两个独立 if 会在将来静默出错。
   // 蜷缩把加格挡 addToBot 排在扣血之后，故这里先记下、扣完血再加。
+  const platedArmor = m.powers.find((p) => p.id === "plated_armor");
   const curl = m.powers.find((p) => p.id === "curl_up");
   const flight = m.powers.find((p) => p.id === "flight");
   const malleable = m.powers.find((p) => p.id === "malleable");
-  if (curl !== undefined && curl.amount > 0) {
+  if (platedArmor !== undefined) {
+    // 镀甲（PLATED_ARMOR，带壳寄生虫）：对齐 Monster.cpp:352-355 那一格。
+    //
+    //     } else if (hasStatus<MS::PLATED_ARMOR>()) {
+    //         decrementStatus<MS::PLATED_ARMOR>();
+    //         if (!hasStatus<MS::PLATED_ARMOR>() && id == MonsterId::SHELLED_PARASITE) {
+    //             setMove(MMID::SHELLED_PARASITE_STUNNED);
+    //         }
+    //     }
+    //
+    // ⚠ 五处照抄：
+    //  ①⚠⚠ **位置**：在这条 else-if 链里排**第二格**——无敌之后、**蜷缩之前**。
+    //     链上的位置就是它全部的可观察面（同第十七批把狂怒挪一格红 30 例的教训）。
+    //     往前挪一格（到无敌前面）当前无差别（没有怪带无敌），往后挪一格（到蜷缩后面）
+    //     在「同时带镀甲与蜷缩的怪」上才有差别——当前没有这种怪，但形状照抄。
+    //  ② 入口是 `hasStatus`（statusBits）。⚠ 与飞行**正相反**：
+    //     `decrementStatus<PLATED_ARMOR>` 走的是「枚举值 <= WEAK」那一支
+    //     （`newAmount = get-1; setStatus(newAmount); setHasStatus(newAmount);`，
+    //     Monster.h:299-303），归零时 bit **真的被清掉**。所以我们这边**整条摘掉**，
+    //     于是壳破之后这一格让位给链上后面的蜷缩 / 飞行 / 易塑（并且层数不会变成负数）。
+    //     飞行那条写的是裸 `setStatus`、不碰 bit，所以它永不摘除——两者别照搬彼此。
+    //  ③ **没有** `&& damage > 0`（整条链里只有飞行那一格带它）。调用方本来就有
+    //     `if (damage > 0)` 的门，所以带不带当前不可观察，但形状照抄。
+    //  ④ 那句 `id == MonsterId::SHELLED_PARASITE` 是**怪种专属的门**：镀甲不是只有它有
+    //     （真实游戏里青铜机器人也有），所以「归零就改出眩晕」这一支只属于带壳寄生虫。
+    //     写成「凡镀甲归零就改意图」会在登记下一只带镀甲的怪时静默出错。
+    //  ⑤ 改意图用的是 **`setMove`（前移历史）**，不是 `onHpLost` 里那种裸的
+    //     `moveHistory[0] =`——同一件事在参考里两种写法并存，别统一。
+    // ⚠ 它**只挂在 attacked 这条路上**：非攻击伤害（燃烧 / 主宰 / 火焰药水走 `damage`
+    //   → `damageUnblockedHelper`）里没有镀甲这一格，那种伤害不消耗镀甲层数。
+    platedArmor.amount -= 1;
+    if (platedArmor.amount === 0) {
+      m.powers.splice(m.powers.indexOf(platedArmor), 1);
+    }
+    if (getPower(m.powers, "plated_armor") === 0 && m.defId === "shelled_parasite") {
+      setMove(m, "stunned");
+    }
+  } else if (curl !== undefined && curl.amount > 0) {
     const amount = curl.amount;
     m.powers.splice(m.powers.indexOf(curl), 1); // 触发一次即清除
     // 必须**入队**而非当场加：这是 addToBot(Actions::MonsterGainBlock)，
@@ -4207,7 +4428,7 @@ function monsterDamageUnblocked(bc: BattleContext, m: CombatMonster, damage: num
     // 沉睡被打断（Monster.cpp:388-391）。⚠ 它排在这条 else-if 链的**倒数第二**格。
     wakeUpLagavulin(m);
   }
-  // TODO(后续PR): 无敌 / 镀甲 / 反应 / 荆棘 / 变换等其余 onAttacked 分支。
+  // TODO(后续PR): 无敌 / 反应 / 荆棘 / 变换等其余 onAttacked 分支。
 
   m.hp -= damage;
   if (m.hp <= 0) {
@@ -7834,6 +8055,21 @@ function takeTurn(bc: BattleContext, m: CombatMonster): string | null {
       for (let i = 0; i < times; i += 1) {
         addToBot(bc, (c) => dealDamageToPlayer(c, dmg, idx), false);
       }
+    } else if (eff.kind === "vampire_attack") {
+      // 吸血攻击（带壳寄生虫的吸取，第二十五批）：
+      // `addToBot(Actions::VampireAttack(calculateDamageToPlayer(bc, asc2 ? 12 : 10)))`
+      //（MonsterSpecific.cpp:1089）。
+      // ⚠ 三处与普通攻击不同：
+      //  ① 伤害同样在**入队时**算好（与 attackPlayerHelper 一致），但打与回血是**一条**动作；
+      //  ② `clearOnCombatVictory` 是**默认的 true**（`Action(ActionFunction)` 单参构造，
+      //     ActionQueue.h:22/26），而 `Actions::AttackPlayer` 显式传的是 **false**
+      //     （Actions.cpp:85-88）。所以「胜负已定之后」这条会被 `clearPostCombatActions` 清掉、
+      //     普通攻击不会。⚠ 照抄这个不对称，别顺手统一成 false。
+      //  ③ 目标写死 0 号位（见 `vampireAttack`），不用 `bc.monsters.indexOf(m)`。
+      const dmg = calculateDamageToPlayer(bc, m, ascValue(bc, eff.amount, eff.ascAmount));
+      addToBot(bc, (c) => {
+        vampireAttack(c, dmg);
+      });
     } else if (eff.kind === "apply_power" && eff.on === "target") {
       // 怪物给玩家上减益：isSourceMonster=true，故虚弱/易伤**跳过**首次递减。
       // ⚠ 与加格挡同族，参考里两种写法并存（见 Effect 的 sync 注释）：
@@ -7974,8 +8210,10 @@ function debuffPlayer(
   // ⚠ 位置就在神器那道门**之后**——诅咒照样会被神器吃掉。
   // ⚠ harness 的 `playerStatusValue` 对这一族按 1 输出（statusMap 里查不到），所以我们也存 1；
   //   写成累加会在选民第二次诅咒时红成 `HEX: 2`。
-  // ⚠ 困惑（CONFUSED）走同一支，但它还没有产出者（史尼克未登记），所以这里只列诅咒。
-  if (power === "hex") {
+  // ⚠ 困惑（CONFUSED，第二十五批的史尼克）走**同一支**，判据就是参考那句 `||`——
+  //   两个都只置位。它的效果全在 `CardManager::draw`（见 `drawOneCard`），不在这里。
+  //   与诅咒一样：整场不递减、不过期，而且**照样会被神器吃掉**（那道门在前面）。
+  if (power === "hex" || power === "confused") {
     const existing = bc.player.powers.find((x) => x.id === power);
     if (existing === undefined) {
       bc.player.powers.push({ id: power, amount: 1 });
@@ -8055,9 +8293,8 @@ function decrementPlayerPower(bc: BattleContext, id: string): void {
  * 回合看到的 8 点格挡来自 `preBattleAction` 那句 `addBlock(8)`，不是这里。
  * ⚠ 苏醒之后金属化被 `decrementStatus(8)` 减没（见 `wakeUpLagavulin`），这条自然不再触发。
  *
- * TODO(后续PR): 镀甲（同样是 `Monster::addBlock`）、易塑（`setStatus<MALLEABLE>(3)`，
- * 与它的 onAttacked 成长分支配套）、怪物侧虚无缥缈递减、再生（`Monster::heal`）。
- * 当前登记的怪一只都没有这四种 Power，写了也没有预言机走到。
+ * TODO(后续PR): 怪物侧虚无缥缈递减、再生（`Monster::heal`）。当前登记的怪一只都没有这两种
+ * Power，写了也没有预言机走到。（金属化第十八批、易塑第二十三批、镀甲第二十五批已补。）
  */
 function applyMonsterEndOfTurnTriggers(m: CombatMonster): void {
   const metallicize = getPower(m.powers, "metallicize");
@@ -8073,6 +8310,18 @@ function applyMonsterEndOfTurnTriggers(m: CombatMonster): void {
   const malleable = m.powers.find((p) => p.id === "malleable");
   if (malleable !== undefined && malleable.amount > 0) {
     malleable.amount = 3;
+  }
+  // 镀甲加格挡（对齐 Monster.cpp:51-52 `if (hasStatus<PLATED_ARMOR>())
+  // addBlock(getStatus<PLATED_ARMOR>())`）——**第三条**，排在金属化与易塑之后、虚无缥缈之前。
+  // ⚠ 与金属化**同族但是两条独立的语句**：一只同时带两者的怪会加两次（当前没有这种怪，
+  //   但顺序照抄——它决定了同一回合末两笔格挡谁先落，而两笔都是同步 `addBlock`，
+  //   所以当前不可观察）。别为了「整齐」合成一条。
+  // ⚠ 加的是**当前层数**：壳被打了几下就少加几点，打光（层数归零、条目摘掉）之后不再加。
+  // ⚠ 是**同步** `addBlock`、不入队，所以这层格挡在紧随其后的怪物回合开头就已经在了
+  //   （而怪物回合开始的清格挡在 `applyPreTurnLogic`，它排在**下一个**回合的开头）。
+  const platedArmor = getPower(m.powers, "plated_armor");
+  if (platedArmor > 0) {
+    m.block += platedArmor;
   }
   const shackled = getPower(m.powers, "shackled");
   if (shackled > 0) {
@@ -8188,8 +8437,50 @@ function dealDamageToPlayer(bc: BattleContext, amount: number, attackerIdx = -1)
   const blocked = Math.min(bc.player.block, amount);
   bc.player.block -= blocked;
   const unblocked = amount - blocked;
+  // `lastAttackUnblockedDamage` 逐位对齐 `Player::attacked` 的末段（Player.cpp:243-257）：
+  // 有剩余伤害就记下它，**否则显式记 0**（那个 else 分支是参考写着的，不是省略）。
+  // 唯一的读者是吸血攻击（见 `vampireAttack`）。
   if (unblocked > 0) {
+    bc.player.lastAttackUnblockedDamage = unblocked;
     playerHpWasLost(bc, unblocked, false);
+  } else {
+    bc.player.lastAttackUnblockedDamage = 0;
+  }
+}
+
+/**
+ * 怪物回血（对齐 `Monster::heal`，Monster.cpp:269-277）：`curHp = min(maxHp, curHp + amount)`。
+ * ⚠ 参考在这里只有一句钳制，**没有**「回血触发」之类的钩子。
+ */
+function monsterHeal(m: CombatMonster, amount: number): void {
+  m.hp = Math.min(m.maxHp, m.hp + amount);
+}
+
+/**
+ * 吸血攻击（对齐 `Actions::VampireAttack`，Actions.cpp:97-106）。带壳寄生虫的吸取专用，
+ * 全项目只有它一个用户。
+ *
+ * ⚠ 四处照抄：
+ *  ①⚠⚠ **目标下标写死 0**（参考自注 `// only used by shelled parasite so idx is 0`）：
+ *     攻击的来源方是 `arr[0]`，所以荆棘 / 火焰屏障的反弹也打在 0 号位，而回血的也是 0 号位
+ *     ——**不是「自己」**。与尖锐外壳、激怒那两处 `arr[0]` 同族。
+ *     在参考的**全部**内容里这不产生分歧：带壳寄生虫只出现在 `SHELL_PARASITE`（单怪）与
+ *     `SHELLED_PARASITE_AND_FUNGI`（它在 0 号位、真菌兽在 1 号位，MonsterGroup.cpp:356-358），
+ *     `arr[0]` 恒等于它自己。所以不给参考打补丁，见 TODOS。
+ *  ② 回血量是 `min(damage, player.lastAttackUnblockedDamage)`：`damage` 是**入队时**算好的
+ *     攻击力（含力量 / 虚弱 / 易伤），而 `lastAttackUnblockedDamage` 是刚刚**真正扣掉的血**。
+ *     格挡挡掉一部分就少回一部分，全挡住则回 0（那时 `lastAttackUnblockedDamage` 被置 0）。
+ *  ③ 判活用的是 `m.isAlive()` = **`curHp > 0`**，不是 `!isDeadOrEscaped()`
+ *     ——逃跑 / 假死的怪照样能回血。当前无差别（带壳寄生虫不逃跑），照抄。
+ *  ④ 攻击与回血在**同一条动作**里、回血是**同步**紧跟其后的：所以荆棘的 `addToTop` 反弹
+ *     还没执行，即便那一下能打死寄生虫，血也已经回上去了。
+ */
+function vampireAttack(bc: BattleContext, damage: number): void {
+  const target = 0; // ⚠ 参考写死的常量，不是「自己」
+  dealDamageToPlayer(bc, damage, target);
+  const m = bc.monsters[target];
+  if (m !== undefined && m.hp > 0) {
+    monsterHeal(m, Math.min(damage, bc.player.lastAttackUnblockedDamage));
   }
 }
 
@@ -8556,6 +8847,14 @@ export const SUPPORTED_ENCOUNTERS: readonly string[] = [
   "three_byrds",
   "two_thieves",
   "chosen_and_byrds",
+  // —— 第二十五批：镀甲（带壳寄生虫）+ 困惑（史尼克）。三个编队走 harness 新追加的
+  //   variant 25，牌组同样是 `BATCH_1 + SPOT_WEAKNESS`（`isMonsterAttacking` 的背书）。
+  //   ⚠ 编队 id 是 `shell_parasite`（没有 ED），对齐参考的 `MonsterEncounter::SHELL_PARASITE`
+  //     ——它建的怪才叫 `SHELLED_PARASITE`。
+  //   ⚠ 同样**只有 asc0 的背书**（两只新怪的 `ascCalibrated` 都没置）。
+  "shell_parasite",
+  "shelled_parasite_and_fungi",
+  "snecko",
 ];
 
 export function isEncounterSupported(encounterId: string): boolean {

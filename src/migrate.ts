@@ -79,9 +79,24 @@ export function migrateLoadedState(raw: unknown): GameState {
     migrateCombatCards(live);
     migrateCombatBatch11(live, state);
     migrateMonsterMiscInfo(live);
+    migratePlayerLastAttack(live);
   }
 
   return state as unknown as GameState;
+}
+
+/**
+ * 玩家的 `lastAttackUnblockedDamage`（第二十五批，对齐 `Player::lastAttackUnblockedDamage`）。
+ *
+ * 回填 0 是**无损**的：唯一的读者是带壳寄生虫的吸血攻击（`Actions::VampireAttack`），
+ * 而那只怪本批才登记——在此之前任何老档里都没有东西读过这个字段，取什么值都不影响行为。
+ * 参考的初值同样是 0（Player.h:86）。
+ */
+function migratePlayerLastAttack(combat: Record<string, unknown>): void {
+  const player = asRecord(combat["player"]);
+  if (player) {
+    backfill(player, "lastAttackUnblockedDamage", 0);
+  }
 }
 
 /**

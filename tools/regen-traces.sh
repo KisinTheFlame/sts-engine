@@ -86,7 +86,15 @@ ENC_ALL="cultist jaw_worm jaw_worm_horde three_louse two_louse"
 #   ⚠ variant 24 的牌组是 `BATCH_1 + SPOT_WEAKNESS`——多的那一张是故意的：`isMonsterAttacking`
 #     的唯一读者就是觅敌之弱，而 `ENC_V0` 只留 variant 0 那副 21 张牌组，里面没有它，
 #     于是第十三批之后登记的怪的「攻击分类」一直没有预言机。从本批起，第二幕的新怪自带背书。
-ENC_V0_ACT2="spheric_guardian chosen snake_plant three_byrds two_thieves chosen_and_byrds"
+# 第二十五批：镀甲（带壳寄生虫）+ 困惑（史尼克）。同样是**新追加的 variant 25**
+#   （variant 23/24 的 encounters 一个字没动，那六个文件逐字节不变），牌组沿用
+#   `BATCH_1 + SPOT_WEAKNESS`。
+#   ⚠ 文件名 `shell_parasite` **没有 ED**——它来自参考枚举 `MonsterEncounter::SHELL_PARASITE`，
+#     而它建的**怪**才叫 `SHELLED_PARASITE`。本批把我们侧的编队 id 也改成了这个名字
+#     （wiring 测试要求 `SUPPORTED_ENCOUNTERS` 与文件名一一对应）。
+#   ⚠ `shelled_parasite_and_fungi` 顺带关掉第十六批孢子云那条盲区：真菌兽在这里有同伴，
+#     `Monster::die` 那句「最后一只就直接 return」不会抢在亡语之前。
+ENC_V0_ACT2="spheric_guardian chosen snake_plant three_byrds two_thieves chosen_and_byrds shell_parasite shelled_parasite_and_fungi snecko"
 ENC_V0_ASC0="small_slimes lots_of_slimes large_slime blue_slaver red_slaver looter exordium_thugs exordium_wildlife gremlin_gang gremlin_nob lagavulin three_sentries the_guardian slime_boss hexaghost $ENC_V0_ACT2"
 ENC_V0_ASC19="cultist@asc19 jaw_worm@asc19 jaw_worm_horde@asc19 two_louse@asc19 three_louse@asc19 small_slimes@asc19 lots_of_slimes@asc19 large_slime@asc19 blue_slaver@asc19 red_slaver@asc19 looter@asc19 exordium_thugs@asc19 exordium_wildlife@asc19 gremlin_gang@asc19 gremlin_nob@asc19 lagavulin@asc19 three_sentries@asc19 the_guardian@asc19 slime_boss@asc19 hexaghost@asc19"
 # ⚠ 必须拼成**单行**：policy_of 用 `case " $ENC_V0 " in *" $1 "*` 做匹配，中间夹一个换行会让

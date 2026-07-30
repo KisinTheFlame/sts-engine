@@ -41,6 +41,15 @@ export type PowerId =
   // ⚠ 整场战斗不递减、不过期（`removeStatus<HEX>` 只在 `Player::removeDebuffs` 里，
   // 那是橙色药丸 / 神性那一路，与回合末无关）。
   | "hex"
+  // 困惑（史尼克的惑目，第二十五批）：**抽到每一张牌时**把它的费用改成 `cardRandomRng.random(3)`
+  // 的结果（0~3，含端）。与诅咒是同一族的纯 bool 状态，实现全在 `CardManager::draw`
+  // （CardManager.cpp:403-412），见 `drawOneCard` 的注释。
+  // ⚠ 四处非直觉，都在 `drawOneCard` 里逐条写着：**每抽一张就消耗一次 cardRandomRng**
+  //   （与新费用是否等于原费用无关）、**`cost` 与 `costForTurn` 都改且是永久的**、
+  //   只在 `cost != newCost` 时才赋值、`freeToPlayOnce = false` 在 `cost >= 0` 的门**里面**。
+  // ⚠ 与腐化/疯狂那类「只改 `costForTurn`」的降费不是一族：它改的是 `cost` 本身，
+  //   所以回合末 `resetAttributesAtEndOfTurn` 复位过去也还是新费用。
+  | "confused"
   | "poison" // 中毒：持有者回合开始受到 = 层数的伤害（无视格挡），然后层数 -1（静默主机制）
   | "focus" // 集中：机器人充能球的被动/唤醒数值 +N（被动修正器）
   | "metallicize" // 金属化：每当自己回合结束，获得 N 点格挡（拉加维林睡眠期）
@@ -59,7 +68,19 @@ export type PowerId =
   | "demon_form" // 恶魔形态：每个玩家回合开始时获得 = 层数的力量（玩家能力牌）
   | "thorns" // 荆棘：每次被攻击时对攻击者反弹 = 层数的伤害（无视其格挡）
   | "regen" // 再生：每回合结束回复 = 层数的生命，然后层数 -1
-  | "plated_armor" // 镀甲：每回合结束获得 = 层数的格挡；受到穿透格挡的攻击伤害时 -1 层
+  // 镀甲（带壳寄生虫，第二十五批）：两处协同，都在 sts-combat.ts 里。
+  //  ① **回合末加 = 层数的格挡**（`applyEndOfTurnTriggers`，Monster.cpp:51-52，
+  //     是同步 `addBlock`，排在金属化与易塑之后）；
+  //  ② **受到未被格挡的攻击伤害时 -1 层**（`attackedUnblockedHelper` 的 else-if 链里
+  //     排**第二格**——无敌之后、蜷缩之前，Monster.cpp:352-355），且**归零那一刻**
+  //     若这只怪是带壳寄生虫就把意图改成 `SHELLED_PARASITE_STUNNED`（那道门是怪种专属的，
+  //     镀甲本身别的怪也有）。
+  // ⚠ 与飞行**正相反**：`decrementStatus<PLATED_ARMOR>` 走的是「`<= WEAK` 那一支」，
+  //   它 `setHasStatus(newAmount)`，所以归零时 statusBits **真的被清掉**（Monster.h:299-303）。
+  //   于是壳破之后这一格让位给链上后面的蜷缩 / 飞行 / 易塑，回合末也不再加格挡。
+  //   飞行那条写的是裸的 `setStatus`、不碰 bit，所以摔下来之后它照样占着自己那一格。
+  //   两者建模方式因此不同：镀甲归零**整条摘掉**，飞行**永不摘除**。
+  | "plated_armor"
   // 狂怒：每次**受到攻击**（`Monster::attacked`，Monster.cpp:424）就获得 = 层数的力量。
   // ⚠ 判定在格挡吸收**之前**且与伤害无关——打在格挡上、甚至 0 伤害也照涨，与蜷缩
   // （只在破了格挡时触发）正相反。狂暴地精开局自带 1 层（asc17 是 2）。
@@ -250,8 +271,21 @@ export type Effect =
   // ⚠ 逃跑**不是死亡**：生命保持 >0、不触发任何亡语，但 `isDeadOrEscaped` 为真，
   // 于是它不再行动、不能被指向、不参与随机选敌，并且 `monstersAlive` 会减一。
   | { kind: "escape" }
-  // 敌人用：本敌人回复自身生命（带壳寄生虫吸取）。
-  | { kind: "heal_self"; amount: number }
+  // 敌人用：**吸血攻击**（带壳寄生虫的吸取，第二十五批）。对齐
+  // `Actions::VampireAttack`（Actions.cpp:97-106）——参考里全项目只有它一个用户，
+  // 注释写着 `// only used by shelled parasite so idx is 0`。
+  //
+  // ⚠ 一条动作里干两件事，不能拆成「攻击 + heal_self」两条效果：
+  //   ① `bc.player.attacked(bc, 0, damage)`；
+  //   ② 紧接着**同步**判 `m.isAlive()`（血 > 0，不是 `!isDeadOrEscaped`），
+  //      真则 `m.heal(min(damage, player.lastAttackUnblockedDamage))`。
+  //   回血量取的是「这一击**真正扣掉的血**」——被格挡挡住多少就少回多少，全挡住就一点不回。
+  //   拆成两条效果的话第二条会排在别的动作后面，而且拿不到那一击的未被格挡量。
+  // ⚠ 它的 `clearOnCombatVictory` 是**默认的 true**，而普通攻击 `Actions::AttackPlayer`
+  //   显式传的是 **false**（Actions.cpp:85-88）。照抄这个不对称。
+  // ⚠ 目标写死 **0 号位**（连荆棘/火焰屏障反弹给谁也是 0），不是「自己」——见
+  //   `vampireAttack` 的注释：参考的内容集合里带壳寄生虫恒在 0 号位，故不产生分歧。
+  | { kind: "vampire_attack"; amount: number; ascAmount?: AscTier[] }
   // 敌人用：治疗一名受伤的友军（秘法师；无受伤友军则治自己）。
   | { kind: "heal_ally"; amount: number }
   // 敌人用：召唤若干敌人加入战斗（地精首领召唤地精；新生者本回合不行动）。

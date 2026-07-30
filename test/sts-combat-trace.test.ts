@@ -349,6 +349,12 @@ const ENCOUNTER: Record<string, string> = {
   THREE_BYRDS: "three_byrds",
   TWO_THIEVES: "two_thieves",
   CHOSEN_AND_BYRDS: "chosen_and_byrds",
+  // —— 第二十五批：镀甲（带壳寄生虫）+ 困惑（史尼克），走 harness 新追加的 variant 25。
+  // ⚠ `SHELL_PARASITE` 没有 ED——它建的**怪**才叫 `SHELLED_PARASITE`。我们这边编队 id
+  //   本批跟着改成了参考的名字（trace 文件名由枚举名小写而来，wiring 测试要求两者一致）。
+  SHELL_PARASITE: "shell_parasite",
+  SHELLED_PARASITE_AND_FUNGI: "shelled_parasite_and_fungi",
+  SNECKO: "snecko",
 };
 const MONSTER: Record<string, string> = {
   CULTIST: "cultist",
@@ -398,6 +404,10 @@ const MONSTER: Record<string, string> = {
   //   `CHOSEN_AND_BYRDS` 是**一只**拜鸟 + 选民（参考就是这么建的，见 enemies.ts 的注释）。
   BYRD: "byrd",
   MUGGER: "mugger",
+  // —— 第二十五批。⚠ `SHELLED_PARASITE_AND_FUNGI` 里真菌兽（第十六批已有映射）在 1 号位，
+  //   寄生虫在 0 号位——吸血攻击写死打/回 `arr[0]`，所以位置是有语义的。
+  SHELLED_PARASITE: "shelled_parasite",
+  SNECKO: "snecko",
   // ⚠ **分裂留下的空格**。参考的 `MonsterGroup::arr` 是定长 5 的数组，`monsterCount` 只是
   // 「dump 到第几格」；史莱姆王分裂时 `arr[0]` 与 `arr[2]` 被写、`monsterCount = 3`，
   // 于是 1 号格那只**从没被构造过**的默认 `Monster` 也被 dump 出来
@@ -516,6 +526,16 @@ const MOVE: Record<string, string> = {
   MUGGER_LUNGE: "lunge",
   MUGGER_SMOKE_BOMB: "smoke_bomb",
   MUGGER_ESCAPE: "flee",
+  // —— 第二十五批：带壳寄生虫四条 + 史尼克三条 ——
+  // ⚠ `SHELLED_PARASITE_STUNNED` 与拜鸟的 `BYRD_STUNNED` 都映射到 `stunned`：比对逐怪进行，
+  //   招式 id 只需在**本只怪**的 moves 里唯一（`MOVE_TURN_END` 的键带怪物前缀，不会混）。
+  SHELLED_PARASITE_DOUBLE_STRIKE: "double_strike",
+  SHELLED_PARASITE_FELL: "fell",
+  SHELLED_PARASITE_STUNNED: "stunned",
+  SHELLED_PARASITE_SUCK: "suck",
+  SNECKO_PERPLEXING_GLARE: "perplexing_glare",
+  SNECKO_TAIL_WHIP: "tail_whip",
+  SNECKO_BITE: "snecko_bite",
   // 分裂留下的空格：那只默认 `Monster` 的 `moveHistory[0]` 是 `MMID::INVALID`
   // （`monsterMoveStrings[0] == "INVALID"`，MonsterMoves.h:215）。我们的空占位
   // `currentMove` 是空串。⚠ 这一条只有那个空格用得到——所有真怪在 `MonsterGroup::init`
@@ -664,6 +684,16 @@ const POWER: Record<string, string> = {
   //   输出（只有恰好 0 那一刻会因 `v == 0` 被折叠掉）。快照里因此能看到
   //   `FLIGHT: 3 → 2 → 1 →（消失）→ -1`。
   FLIGHT: "flight",
+  // —— 第二十五批 ——
+  // 镀甲：**怪物身上**，带壳寄生虫开局自带 14 层（另有 14 点格挡，不在 powers 里）。
+  // 每挨一次未被格挡的攻击 -1，每个回合末加 = 层数的格挡。
+  // ⚠ 与飞行相反，它**归零就从快照里消失**（参考的 `decrementStatus` 走「<= WEAK」那一支，
+  //   会一起清掉 statusBits），而且不会变成负数——壳破的那一刻这条 power 就没了。
+  PLATED_ARMOR: "plated_armor",
+  // 困惑：**玩家身上**，史尼克的惑目上的纯 bool 状态（`Player::debuff` 对它与诅咒走同一句
+  // `setHasStatus(true)`，不写 statusMap，harness 因此按 1 输出，恒是 `CONFUSED: 1`）。
+  // 整场不递减。效果是「抽到的每一张牌费用随机成 0~3」，见 sts-combat 的 `drawOneCard`。
+  CONFUSED: "confused",
 };
 
 const mapPotion = (p: string): string | null => (p in POTION ? POTION[p]! : p);
