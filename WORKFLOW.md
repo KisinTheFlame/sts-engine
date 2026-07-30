@@ -74,6 +74,9 @@
   ⚠⚠ **两个方向都要量**：第二十五批的 `SHELL_PARASITE`（单怪）在「谓词恒真」那个方向上是
   **0 例**——它四招里只有眩晕不是攻击，而眩晕的分母只有 16 帧。只量恒真会把它误判成有背书，
   反方向（白名单里漏掉那三条，243 例）才盖住它。
+  ⚠ 第二十七批又撞上一次同族的：`SLAVERS`（三怪）在恒真方向只有 **6 例**——三只怪的招式里
+  只有红奴隶主的缠绕不是攻击；反方向（白名单漏掉工头那条）**144 例**才是它真正的背书。
+  **「怪多」不等于「恒真那个方向的分母大」，看的是「非攻击招式的帧数」。**
   ⚠ 第十三~二十三批登记的那些怪仍然没有背书（它们的编队走 `ENC_V0`、牌组里没有觅敌之弱），
   见 TODOS 的盲区表。
 - **`construct` 里的怪种特例会消耗 `monsterHpRng`**（虱子的咬击伤害就是这么定的）。
@@ -199,6 +202,51 @@
   第二十六批把秘法师的治疗改成入队、收尾的 `rollMove` 仍同步，红 **79 例**
   （那样 rollMove 会读到治疗前的血量，刚治完还会再强制治疗一次）。
   **判据：先问「这条 case 自己排了队列动作吗」，没有就别把 0 例当盲区。**
+  ⚠⚠ **第二十七批把这条判据反过来用，第一次拿到「同步 ↔ 入队」的干净非 0**：工头的抽打
+  两条效果**全是入队的**（伤害 + 塞伤口），收尾却是**同步的** `bc.noOpRollMove()`
+  （`MonsterSpecific.cpp:1247`）。改成入队红 **5 例**——抽打打死玩家时主循环跳出，
+  入队那次 noOp 永远轮不到，而同步那次已经掷过。**所以「效果入队 + 收尾同步」这个组合
+  一定要照抄**，它是这一族里唯一真的有可观察面的形状。
+- ⚠⚠ **`Monster::initHp` 的第四种形态：先白掷一次、结果丢弃，再正常掷。**
+  `ORB_WALKER` / `REPTOMANCER` / `BRONZE_ORB` / `TASKMASTER` 四只走它
+  （参考只在 `ORB_WALKER` 那条注了 `// first call is discarded by game`），
+  一次建怪消耗 **2 次** `monsterHpRng`。数据表里的开关是 `EnemyDef.hpDiscardRoll`。
+  ⚠ **白掷那次的上下界必须单独写**：工头两组恰好相同（都是 54~60），青铜球却是先掷
+  `(52,58)` 再按 `{50,56}` / `{54,60}` 取值——`Random::random(a,b)` 的取值依赖上下界。
+  ⚠ 但**区间本身永远验证不了**（第二十七批实测 0 例）：取值被丢弃，而 `Random::nextLong(n)`
+  的实际前进步数**与 n 无关**（rejection 循环几乎必然只转一次）。**次数**有背书（去掉整条
+  红 375 例），区间没有、也不可能有。记成「结构性不可观测」，别当盲区去找逃生口。
+- ⚠⚠ **「往空位里填怪」（召唤）与「一只变两只」（分裂）是两族，不共用任何代码。**
+  第二十七批的地精首领：编队开局就建 1/2/3 三格、手动写 `monstersAlive = 3;
+monsterCount = 4;`，**0 号位从没被构造过**（`MonsterGroup.cpp:248-259`）；
+  `Actions::SummonGremlins` 按 **1, 2, 0** 的顺序找 `isDying()` 的格子、取前两个填进去，
+  `monsterCount` **一动不动**。逐条都有背书（顺序 375 例、push 而不是覆盖 375 例）。
+  ⚠ 三处最容易抄错的：① **挑种类的 rng 是形参**（`MonsterGroup::getGremlin(Random&)`，
+  建怪走 `miscRng`、召唤走 **`aiRng`**，两个方向各 375 例）；② **召唤不重跑
+  `preBattleAction`**——召唤出来的狂暴小鬼**没有狂怒**，补上就红 300 例；
+  ③ 建怪那一格是 `arr[idx] = Monster()` 的**整只重建**，残留的易伤 / 格挡 / 意图历史全清零。
+  ⚠ 「开局就留空位」意味着 `monstersAlive` **不能再写成「数组长度」**（`monsterCount`
+  才是数组长度）。同一个坑还牵着 `MonsterGroup::init` 的两个循环：它们的门是
+  `if (arr[i].idx != -1)`，从没构造过的那一格既不 rollMove 也不 preBattleAction。
+- ⚠ **`MINION_LEADER` 给 `Monster::die` 加了第二条判胜路径，不只是个字段。**
+  `if (monstersAlive == 0 || hasStatus<MS::MINION_LEADER>()) { outcome = 胜利; return; }`
+  （`Monster.cpp:293-297`）——首领一死**当场判胜**，随从还站着也算赢。
+  ⚠ 它的背书很薄（第二十七批实测 **4 例**：首领死了 55 次、55 次都判胜，只有 4 次身边还有
+  活着的随从，其余 51 次 `monstersAlive` 本来也归零了）。**薄不等于没有，但这类「两个条件
+  当前几乎同解」的地方必须单独量**，别拿「不上这个 Power 红 375 例」当它的背书。
+- ⚠⚠ **一条分支可能被「邻居的时序」挤死，而那不是笔误、不该报补丁。**
+  第二十七批的地精首领：集结那条 case 是
+  `addToBot(SummonGremlins()); addToBot(RollMove(idx));`——两条动作**紧挨着入队**，
+  于是下一次 `getMoveForRoll` 必然看到「刚填满的 ≥2 只随从」，直接落进「>1 只」那块，
+  而那块**根本不读 `lastMove(RALLY)`**。结果是出招规则里两个 `lastMove(RALLY)` 分支
+  （含嵌在其中的 `aiRng.random(50, 99)` 与它的两个返回值）整支是死代码，
+  两个可达性探针各 **0 例**。
+  ⚠ **与地精头目 asc18 自锁、酸液 L 恒假条件的区别**：那两条是「条件自己恒假」（形状里有
+  矛盾，读得出作者本意），这条的形状**本身没有矛盾**，只是被同一条 case 里另一句的时序挤死。
+  所以前者报补丁 / 记待裁定，后者**照抄、不报补丁**、如实记成盲区。
+  ⚠ 判据上的教训：**「某个分支的互换变异红了很多例」不能证明那个分支可达**——互换同时改了
+  false 侧。要判可达性得写**专门的探针**（把条件恒假、只动真侧）。第二十七批那条互换红 297 例、
+  探针 0 例，两个数字并不矛盾。
 - ⚠ **`onAttacked` 族不在同一个位置，位置就是它全部的可观察面。** 狂怒（ANGRY）在
   `Monster::attacked` 里、排在**格挡吸收之前**（`Monster.cpp:424`），打在格挡上照样触发；
   蜷缩（CURL_UP）在 `attackedUnblockedHelper` 里，只有破了格挡才触发。第十七批把狂怒挪到
@@ -374,7 +422,8 @@ emitProduct(act2Variants, act2Encounters);  // 第二幕，必须排在最后
 - **每批只追加一个新 variant**、filter 到本批的编队。第二十三批是 variant 23
   （BATCH_1 牌组 / 125 种子 / asc 0，三个单怪编队），第二十四批是 variant 24
   （牌组改成 **`BATCH_1 + SPOT_WEAKNESS`**，理由见上方 `isMonsterAttacking` 那条），
-  第二十五批是 variant 25、第二十六批是 variant 26（牌组都与 24 **逐字节相同**）。
+  第二十五批是 variant 25、第二十六批是 variant 26、第二十七批是 variant 27
+  （牌组都与 24 **逐字节相同**）。
   ⚠⚠ **牌组与前一个 variant 完全相同时，两者的 `encounters` 必须互不相交。**
   `split-traces.mjs` / `variant0-rows.mjs` 用**整副牌组的内容**做 variant 指纹，
   所以牌组相同 = 指纹相同：只要某个编队同时出现在两个 variant 的列表里，
@@ -607,7 +656,7 @@ tools/regen-traces.sh --install UPPERCUT DEMON_FORM --moves SENTRY_BOLT SENTRY_B
 pnpm typecheck && pnpm lint && pnpm test && pnpm format
 ```
 
-全绿是**下限**，不是完成。`sts-combat-trace.test.ts` 现有 22456 例逐帧对拍（第二十六批），
+全绿是**下限**，不是完成。`sts-combat-trace.test.ts` 现有 23206 例逐帧对拍（第二十七批），
 其中一部分用**全升级牌组**——所以每条规则 `up ? x : y` 的两个分支都会被验证。
 
 改共享路径（`callEndOfTurnActions`、`drawCards`、`onTurnEnding`、`useCard` 之类）时，
