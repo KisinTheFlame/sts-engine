@@ -11042,13 +11042,19 @@ function callEndTurnEarlySequence(bc: BattleContext, currentCard: CombatCard): v
     const exhaustOnUse =
       item.exhaustOnUse || exhaustsOf(getCardDef(prevCard.defId), prevCard.upgraded);
     prevCard = card;
+    // ⚠ `purgeOnUse` **原样透传**（参考是 `auto item = x;` 整项拷贝，只改 `exhaustOnUse`
+    //   与 `triggerOnUse` 两位）。上面那道过滤已经把复制项挡在外面，所以这里恒是 false
+    //   ——但形状要照抄，否则「把过滤放宽」那个变异量到的是我们自己的实现细节而不是参考行为
+    //   （写死 false 会让复制项进弃牌堆，而参考那条动作对复制项是**严格空操作**：
+    //   `onAfterUseCard` 顶部的 `if (item.purgeOnUse) return;` 会把它挡回去）。
     // desc 与普通的 OnAfterCardUsed 完全同形（同一个函数、同一组实参），所以复用
     // `after_use_card` 这一条描述即可，不必新开一种 ActionDesc。
-    addToBot(bc, (c) => onAfterUseCard(c, card, exhaustOnUse, false, false), false, {
+    const purgeOnUse = item.purgeOnUse;
+    addToBot(bc, (c) => onAfterUseCard(c, card, exhaustOnUse, purgeOnUse, false), false, {
       kind: "after_use_card",
       card,
       exhaustOnUse,
-      purgeOnUse: false,
+      purgeOnUse,
       triggerOnUse: false,
     });
   }
