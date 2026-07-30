@@ -111,6 +111,21 @@ export type PowerId =
   //   复位成 3，于是飞完是 6。照抄，别写成「置 3」。
   | "flight"
   | "mode_shift" // 模式切换累计（守卫者，内部计数用）
+  // 随从（第二十七批）：**怪物身上**的纯 bool 标记（`isBooleanPower(MS::MINION)` 为真，
+  // MonsterStatusEffects.h:184-187），harness 因此恒输出 `MINION: 1`。
+  // ⚠ **在参考的战斗内它一次都不被读**：三个读者全在卡牌效果里
+  // （`Actions.cpp:1084 / :1123 / :1174`——「不影响随从」那一族，对应真实游戏里
+  // 恐惧/献祭之类不对随从生效的牌），而那三张牌一张都没登记。
+  // 它照样必须建模：地精首领带来的两只小鬼与召唤出来的两只都有它，会进怪物快照。
+  | "minion"
+  // 随从首领（第二十七批）：同样是纯 bool 标记，地精首领开局自带（preBattleAction）。
+  // ⚠ **它有一个战斗内的真读者，而且是决定性的**：`Monster::die` 的
+  //   `if (monstersAlive == 0 || hasStatus<MS::MINION_LEADER>()) { outcome = 胜利; return; }`
+  //   （Monster.cpp:293-297）——首领一死**当场判胜**，小鬼还站着也算赢，
+  //   而且那条 `return` 让后面的亡语一概不跑。
+  // ⚠ 参考里另有四个宿主（青铜机器人 / 时间吞噬者旁的 REPTOMANCER / 收藏家 / 觉醒者二阶段），
+  //   一个都还没登记。
+  | "minion_leader"
   // —— 玩家能力牌触发型 power（在对应触发点由 combat 结算，玩家专属）——
   | "combust" // 燃烧：每个玩家回合结束，失 1 生命并对所有敌人造成 = 层数的伤害
   | "feel_no_pain" // 无痛：每消耗一张牌，获得 = 层数的格挡
@@ -317,8 +332,52 @@ export type Effect =
   // ⚠ 与 `apply_power` + `on: "all_enemies"` **不是一回事**：那个是「场上每一只」，
   //   这个是「0 号位与自己」——三只以上的编队里两者会分岔（当前没有这样的编队）。
   | { kind: "buff_ally"; power: PowerId; amount: number; ascAmount?: AscTier[] }
-  // 敌人用：召唤若干敌人加入战斗（地精首领召唤地精；新生者本回合不行动）。
+  // 敌人用：召唤若干敌人加入战斗。⚠ **这是旧近似战斗留下的占位**，唯一的读者是数据表
+  // 自己——三个还没登记的怪（收藏家的火炬头 / 青铜机器人的青铜球 / 蜥蜴法师的匕首）用它。
+  // 它们在参考里各是**一个专门的 Action**（`SpawnTorchHeads` / `SummonOrbs` /
+  // `reptomancerSummon`），落位规则、RNG 消耗、要不要 `initHp`、要不要跳过本回合各不相同，
+  // 所以登记它们时也要各开一个 kind，别拿这条通用形状去凑。
   | { kind: "summon"; defIds: string[] }
+  // 敌人用：**地精首领的召唤**（第二十七批）。对齐 `Actions::SummonGremlins`
+  //（Actions.cpp:459-497）——参考里全项目只有它一个用户，写死了地精首领的场地形状。
+  //
+  // ⚠ 不带参数（与 `split` / `split_boss` 同族）：召唤什么、填哪一格、消耗哪条 RNG 全部
+  // 写在 sts-combat.ts 的 `summonGremlins` 里，因为每一条都是「地精首领专属」而不是数据。
+  // 逐条见那个函数的注释；最容易抄错的三处是
+  //   ① 找空位的顺序是 **1, 2, 0**（0 号位是开局预留的空格，排在最后）；
+  //   ② 挑种类走 **aiRng**，而建怪时（`MonsterGroup::createMonsters`）走的是 **miscRng**；
+  //   ③ **不重跑 `preBattleAction`** —— 召唤出来的狂暴小鬼因此没有狂怒。
+  | { kind: "summon_gremlins" }
+  // 敌人用：**给「随从」们加 Power 与格挡，然后给自己加同样的 Power**（地精首领的鼓舞，
+  // 第二十七批）。对齐 `MonsterSpecific.cpp:710-727`：
+  //   ```cpp
+  //   for (int i = 0; i < 3; ++i) {              // 0/1/2 三格，写死
+  //       auto &minion = bc.monsters.arr[i];
+  //       if (!minion.isDying()) {               // 死的（含从没构造过的空格）跳过
+  //           minion.buff<MS::STRENGTH>(strGain);
+  //           minion.addBlock(asc3 ? 10 : 6);
+  //       }
+  //   }
+  //   buff<MS::STRENGTH>(strGain);               // 自己只加力量，**不加格挡**
+  //   ```
+  // ⚠ 与第二十六批那三条「写死下标」的原语（`gain_block_ally_fixed` / `heal_ally` /
+  //   `buff_ally`）**不是同一族**：那三条只碰一个固定下标，这条是**遍历 0..2**
+  //   （参考真的写了 for 循环，注释里还说 `// not going to use action queue here`）。
+  //   也与 `apply_power` + `on: "all_enemies"` 不是一回事——那个是「场上每一只」，
+  //   这条的范围是**前三格**，首领自己（3 号位）走的是循环外那一句、而且没有格挡。
+  // ⚠ 参考在循环**之前**还有一句 `bc.aiRng.random(0, 2)`（注了 `// for in game quote`），
+  //   结果丢弃、只影响计数器。它不是效果，落在 `MOVE_TURN_BEGIN` 里。
+  // ⚠ 门是 `!isDying()`（血 ≤ 0），不是 `alive`：形状照抄，理由见那个函数。
+  // ascAmount 覆盖 `amount`（力量），blockAscAmount 覆盖 `block`——两档是**两个独立的分档**
+  //   （力量是 `{3,4,5}[eliteDiffIdx]`，格挡是 `asc3 ? 10 : 6`），别合成一个。
+  | {
+      kind: "buff_minions";
+      power: PowerId;
+      amount: number;
+      ascAmount?: AscTier[];
+      block: number;
+      blockAscAmount?: AscTier[];
+    }
   // 敌人用：**分裂**——本敌人当场被 `splitInto` 那两只顶替（对齐 `Monster::largeSlimeSplit`）。
   // 分裂出来的怪继承分裂瞬间的当前生命（同时也是它们的生命上限），不重掷 monsterHpRng。
   // 它不带参数：分裂成什么写在 `EnemyDef.splitInto` 上，时点与 RNG 消耗写在 sts-combat.ts。
@@ -636,6 +695,22 @@ export type EnemyDef = {
    * ⚠ 它也让 `hpHigh` 失去意义（参考那条 case 压根不看 ascension，两组区间都是 `{20,20}`）。
    */
   hpNoRoll?: boolean;
+  /**
+   * 掷血量**之前**先白掷一次、结果丢弃的那一次 `monsterHpRng`（第二十七批）。
+   *
+   * 对齐 `Monster::initHp` 里那一族「先掷一次废的再掷一次」的 case
+   * （`MonsterSpecific.cpp` 的 `ORB_WALKER` / `REPTOMANCER` / `BRONZE_ORB` / `TASKMASTER`）：
+   * ```cpp
+   * case MonsterId::TASKMASTER:
+   *     hpRng.random(54, 60);                    // 参考在 ORB_WALKER 那条注了
+   *     setRandomHp(hpRng, ascension >= 8);      // "first call is discarded by game"
+   * ```
+   * ⚠ **区间要单独写，不能复用 `hpMin` / `hpMax`。** 工头这里两组恰好相同（都是 54~60），
+   * 但青铜球是先掷 `(52,58)` 再按 `{50,56}` / `{54,60}` 取值，两组数不一样——
+   * `Random::random(a,b)` 的取值依赖上下界，抄成同一组会让此后每一次 monsterHpRng 错位。
+   * ⚠ 它与 `hpNoRoll` 互斥（一个掷两次、一个一次都不掷）。
+   */
+  hpDiscardRoll?: { min: number; max: number };
   /**
    * 本条目的爬升度分档（血量第二组 + 招式数值的 asc 档）是否已按 trace 预言机校准。
    *

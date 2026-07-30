@@ -1112,60 +1112,106 @@ const ENEMY_LIST: EnemyDef[] = [
   },
 
   // —— 第二幕精英 ——
+  // 地精首领（第二十七批）：`monsterHpRange[GREMLIN_LEADER] = {{140,148},{145,155}}`
+  //（MonsterIds.h:175），走 `setRandomHp(hpRng, asc >= 8)` 的**精英**那一支
+  //（MonsterSpecific.cpp:90-101，与地精头目 / 拉加维林 / 刺穿之书同一条 case）。
+  // ⚠ 它恒在 **3 号位**，0/1/2 三格是「随从位」：`MonsterGroup` 建 1/2 两只随机小鬼、
+  //   `monsterCount = 4` 而 0 号位**从没被构造过**（见 `ENCOUNTER_BUILDERS.gremlin_leader`）。
   {
     id: "gremlin_leader",
     name: "地精首领",
     hpMin: 140,
     hpMax: 148,
     moves: [
+      // 集结：召唤两只小鬼填进空位（MonsterSpecific.cpp:729-734）。
+      // ⚠ 参考的枚举名是 `GREMLIN_LEADER_RALLY`，不是「召唤地精」——招式 id 跟着行为走。
+      // ⚠ 它**不在** `isMoveAttack` 白名单里（MonsterMoves.h 只有 `GREMLIN_LEADER_STAB`）。
       {
-        id: "summon_gremlins",
-        name: "召唤地精",
-        effects: [{ kind: "summon", defIds: ["mad_gremlin", "sneaky_gremlin"] }],
+        id: "rally",
+        name: "集结",
+        effects: [{ kind: "summon_gremlins" }],
         intent: "unknown",
       },
+      // 鼓舞：给 0/1/2 三格里没死的各 +3 力量 +6 格挡，然后自己 +3 力量（**不加格挡**）。
+      // 对齐 MonsterSpecific.cpp:710-727，逐条见 `buff_minions` 的注释。
+      // ⚠ 力量档是 `{3,4,5}[eliteDiffIdx]`（阈值 3 / 18，**精英**那一组），
+      //   格挡档是 `asc3 ? 10 : 6`——两个独立分档。当前 asc0 取 3 / 6。
+      // ⚠ 效果之前还白掷一次 `aiRng.random(0,2)`（游戏里的对白），见 `MOVE_TURN_BEGIN`。
       {
         id: "encourage",
         name: "鼓舞",
-        effects: [{ kind: "apply_power", power: "strength", amount: 3, on: "all_enemies" }],
+        effects: [
+          {
+            kind: "buff_minions",
+            power: "strength",
+            amount: 3,
+            ascAmount: [
+              { atLeast: 3, amount: 4 },
+              { atLeast: 18, amount: 5 },
+            ],
+            block: 6,
+            blockAscAmount: [{ atLeast: 3, amount: 10 }],
+          },
+        ],
         intent: "buff",
       },
+      // 突刺：`attackPlayerHelper(bc, 6, 3)` —— **三段各 6 点**，不是一次 6 点
+      //（MonsterSpecific.cpp:736-740）。多段的伤害只算一次快照，见 takeTurn 的注释。
+      // ⚠ **没有 asc 分档**（那两个实参都是字面量）。
       {
         id: "gl_stab",
         name: "突刺",
-        effects: [{ kind: "deal_damage", amount: 6 }],
+        effects: [{ kind: "deal_damage_multi", amount: 6, times: 3 }],
         intent: "attack",
       },
     ],
-    // 召唤由 sts-combat.ts 的 MOVE_RULES 登记 gremlin_leader（待迁移）（身边地精 <2 则召唤）；否则 鼓舞/突刺。
-    intentRule: {
-      scripted: [],
-      weighted: [
-        { move: "encourage", weight: 40, maxInARow: 1 },
-        { move: "gl_stab", weight: 60, maxInARow: 2 },
-      ],
-    },
+    // 出招规则见 sts-combat.ts 的 `MOVE_RULES.gremlin_leader`——它按**活着的小鬼数**
+    // （0 / 1 / >1）分成三整块，其中「1 只」那块还会追加一次 aiRng。**不能用权重表达。**
+    intentRule: { scripted: [], weighted: [] },
   },
+  // 工头（第二十七批）：`monsterHpRange[TASKMASTER] = {{54,60},{57,64}}`（MonsterIds.h:208）。
+  // ⚠⚠ 它走的是 `Monster::initHp` 里「**先白掷一次再掷**」那一族
+  //   （MonsterSpecific.cpp:114-117）：`hpRng.random(54,60); setRandomHp(hpRng, asc >= 8);`
+  //   ——一次建怪消耗 **2 次** monsterHpRng。见 `hpDiscardRoll`。
   {
     id: "taskmaster",
     name: "工头",
     hpMin: 54,
     hpMax: 60,
+    hpDiscardRoll: { min: 54, max: 60 },
     moves: [
       {
         id: "scouring_whip",
         name: "抽打",
+        // 对齐 MonsterSpecific.cpp:1234-1247。⚠ 张数三档：`asc18 ? 3 : asc3 ? 2 : 1`
+        //（分档挂在 `count` 上，与哨卫射钉 / 史莱姆王黏液同族）。
+        // ⚠ asc18 还**多出一整条效果**（`addToBot(BuffEnemy<STRENGTH>(idx, 1))`，
+        //   排在伤害之后、塞牌之前），本批**没有转写**：它在 `ascension > 0` 下不可达
+        //   （`ascCalibrated` 没置 → `constructMonster` 抛错），而且它是**入队**的自身 buff，
+        //   我们的 `apply_power` + `on: "self"` 是同步的、表达不了——照第二十三批对第二幕
+        //   asc 分档的先例留给铺爬升度那一批。见 TODOS 跳过清单。
+        // ⚠ 伤口**打不出**（`CardInstance.cpp:329` 的例外只放行黏液），所以它不在
+        //   `CARD_RULES` 里、也不能进 `check-coverage.mjs` 的 `--no-upgrade` 段，
+        //   但**照样有背书**：它躺在弃牌堆快照里被逐帧比对。
         effects: [
           { kind: "deal_damage", amount: 7 },
-          { kind: "add_card", cardId: "wound", pile: "discard", count: 1 },
+          {
+            kind: "add_card",
+            cardId: "wound",
+            pile: "discard",
+            count: 1,
+            ascAmount: [
+              { atLeast: 3, amount: 2 },
+              { atLeast: 18, amount: 3 },
+            ],
+          },
         ],
         intent: "attack",
       },
     ],
-    intentRule: {
-      scripted: [],
-      weighted: [{ move: "scouring_whip", weight: 1, maxInARow: 99 }],
-    },
+    // 只有一招，`getMoveForRoll` 恒返回它（MonsterSpecific.cpp:2887-2890），
+    // roll 照掷但被丢掉。见 `MOVE_RULES.taskmaster`。
+    intentRule: { scripted: [], weighted: [] },
   },
 
   // —— 第二幕精英：穿刺之书（多段攻击）——
@@ -2815,14 +2861,23 @@ const ENCOUNTERS: Record<string, EncounterDef> = {
     isBoss: false,
   },
   book_of_stabbing: { id: "book_of_stabbing", enemies: ["book_of_stabbing"], isBoss: false },
-  // 地精首领带 2 只地精登场；死光了会继续召唤。
+  // 地精首领（第二幕精英，第二十七批）：两只**随机**小鬼在 1/2 号位、首领在 3 号位，
+  // 而 0 号位是**开局预留的空位**（`monsterCount = 4` / `monstersAlive = 3`，
+  // MonsterGroup.cpp:248-259）。
+  // ⚠ 这里的 `enemies` 只是给旧近似战斗用的占位——成员由 `miscRng` 掷定，
+  //   真相在 `ENCOUNTER_BUILDERS.gremlin_leader`（与史莱姆组 / 地精帮同理）。
   gremlin_leader: {
     id: "gremlin_leader",
     enemies: ["mad_gremlin", "gremlin_leader", "sneaky_gremlin"],
     isBoss: false,
   },
-  // 奴隶主小队：工头 + 蓝/红奴隶主。
-  slavers: { id: "slavers", enemies: ["taskmaster", "blue_slaver", "red_slaver"], isBoss: false },
+  // 奴隶主小队（第二幕精英，第二十七批）：**蓝奴隶主 / 工头 / 红奴隶主**
+  //（MonsterGroup.cpp:366-370）。
+  // ⚠⚠ **顺序是承重的，工头在中间。** 第二十七批之前这里写的是
+  //   `["taskmaster","blue_slaver","red_slaver"]`——照抄了旧近似表，与参考不符。
+  //   下标错了不只是快照顺序错：`getRandomMonsterIdx`、群伤的遍历顺序、
+  //   harness 策略打的「最左侧活怪」全都跟着变。
+  slavers: { id: "slavers", enemies: ["blue_slaver", "taskmaster", "red_slaver"], isBoss: false },
   // —— 事件触发的战斗遭遇 ——
   // 斗兽场：工头 + 地精头目，事件触发的硬仗（胜利发遗物）。
   colosseum: { id: "colosseum", enemies: ["taskmaster", "gremlin_nob"], isBoss: false },

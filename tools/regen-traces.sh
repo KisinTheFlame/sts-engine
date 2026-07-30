@@ -105,7 +105,16 @@ ENC_ALL="cultist jaw_worm jaw_worm_horde three_louse two_louse"
 #     `shell_parasite` 与 `shelled_parasite_and_fungi` 两个已冻结文件的内容，
 #     所以那一次 `--install` 走的是 `ALLOW_CHANGED="shell_parasite shelled_parasite_and_fungi"`。
 #     理由与三条判据见 TODOS「已修正（参考侧已打补丁）」。
-ENC_V0_ACT2="spheric_guardian chosen snake_plant three_byrds two_thieves chosen_and_byrds shell_parasite shelled_parasite_and_fungi snecko centurion_and_healer three_cultist cultist_and_chosen sentry_and_sphere"
+# 第二十七批：**召唤**（地精首领）+ 两个第二幕精英编队。同样是**新追加的 variant 27**
+#   （variant 23/24/25/26 的 encounters 一个字没动，那十三个文件逐字节不变），
+#   牌组沿用 `BATCH_1 + SPOT_WEAKNESS`。
+#   ⚠ `gremlin_leader` 是第一个**开局就留空位**的编队：参考建 1/2 号位的小鬼与 3 号位的
+#     首领，`monsterCount = 4` 而 0 号位从没被构造（`MonsterGroup.cpp:248-259`）。
+#     `Actions::SummonGremlins` 按 1, 2, 0 的顺序找空位往里填，用的是 **aiRng**（建怪时是
+#     miscRng），并且**不重跑 preBattleAction**——召唤出来的狂暴小鬼因此没有狂怒。
+#   ⚠ `slavers` 的顺序是**蓝奴隶主 / 监工 / 红奴隶主**（`MonsterGroup.cpp:366-370`），
+#     监工在**中间**。它的抽打会往弃牌堆塞伤口（伤口打不出，只躺在牌堆快照里）。
+ENC_V0_ACT2="spheric_guardian chosen snake_plant three_byrds two_thieves chosen_and_byrds shell_parasite shelled_parasite_and_fungi snecko centurion_and_healer three_cultist cultist_and_chosen sentry_and_sphere gremlin_leader slavers"
 ENC_V0_ASC0="small_slimes lots_of_slimes large_slime blue_slaver red_slaver looter exordium_thugs exordium_wildlife gremlin_gang gremlin_nob lagavulin three_sentries the_guardian slime_boss hexaghost $ENC_V0_ACT2"
 ENC_V0_ASC19="cultist@asc19 jaw_worm@asc19 jaw_worm_horde@asc19 two_louse@asc19 three_louse@asc19 small_slimes@asc19 lots_of_slimes@asc19 large_slime@asc19 blue_slaver@asc19 red_slaver@asc19 looter@asc19 exordium_thugs@asc19 exordium_wildlife@asc19 gremlin_gang@asc19 gremlin_nob@asc19 lagavulin@asc19 three_sentries@asc19 the_guardian@asc19 slime_boss@asc19 hexaghost@asc19"
 # ⚠ 必须拼成**单行**：policy_of 用 `case " $ENC_V0 " in *" $1 "*` 做匹配，中间夹一个换行会让

@@ -1495,6 +1495,74 @@ const MOVE_RULES: Record<string, MoveForRoll> = {
     }
     return "mystic_attack";
   },
+
+  // —— 第二十七批 ——
+
+  // 地精首领：对齐 MonsterSpecific.cpp:2371-2440 GREMLIN_LEADER。
+  //
+  // ⚠⚠ 它按**活着的小鬼数**分成三整块，块与块之间阈值与连续限制全都不同，照抄不要合并：
+  //   0 只 → 阈值 75，集结/突刺二选一（`roll < 75` 时「刚集结过就突刺、否则集结」）
+  //   1 只 → 阈值 50 / 80，**两处追加 aiRng**（见下）
+  //  >1 只 → 阈值 66，鼓舞/突刺二选一，**永不集结**（场上满了）
+  //
+  // ⚠ 「活着的小鬼数」= `Monster::getAliveGremlinCount`（MonsterSpecific.cpp:3612-3620）：
+  //   遍历 **0/1/2 三格**（不含首领自己那格 3），门是 `!isDying()` = **血 > 0**。
+  //   ⚠ 开局 0 号位是个**从没被构造过**的空格（血 0），所以它天然算「不活」——
+  //   我们用 `hp > 0` 而不是 `alive`，把「逃跑 / 假死」那两位的差别留在原处
+  //   （小鬼不会逃跑，当前两者同解；判据同 `MOVE_RULES.mystic` 的 `knight.isAlive()`）。
+  //
+  // ⚠⚠ **「1 只」那块里的两次 `roll2` 是本项目第一处「正确写法」的 roll2。**
+  //   第二十六批给带壳寄生虫打的那个补丁的证据链第②条指的就是这里：参考在这里把 `roll2`
+  //   声明在**分支内部**、并且**只判 roll2**（`if (roll2 < 80)` / `if (roll2 < 50)`），
+  //   没有和原 `roll` 做 `||`。两次的区间还**不一样**：`aiRng.random(50, 99)` 与
+  //   `aiRng.random(0, 80)`（**闭区间上界 80，不是 79**）。照抄，别统一。
+  gremlin_leader: (bc, m, roll) => {
+    // ⚠ 只数 0/1/2 三格，且用「血 > 0」而不是 `alive`（见上）。
+    let aliveGremlins = 0;
+    for (let i = 0; i < 3; i += 1) {
+      if ((bc.monsters[i]?.hp ?? 0) > 0) {
+        aliveGremlins += 1;
+      }
+    }
+    if (aliveGremlins === 0) {
+      if (roll < 75) {
+        return lastMove(m, "rally") ? "gl_stab" : "rally";
+      }
+      return lastMove(m, "gl_stab") ? "rally" : "gl_stab";
+    }
+    if (aliveGremlins === 1) {
+      if (roll < 50) {
+        if (lastMove(m, "rally")) {
+          const roll2 = bc.rng.aiRng.random(50, 99); // ★ 追加一次 aiRng
+          return roll2 < 80 ? "encourage" : "gl_stab";
+        }
+        return "rally";
+      }
+      if (roll < 80) {
+        return lastMove(m, "encourage") ? "gl_stab" : "encourage";
+      }
+      if (lastMove(m, "gl_stab")) {
+        const roll2 = bc.rng.aiRng.random(0, 80); // ★ 追加一次 aiRng（⚠ 上界 80，闭区间）
+        return roll2 < 50 ? "rally" : "encourage";
+      }
+      return "gl_stab";
+    }
+    // >1 只：不再集结。
+    if (roll < 66) {
+      return lastMove(m, "encourage") ? "gl_stab" : "encourage";
+    }
+    if (lastMove(m, "gl_stab")) {
+      return "encourage";
+    }
+    return "gl_stab";
+  },
+
+  // 工头：对齐 MonsterSpecific.cpp:2887-2890 TASKMASTER——恒返回抽打，roll 照掷但被丢掉
+  //（与邪教徒 / 抢劫者 / 劫匪 / 尖刺史莱姆小同形）。
+  // ⚠ 与劫匪那条的差别：劫匪的收尾全是**同步 setMove**，所以那条规则整场只跑一次；
+  //   工头的收尾是**同步的 `noOpRollMove`**（掷完丢掉、不改意图），所以这条规则也只在
+  //   开局的 `MonsterGroup::init` 里跑一次——但两者的 aiRng 消耗次数完全不同，见 MOVE_TURN_END。
+  taskmaster: () => "scouring_whip",
 };
 
 // ============================================================================
@@ -2030,6 +2098,24 @@ const MOVE_TURN_END: Record<string, MoveTurnEnd> = {
   "mystic/mystic_buff": (bc, m) => {
     rollMove(bc, m); // ★ 消耗一次 aiRng（同步的真 rollMove）
   },
+
+  // —— 第二十七批 ——
+  //
+  // 地精首领三条 case 的收尾都是**裸的 `addToBot(Actions::RollMove(idx))`**
+  //（MonsterSpecific.cpp:726 / :732 / :738），也就是这张表的默认值 `"roll"`，不写进来。
+  //
+  // 工头：⚠⚠ 收尾是**同步的** `bc.noOpRollMove()`（MonsterSpecific.cpp:1247），
+  // 不是入队的 `Actions::NoOpRollMove()`——所以它是第五形态（任意函数），
+  // 不能写成这张表的 `"no_op_roll"`（那一支是入队的）。
+  // ⚠ **这里的「同步 vs 入队」真的可观察，不是等价改写。** 判据是 WORKFLOW 第二十六批那条
+  //   反过来用：这条 case 的效果**全是入队的**（伤害与塞伤口都是 `addToBot`），所以轮到收尾
+  //   时队列里还压着东西。抽打打死玩家 → `executeActions` 跳出主循环 → 入队的那次 noOp
+  //   **永远轮不到**，而同步的那次已经掷过了。写错就是 `rng.ai` 计数器对不上。
+  //   （拉加维林那两条同步 `noOpRollMove` 之所以只红 8~11 例，正是因为它们那几条 case
+  //   的效果同样是入队的、但那只怪打不死人得那么快。）
+  "taskmaster/scouring_whip": (bc) => {
+    bc.rng.aiRng.random(99); // ★ 消耗一次 aiRng（noOpRollMove，**同步**，意图不变）
+  },
 };
 
 /**
@@ -2084,6 +2170,17 @@ const MOVE_TURN_BEGIN: Record<string, (bc: BattleContext, m: CombatMonster) => v
   // ⚠ 抢劫者的猛扑**没有**这一句（MonsterSpecific.cpp:910-914）。
   "mugger/lunge": (bc) => {
     bc.rng.aiRng.random(2); // ★ 消耗一次 aiRng，结果丢弃（游戏里的对白）
+  },
+
+  // —— 第二十七批 ——
+  //
+  // 地精首领的鼓舞：效果之前 `bc.aiRng.random(0, 2);`，参考在那行注了 `// for in game quote`
+  //（MonsterSpecific.cpp:714）。结果完全丢弃，只有「掷了一次」体现在 aiRng 计数器上。
+  // ⚠ 与劫匪那句 `random(2)` 是**同一个取值范围**（`random(0,2)` 与 `random(2)` 等价），
+  //   但参考在这里写的是两参数形式。两者消耗次数相同，照抄写法。
+  // ⚠ 首领另外两条 case（集结 / 突刺）**没有**任何开场语句。
+  "gremlin_leader/encourage": (bc) => {
+    bc.rng.aiRng.random(0, 2); // ★ 消耗一次 aiRng，结果丢弃（游戏里的对白）
   },
 };
 
@@ -2145,6 +2242,16 @@ function constructMonster(bc: BattleContext, defId: string): CombatMonster {
   //   这与「上下界相同」**不是一回事**——守卫者的 `{240,240}` 照样掷一次
   //   （`Random::random(int,int)` 无条件 `++counter`）。把这一条写成普通掷法会让此后
   //   每一次 monsterHpRng 取值整体错位，`rng.hp` 计数器当场对不上。
+  // ⚠⚠ 第三种掷法：**先白掷一次、结果丢弃，再正常掷**（第二十七批的工头）。
+  //   `Monster::initHp` 里有一族 case 长这样（`MonsterSpecific.cpp:33-36 / :105-117`）：
+  //       hpRng.random(54, 60);                 // 参考在 ORB_WALKER 那条注了
+  //       setRandomHp(hpRng, ascension >= 8);   // "first call is discarded by game"
+  //   所以一次建怪消耗 **2 次** monsterHpRng。⚠ 白掷那次的**上下界要单独写**
+  //   （见 `hpDiscardRoll`）：工头两组恰好相同，青铜球却是 `(52,58)` 对 `{50,56}`/`{54,60}`。
+  //   漏掉这一次不会静默——`rng.hp` 计数器当场对不上。
+  if (def.hpDiscardRoll !== undefined) {
+    bc.rng.monsterHpRng.random(def.hpDiscardRoll.min, def.hpDiscardRoll.max); // ★ 消耗一次 monsterHpRng，取值丢弃
+  }
   const hp = def.hpNoRoll === true ? range.min : bc.rng.monsterHpRng.random(range.min, range.max); // ★ 掷法二选一：hpNoRoll 时**不**消耗 monsterHpRng
   const m: CombatMonster = {
     defId,
@@ -2352,6 +2459,104 @@ function getSlaver(bc: BattleContext): string {
 }
 
 /**
+ * 从 8 项候选表里掷一只小鬼（对齐 `MonsterGroup::getGremlin`，MonsterGroup.cpp:541-552）。
+ *
+ * ⚠⚠ **它的参数是「哪条 RNG 流」，而且两个调用方用的不是同一条**：
+ *   * `MonsterGroup::createMonsters` 建 `GREMLIN_LEADER` 的两只随从时传 **`bc.miscRng`**；
+ *   * `Actions::SummonGremlins` 召唤时传 **`bc.aiRng`**（Actions.cpp:484-485）。
+ * 参考正是为此把 rng 做成形参。写死一条流会让另一条的计数器整体错位。
+ *
+ * ⚠ 候选表**带重复**（狂暴 ×2、鬼祟 ×2、肥胖 ×2、护盾 ×1、巫师 ×1），掷的是
+ * `rng.random(7)`（闭区间上界 7 = 8 项）。这与 `gremlin_gang` 的 8 选 4 是**同一张表**，
+ * 但那边是不放回抽样、这边每次都从完整的 8 项里掷。
+ */
+function getGremlin(rng: StsRandom): string {
+  const gremlins = [
+    "mad_gremlin",
+    "mad_gremlin",
+    "sneaky_gremlin",
+    "sneaky_gremlin",
+    "fat_gremlin",
+    "fat_gremlin",
+    "shield_gremlin",
+    "gremlin_wizard",
+  ];
+  return gremlins[rng.random(7)]; // ★ 消耗一次传入的那条流
+}
+
+/**
+ * 地精首领的召唤（对齐 `Actions::SummonGremlins`，Actions.cpp:459-497）。
+ *
+ * 本项目**第一个「凭空加怪」的机制**。与第十四 / 十九批的分裂形状不同：分裂是「一只变两只、
+ * 母体退场」（写母体那一格 + 右边一格），召唤是**往预留的空位里填**——地精首领开局就
+ * 留好了 0 号位（见 `ENCOUNTER_BUILDERS.gremlin_leader`），`monsterCount` 从头到尾是 4。
+ *
+ * 逐条照抄的点（每一条都有可观测面）：
+ *
+ *  ① **找空位的顺序是 1, 2, 0**，参考在函数第一行就注了
+ *     `// gremlin leader searches in the order 1, 2, 0 for open space`。
+ *     0 号位那一格还带一道额外的门 `openIdxCount < 2`（前两格都空时压根不看它）。
+ *     ⚠ 顺序决定**哪只新怪落在哪一格**：两次 `getGremlin` 的取值分别给 `newGremlinIdxs[0]`
+ *     与 `[1]`，所以「1 号位空、2 号位有怪、0 号位空」时第一只落 1 号、第二只落 **0 号**。
+ *  ② 门是 `isDying()`（**血 ≤ 0**），不是 `isDeadOrEscaped()`。开局那个从没构造过的空格
+ *     血是 0，因此天然算「空」。我们用 `hp <= 0`，把逃跑 / 假死那两位的差别留在原处。
+ *  ③ **恒好 2 只**。参考在 `sts_asserts` 下 `assert(openIdxCount == 2)`，release 版直接读
+ *     `newGremlinIdxs[1]`（越界即 UB）。它成立的原因在出招规则里：集结只在
+ *     「活着的小鬼 ≤ 1」时才被选出，也就是 0/1/2 里至少两格是空的，而小鬼只会死不会复活。
+ *     我们这里显式抛错而不是猜——与 `splitMonster` 当年那道门同一条理由。
+ *  ④ **挑种类走 `aiRng`**（建怪时是 `miscRng`），而且它是 `construct` 的**实参**：
+ *     C++ 先算实参再进函数，所以流是 ai, hp, ai, hp。
+ *  ⑤ `gremlin0 = Monster()` 是**整只重建**：那一格上残留的易伤 / 虚弱 / 格挡 / 意图历史
+ *     全部清零（与分裂的 `arr[idx] = Monster()` 同形）。
+ *  ⑥ **`monstersAlive += 2`，`monsterCount` 一动不动**。数组长度因此不变——0 号位那个占位
+ *     实体是被**覆盖**掉的，不是 push。
+ *  ⑦⚠⚠ **不重跑 `preBattleAction`**。所以召唤出来的狂暴小鬼**没有狂怒**、护盾小鬼也没有
+ *     任何开局 buff——与 `GREMLIN_GANG` 里建出来的同种小鬼不是一回事。trace 里逐帧可见
+ *     （召唤出的 `MAD_GREMLIN` 的 powers 只有 `MINION: 1`）。
+ *  ⑧ 两只各自 `rollMove`（再各消耗一次 aiRng，`getMoveForRoll` 还可能追加；巫师那条
+ *     还会在规则里置 `miscInfo = 1`）。**排在 buff MINION 之后**。
+ *  ⑨ 整个动作是**入队**的（`addToBot(Actions::SummonGremlins())`，MonsterSpecific.cpp:731），
+ *     所以它跑在首领那条入队 RollMove **之前**、但在本回合先排的动作之后。
+ */
+function summonGremlins(bc: BattleContext): void {
+  const newIdxs: number[] = [];
+  // ① 顺序 1, 2, 0；② 门是「血 ≤ 0」。
+  if ((bc.monsters[1]?.hp ?? 0) <= 0) {
+    newIdxs.push(1);
+  }
+  if ((bc.monsters[2]?.hp ?? 0) <= 0) {
+    newIdxs.push(2);
+  }
+  if (newIdxs.length < 2 && (bc.monsters[0]?.hp ?? 0) <= 0) {
+    newIdxs.push(0);
+  }
+  // ③ 参考在这里是 assert；我们显式抛错（release 版参考会读越界的 newGremlinIdxs[1]）。
+  if (newIdxs.length !== 2) {
+    throw new Error(`sts-combat 召唤地精时空位不是 2 个: ${String(newIdxs.length)}`);
+  }
+  const spawned: CombatMonster[] = [];
+  for (const at of newIdxs) {
+    // ④ 种类走 aiRng，且掷在这一只的血量之前（实参先求值）。
+    // ⑤ 整只重建：`constructMonster` 造的是全新实体，那一格原来的东西被覆盖。
+    const nm = constructMonster(bc, getGremlin(bc.rng.aiRng)); // ★ 一次 aiRng + 一次 monsterHpRng
+    bc.monsters[at] = nm;
+    spawned.push(nm);
+  }
+  // ⑥ 只动 monstersAlive，monsterCount（= 数组长度）不变。
+  bc.monstersAlive += 2;
+  // TODO(后续PR): 贤者之石（PHILOSOPHERS_STONE）会给召唤出来的两只各 +1 力量
+  //   （Actions.cpp:487-490，与两个分裂函数里那一支同源）。harness 的遗物轮换里没有它。
+  for (const nm of spawned) {
+    addPower(nm.powers, "minion", 1);
+  }
+  // ⑦ 这里**没有** preBattleAction —— 参考真的没调，照抄。
+  // ⑧ 两只各自 rollMove，排在 buff 之后。
+  for (const nm of spawned) {
+    rollMove(bc, nm); // ★ 消耗 aiRng（1 次起；巫师/护盾那些规则不追加，但形状上允许）
+  }
+}
+
+/**
  * 「先把候选全部造出来，再挑一个」（对齐 `MonsterGroup::createWeakWildlife` /
  * `createStrongHumanoid`，MonsterGroup.cpp:497 / :477）。
  *
@@ -2508,6 +2713,38 @@ const ENCOUNTER_BUILDERS: Record<string, EncounterBuilder> = {
       lastIdx -= 1;
       createMonster(bc, gremlin); // ★ 消耗一次 monsterHpRng
     }
+  },
+
+  // 地精首领（第二十七批）：对齐 MonsterGroup.cpp:248-259。
+  //
+  // ⚠⚠ **它是第一个「开局就留空位」的编队**，而且不走 `createMonster`：参考直接写
+  //   `arr[1] / arr[2] / arr[3]` 三格，然后**手动赋值** `monstersAlive = 3; monsterCount = 4;`
+  //   ——于是 **0 号位从头到尾没被构造过**（默认 `Monster`，血 0、`idx == -1`、
+  //   意图 `INVALID`），却因为 `monsterCount == 4` 照样被 dump 出来。
+  //   那一格正是 `Actions::SummonGremlins` 要往里填的空位之一。
+  //   ⚠ 与史莱姆王分裂留下的 1 号空格是**同一种占位**（`EMPTY_MONSTER_SLOT`），
+  //     只是那个是打着打着出现的、这个开局就在。
+  //
+  // ⚠ RNG 交错是 misc, hp, misc, hp, hp：两只小鬼各「先掷种类（miscRng）再掷血（hpRng）」
+  //   ——`getGremlin(bc.miscRng)` 是 `construct` 的实参，C++ 先算实参。首领自己只掷血。
+  //
+  // ⚠ 两只小鬼在 `construct` **之后**立刻 `buff<MS::MINION>()`（首领的 MINION_LEADER 反而在
+  //   `preBattleAction` 里，晚得多）。MINION 在战斗内一次都不被读，但它进怪物快照。
+  //
+  // ⚠ **`arr[0]` 不参与 `MonsterGroup::init` 的后两个循环**：那两个循环的门是
+  //   `if (arr[i].idx != -1)`（MonsterGroup.cpp:76-89），默认 `Monster` 的 `idx` 是 -1。
+  //   所以空格既不 rollMove 也不 preBattleAction，见 `initCombat` 里那两处的跳过条件。
+  gremlin_leader: (bc) => {
+    // 0 号位：预留的空格（参考压根没碰它，我们用占位实体表达 `monsterCount` 数到它）。
+    bc.monsters.push(emptyMonsterSlot());
+    for (let i = 0; i < 2; i += 1) {
+      const g = constructMonster(bc, getGremlin(bc.rng.miscRng)); // ★ 一次 miscRng + 一次 monsterHpRng
+      addPower(g.powers, "minion", 1);
+      bc.monsters.push(g);
+    }
+    // 3 号位：首领本尊（`ENCOUNTERS.gremlin_leader.enemies` 那份 `enemies` 只是旧近似战斗的
+    // 占位，真相在这里）。
+    createMonster(bc, "gremlin_leader"); // ★ 消耗一次 monsterHpRng
   },
 };
 
@@ -2668,6 +2905,21 @@ const PRE_BATTLE_ACTION: Record<string, PreBattleAction> = {
   shelled_parasite: (_bc, m) => {
     addPower(m.powers, "plated_armor", 14);
     m.block += 14;
+  },
+
+  // —— 第二十七批 ——
+
+  // 地精首领的「随从首领」标记（对齐 MonsterSpecific.cpp:168-170
+  // `case GREMLIN_LEADER: buff<MS::MINION_LEADER>(); break;`，参考在那行注了
+  // `// game adds MinionPower to all gremlins`）。**不消耗 RNG、没有 asc 分档**。
+  // ⚠ 它不是装饰：`monsterDie` 读它——**首领一死当场判胜**，小鬼还站着也算赢。
+  //   所以漏掉它不是「少个字段」，而是这场仗会一直打到把小鬼也清完。
+  // ⚠ 是纯 bool（`isBooleanPower` 为真），harness 按 1 输出（`MINION_LEADER: 1`）。
+  // ⚠ 两只小鬼的 `MINION` 反而在 **createMonsters 阶段**就上了（见 `ENCOUNTER_BUILDERS`），
+  //   不在这里——参考把这两件事放在两个不同的时点。
+  // ⚠ 工头**没有** preBattleAction（`Monster::preBattleAction` 的 switch 里没有它的 case）。
+  gremlin_leader: (_bc, m) => {
+    addPower(m.powers, "minion_leader", 1);
   },
 };
 
@@ -2889,6 +3141,8 @@ const MONSTER_ATTACK_MOVES: ReadonlySet<string> = new Set([
   // 红 / 绿虱（`:458` / `:481`）
   "green_louse/bite",
   "louse/bite",
+  // 地精首领（`:459`，第二十七批）。⚠ 集结与鼓舞**都不在**——白名单里只有突刺一条。
+  "gremlin_leader/gl_stab",
   // 地精头目（`:460-461`）
   "gremlin_nob/rush",
   "gremlin_nob/skull_bash",
@@ -2925,6 +3179,8 @@ const MONSTER_ATTACK_MOVES: ReadonlySet<string> = new Set([
   "spheric_guardian/sg_slam",
   "spheric_guardian/sg_harden",
   "spheric_guardian/sg_attack_debuff",
+  // 工头（`:512`，第二十七批）。它只有这一招，自然在列。
+  "taskmaster/scouring_whip",
   // 守卫者（`:518-521`）
   "the_guardian/fierce_bash",
   "the_guardian/whirlwind",
@@ -3890,16 +4146,30 @@ export function initCombat(input: CombatInitInput): BattleContext {
       createMonster(bc, defId);
     }
   }
-  bc.monstersAlive = bc.monsters.length;
+  // `monstersAlive` = **真正建出来的怪数**，不是 `monsterCount`（= 数组长度）。
+  // 两者在绝大多数编队里相等，但地精首领那条 case 手动写的是 `monstersAlive = 3;
+  // monsterCount = 4;`（MonsterGroup.cpp:256-257）——0 号位是预留的空位，
+  // 它进 dump（`monsterCount` 数到它）却不算「活着的怪」。
+  // ⚠ 写成 `bc.monsters.length` 会让 `monstersAlive` 多 1：那之后每一处
+  //   `monstersAlive > 1` / `getRandomMonsterIdx` / 判胜都会偏。
+  bc.monstersAlive = bc.monsters.filter((m) => m.defId !== EMPTY_MONSTER_SLOT).length;
   // ①b 编队开局特例（军团 buff / 预置哨兵等），仍属 createMonsters 阶段。
   ENCOUNTER_SETUP[input.encounterId]?.(bc);
   // ② rollMove：逐怪滚初始意图（aiRng）。
+  // ⚠ 空位**跳过**：参考这两个循环的门是 `if (arr[i].idx != -1)`（MonsterGroup.cpp:78 / :84），
+  //   而从没被构造过的那一格 `idx` 是 -1。地精首领的 0 号位走的就是这一支。
   for (const m of bc.monsters) {
+    if (m.defId === EMPTY_MONSTER_SLOT) {
+      continue;
+    }
     rollMove(bc, m);
   }
   // ③ preBattleAction：开局 buff，其中蜷缩等会再消耗 monsterHpRng——注意它排在
   //    所有 HP roll 与所有 rollMove **之后**。
   for (const m of bc.monsters) {
+    if (m.defId === EMPTY_MONSTER_SLOT) {
+      continue;
+    }
     PRE_BATTLE_ACTION[m.defId]?.(bc, m);
   }
 
@@ -4620,7 +4890,15 @@ function wakeUpLagavulin(m: CombatMonster): void {
 function monsterDie(bc: BattleContext, m: CombatMonster): void {
   m.alive = false;
   bc.monstersAlive -= 1;
-  if (bc.monstersAlive === 0) {
+  // ⚠⚠ **判胜有两个条件，不只是「清场」**（对齐 Monster.cpp:293-297）：
+  //     `if (monstersAlive == 0 || hasStatus<MS::MINION_LEADER>())`
+  //   第二个是第二十七批加的：地精首领带着 `MINION_LEADER`，它一死**当场判胜**——
+  //   两只小鬼还站在场上、血量原样，战斗直接结束。参考没有把小鬼一起清掉，
+  //   trace 里那两格照旧 `alive: true`。
+  //   ⚠ 真实游戏里首领死后小鬼是**逃跑**（`Monster::escapeNext` 那一位），参考用这条
+  //     「首领死 = 判胜」直接短路掉了整个过程；两者在「战斗此刻结束」这一点上同解，
+  //     所以那一位在参考里永远走不到，见 TODOS「已确认但尚未打补丁」的 `escapeNext` 那条。
+  if (bc.monstersAlive === 0 || getPower(m.powers, "minion_leader") > 0) {
     bc.outcome = "player_victory";
     return; // ★ 参考在这里 return，下面的死亡触发一概不跑
   }
@@ -8287,6 +8565,45 @@ function takeTurn(bc: BattleContext, m: CombatMonster): string | null {
         }
       }
       addPower(m.powers, power, strBuff);
+    } else if (eff.kind === "buff_minions") {
+      // 给「随从位」们加 Power 与格挡，然后给自己加同样的 Power（地精首领的鼓舞，
+      // 第二十七批）。对齐 MonsterSpecific.cpp:710-727：
+      //   `const int strBuff[] {3,4,5}; const auto strGain = strBuff[eliteDiffIdx];`
+      //   `bc.aiRng.random(0, 2);`                    ← 在 MOVE_TURN_BEGIN 里
+      //   `for (int i = 0; i < 3; ++i) { auto &minion = arr[i];`
+      //   `    if (!minion.isDying()) { minion.buff<STRENGTH>(strGain);`
+      //   `                            minion.addBlock(asc3 ? 10 : 6); } }`
+      //   `buff<MS::STRENGTH>(strGain);`
+      // ⚠ 五处照抄：
+      //  ① 范围是**写死的 0/1/2 三格**（首领恒在 3 号位，所以「随从位」= 前三格）。
+      //     不是 `all_enemies`（那会把首领自己算两次），也不是「随机友军」。
+      //  ② 门是 `!isDying()` = **血 > 0**，不是 `alive`——开局那个空格血 0，天然跳过；
+      //     刚死的小鬼也跳过（这一支 trace 里真的走到，见 TODOS 的例数）。
+      //  ③ **自己只加 Power、不加格挡**，而且**无条件**（不看 `monstersAlive`）。
+      //  ④ **全部同步**，参考在那里注了 `// not going to use action queue here`。
+      //     于是紧随其后那条入队的 RollMove 出队时已经看得见新的力量与格挡。
+      //  ⑤ 力量与格挡是**两个独立的 asc 分档**：`{3,4,5}[eliteDiffIdx]`（阈值 3 / 18）
+      //     与 `asc3 ? 10 : 6`。别合成一个数。
+      const { power } = eff;
+      const strGain = ascValue(bc, eff.amount, eff.ascAmount);
+      const blockGain = ascValue(bc, eff.block, eff.blockAscAmount);
+      for (let i = 0; i < 3; i += 1) {
+        const minion = bc.monsters[i];
+        if (minion !== undefined && minion.hp > 0) {
+          addPower(minion.powers, power, strGain);
+          minion.block += blockGain;
+        }
+      }
+      addPower(m.powers, power, strGain);
+    } else if (eff.kind === "summon_gremlins") {
+      // 召唤两只小鬼（地精首领的集结，第二十七批）。参考是
+      // `addToBot(Actions::SummonGremlins())`（MonsterSpecific.cpp:731）——**入队**，
+      // 所以两次 `getGremlin` 与两次 rollMove 的 aiRng 掷在动作**出队执行**的那一刻。
+      // ⚠ 差别可观察：同一回合里排在它前面的动作若打死了某只小鬼，找空位时那一格已经算空。
+      // 逐条形状见 `summonGremlins`。
+      addToBot(bc, (c) => {
+        summonGremlins(c);
+      });
     } else if (eff.kind === "steal_gold") {
       // 偷金：**同步**执行（参考的 `stealGoldFromPlayer` 是裸调用，不是 addToBot），
       // 排在同一条 case 里的 attackPlayerHelper **之前**。
@@ -9045,6 +9362,13 @@ export const SUPPORTED_ENCOUNTERS: readonly string[] = [
   "three_cultist",
   "cultist_and_chosen",
   "sentry_and_sphere",
+  // —— 第二十七批：**召唤**（地精首领）+ 两个第二幕精英编队。走 harness 新追加的
+  //   variant 27，牌组同样是 `BATCH_1 + SPOT_WEAKNESS`。
+  //   ⚠ `gremlin_leader` 是第一个**开局就留空位**的编队（0 号位空、`monsterCount = 4`），
+  //     `slavers` 的顺序是**蓝奴隶主 / 工头 / 红奴隶主**（工头在中间）。
+  //   ⚠ 同样**只有 asc0 的背书**（地精首领与工头的 `ascCalibrated` 都没置）。
+  "gremlin_leader",
+  "slavers",
 ];
 
 export function isEncounterSupported(encounterId: string): boolean {

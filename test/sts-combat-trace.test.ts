@@ -362,6 +362,11 @@ const ENCOUNTER: Record<string, string> = {
   THREE_CULTIST: "three_cultist",
   CULTIST_AND_CHOSEN: "cultist_and_chosen",
   SENTRY_AND_SPHERE: "sentry_and_sphere",
+  // —— 第二十七批：**召唤**（地精首领）+ 两个第二幕精英，走 variant 27。
+  // ⚠ `GREMLIN_LEADER` 开局就留出 0 号位（`monsterCount = 4` / `monstersAlive = 3`），
+  //   `SLAVERS` 的顺序是蓝奴隶主 / 工头 / 红奴隶主——**工头在中间**。
+  GREMLIN_LEADER: "gremlin_leader",
+  SLAVERS: "slavers",
 };
 const MONSTER: Record<string, string> = {
   CULTIST: "cultist",
@@ -421,6 +426,11 @@ const MONSTER: Record<string, string> = {
   //   `THREE_CULTIST` 里同一种怪出现三次，与三哨卫同形。
   CENTURION: "centurion",
   MYSTIC: "mystic",
+  // —— 第二十七批。⚠ `GREMLIN_LEADER` 里除首领之外还会出现**五种小鬼中的任意两只**
+  //   （`getGremlin` 的 8 项候选带重复），召唤又会再填两只——那五行第十七批已有映射。
+  //   `SLAVERS` 里的蓝 / 红奴隶主同样前面已有。
+  GREMLIN_LEADER: "gremlin_leader",
+  TASKMASTER: "taskmaster",
   // ⚠ **分裂留下的空格**。参考的 `MonsterGroup::arr` 是定长 5 的数组，`monsterCount` 只是
   // 「dump 到第几格」；史莱姆王分裂时 `arr[0]` 与 `arr[2]` 被写、`monsterCount = 3`，
   // 于是 1 号格那只**从没被构造过**的默认 `Monster` 也被 dump 出来
@@ -560,6 +570,14 @@ const MOVE: Record<string, string> = {
   MYSTIC_HEAL: "mystic_heal",
   MYSTIC_BUFF: "mystic_buff",
   MYSTIC_ATTACK_DEBUFF: "mystic_attack",
+  // —— 第二十七批：地精首领三条 + 工头一条 ——
+  // ⚠ `GREMLIN_LEADER_RALLY` 在我们这边叫 `rally`（第二十七批之前数据表里写的是
+  //   `summon_gremlins`——那是按效果起的名，跟着参考的枚举改成了按行为起的名）。
+  // ⚠ 突刺带 `gl_` 前缀：裸名 `stab` 已经被蓝奴隶主用了（数据表是一张平表）。
+  GREMLIN_LEADER_RALLY: "rally",
+  GREMLIN_LEADER_ENCOURAGE: "encourage",
+  GREMLIN_LEADER_STAB: "gl_stab",
+  TASKMASTER_SCOURING_WHIP: "scouring_whip",
   // 分裂留下的空格：那只默认 `Monster` 的 `moveHistory[0]` 是 `MMID::INVALID`
   // （`monsterMoveStrings[0] == "INVALID"`，MonsterMoves.h:215）。我们的空占位
   // `currentMove` 是空串。⚠ 这一条只有那个空格用得到——所有真怪在 `MonsterGroup::init`
@@ -718,6 +736,13 @@ const POWER: Record<string, string> = {
   // `setHasStatus(true)`，不写 statusMap，harness 因此按 1 输出，恒是 `CONFUSED: 1`）。
   // 整场不递减。效果是「抽到的每一张牌费用随机成 0~3」，见 sts-combat 的 `drawOneCard`。
   CONFUSED: "confused",
+  // —— 第二十七批 ——
+  // 随从：**怪物身上**的纯 bool 标记，地精首领带来的两只小鬼与召唤出来的两只都有。
+  // ⚠ 战斗内一次都不被读（三个读者全在还没登记的卡牌效果里），但它全程挂在快照里。
+  MINION: "minion",
+  // 随从首领：同样是纯 bool，地精首领 preBattleAction 里上的。
+  // ⚠ 它**有**一个决定性的读者：`Monster::die` 判它 → 首领一死当场判胜，小鬼还站着也算赢。
+  MINION_LEADER: "minion_leader",
 };
 
 const mapPotion = (p: string): string | null => (p in POTION ? POTION[p]! : p);

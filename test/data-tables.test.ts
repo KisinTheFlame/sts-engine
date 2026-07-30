@@ -609,6 +609,33 @@ describe("敌人与编队表", () => {
     expect(getEnemyDef("the_guardian").hpMin).toBe(getEnemyDef("the_guardian").hpMax);
   });
 
+  // 第二十七批：`hpDiscardRoll`（掷血量之前先白掷一次、结果丢弃的那一次 monsterHpRng）。
+  // 与 `hpNoRoll` 同族的「掷几次」开关，抄错同样是**此后每一次 monsterHpRng 整体错位**。
+  // 参考里恰好四只怪走那一族 case（`Monster::initHp`，MonsterSpecific.cpp:33-36 / :105-117，
+  // 参考只在 ORB_WALKER 那条注了 `// first call is discarded by game`）。
+  // ⚠ 白掷那次的区间**不一定等于**正式那次：青铜球是先掷 `(52,58)` 再按 `{50,56}` 取值。
+  //   所以这里逐怪对的是**那一对数**，不是「有没有这个字段」。
+  // ⚠ 名单里只有**已登记**的那只，与 `HP_NO_ROLL` 同一条惯例（参考里大嘴 / 复形怪也不掷
+  //   monsterHpRng，但它俩还没登记，所以数据表里不预填）。剩下三只
+  //   （暗球游荡者 `(90,96)` / 蜥蜴法师 `(180,190)` / 青铜球 `(52,58)`）
+  //   登记它们的那一批要一起补上这个字段与这张表。
+  const HP_DISCARD_ROLL: Record<string, { min: number; max: number }> = {
+    taskmaster: { min: 54, max: 60 },
+  };
+
+  it("只有 initHp 里那族「先白掷一次」的怪才带 hpDiscardRoll，且区间逐怪对表", () => {
+    for (const def of ALL_ENEMIES) {
+      const expected = HP_DISCARD_ROLL[def.id];
+      if (expected === undefined) {
+        expect(def.hpDiscardRoll, `${def.id} 不该带 hpDiscardRoll`).toBeUndefined();
+        continue;
+      }
+      expect(def.hpDiscardRoll, `${def.id} 应带 hpDiscardRoll`).toEqual(expected);
+      // 两个开关互斥：一个掷两次、一个一次都不掷。
+      expect(def.hpNoRoll ?? false, `${def.id} 不该同时标 hpNoRoll`).toBe(false);
+    }
+  });
+
   it("意图规则只引用本敌人有的招式", () => {
     for (const id of ["cultist", "jaw_worm", "louse", "green_louse"]) {
       const def = getEnemyDef(id);
