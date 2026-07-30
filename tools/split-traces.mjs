@@ -76,17 +76,30 @@ const head = (i) => {
 // 所以换成内容指纹不会把一个 variant 拆开——换之前在已提交数据上验证过分组完全不变。
 const signature = (t) =>
   `${t.deck.join(",")}|${t.deckUpgraded === undefined ? "" : t.deckUpgraded.join("")}` +
-  `|${t.ascension === undefined ? "" : String(t.ascension)}`;
+  `|${t.ascension === undefined ? "" : String(t.ascension)}` +
+  `|${t.targetPolicy === undefined ? "" : String(t.targetPolicy)}`;
 
-// 分组键 = 编队 × 爬升度。爬升度 trace **单独成文件**（`cultist@asc19.jsonl`），不与 asc0 混在一起：
-//  * asc0 的分组键不变（harness 只在非 0 时输出 `ascension`），所以既有 20 个文件名一个字不改，
-//    `regen-traces.sh --check` 仍然逐字节比得上——这是「新轴对旧数据是空操作」的凭证。
-//  * 一份文件里只有一个爬升度，于是 `variant0-rows.mjs` 会返回整份长度，
+// 分组键 = 编队 × 爬升度 × 目标策略。后两维各是一个**后缀**，非默认值时才拼上去：
+//
+//   <编队>[@asc<N>][@tgt<N>]      例如 cultist / cultist@asc19 / centurion_and_healer@tgt1
+//
+// ⚠⚠ **拼接顺序固定为「先 asc 后 tgt」**，而且不许改：文件名就是冻结数据的身份，
+// 顺序一换等于给已提交的文件改名，`regen-traces.sh` 会当场报「没有生成」。
+// 两维同时非默认时得到 `<编队>@asc19@tgt1`（本批没有这种组合——目标策略这一批只做 asc0，
+// 见 TODOS「目标策略轴」；但键的形状先定死，以后叠加不用再改这里）。
+//
+// 为什么两维都用「非默认才拼」：
+//  * 默认值那一侧的分组键一个字不改（harness 也只在非默认时输出对应字段），所以既有文件名
+//    与内容都不动，`regen-traces.sh --check` 仍然逐字节比得上——这是「新轴对旧数据是空操作」
+//    的凭证，加轴时**必须先单独跑一次**。
+//  * 一份文件里只有一个 (爬升度, 目标策略) 组合，于是 `variant0-rows.mjs` 会返回整份长度，
 //    `ENC_V0` 策略下整份冻结，正是我们要的。
-const groupKey = (t) =>
-  t.ascension === undefined || t.ascension === 0
-    ? t.encounter
-    : `${t.encounter}@asc${String(t.ascension)}`;
+const groupKey = (t) => {
+  const asc = t.ascension === undefined || t.ascension === 0 ? "" : `@asc${String(t.ascension)}`;
+  const tgt =
+    t.targetPolicy === undefined || t.targetPolicy === 0 ? "" : `@tgt${String(t.targetPolicy)}`;
+  return `${t.encounter}${asc}${tgt}`;
+};
 
 const variantRank = new Map();
 const by = {};

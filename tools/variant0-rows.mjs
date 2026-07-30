@@ -23,7 +23,9 @@ const signature = (line) => {
     `${t.deck.join(",")}|${t.deckUpgraded === undefined ? "" : t.deckUpgraded.join("")}` +
     // 爬升度也进指纹（与 split-traces.mjs 保持同一个）。当前每个文件里只有一个爬升度，
     // 所以它不会把任何一段拆开；写上是为了「两处指纹必须一致」这条不变量不留缺口。
-    `|${t.ascension === undefined ? "" : String(t.ascension)}`
+    `|${t.ascension === undefined ? "" : String(t.ascension)}` +
+    // 目标策略同理（第三十一批新增的轴）。同样每个文件里只有一个取值。
+    `|${t.targetPolicy === undefined ? "" : String(t.targetPolicy)}`
   );
 };
 
