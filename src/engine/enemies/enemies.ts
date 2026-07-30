@@ -2321,9 +2321,11 @@ const ENEMY_LIST: EnemyDef[] = [
       },
       {
         // 重生（MonsterSpecific.cpp:1711-1722）：**假死之后的复活**，七句状态机 + 两句收尾。
-        // ⚠ 它**从来不由 roll 掷出来**：`Monster::die` 的第一个分支
-        //   `setMove(MMID::AWAKENED_ONE_REBIRTH)` 写进去（Monster.cpp:290），而出招规则里
-        //   `if (halfDead) return REBIRTH;` 那一支只是「假死期间无论如何还是它」的兜底。
+        // ⚠ 它**几乎从来不由 roll 掷出来**：`Monster::die` 的第一个分支
+        //   `setMove(MMID::AWAKENED_ONE_REBIRTH)` 写进去（Monster.cpp:290）。出招规则里
+        //   `if (halfDead) return REBIRTH;` 那一支只在「觉醒者死在怪物阶段」时被用到
+        //   （它自己攻击排的 `RollMove` 在青铜鳞片荆棘把它打进假死之后才出队），
+        //   实测 46 条假死里只有 **2 条**走这条路，见 `MOVE_RULES.awakened_one` 的 ①。
         // ⚠ 它**不在** `isMoveAttack` 白名单里（MonsterMoves.h:422-426 只收另外五条）。
         // ⚠ 意图 `unknown`：真实游戏这一格显示的是「昏迷」，与暗影客的重生/复活同族。
         id: "rebirth",

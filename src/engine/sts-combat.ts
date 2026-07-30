@@ -2365,13 +2365,18 @@ const MOVE_RULES: Record<string, MoveForRoll> = {
   //     return !lastTwoMoves(TACKLE) ? TACKLE : SLUDGE;
   //
   // ⚠ 六处照抄：
-  //  ①⚠⚠ **`halfDead` 那道门排在最前面，而且它在当前语料里是「死代码但必须照抄」**：
-  //     `Monster::die` 的觉醒者分支已经 `setMove(REBIRTH)` 过了，所以假死期间意图本来就是
-  //     重生，而重生那条 case 的收尾是 `noOpRollMove`（掷完就丢）——真正会**用到**这个
-  //     返回值的路径要有人在假死期间对它调真的 `rollMove`。参考里没有这样的调用点。
+  //  ①⚠⚠ **`halfDead` 那道门排在最前面，而且它真的会被走到——只是薄（实测 2 例）**。
+  //     大多数时候用不上它：`Monster::die` 的觉醒者分支已经 `setMove(REBIRTH)` 过了，
+  //     而重生那条 case 的收尾是 `noOpRollMove`（掷完就丢），所以没人会在假死期间
+  //     重新滚意图。**唯一走到它的局面是「觉醒者死在怪物阶段」**：它自己的攻击
+  //     `addToBot(RollMove(idx))` 排在伤害之后，而青铜鳞片的荆棘是 `addToTop` 的
+  //     ——荆棘把它打进假死，紧接着那条 RollMove 就在**半死的怪身上**执行。
+  //     实测 46 条走到假死的 trace 里恰有 **2 条**是这么进去的（`GEN20@floor3` /
+  //     `GEN9@floor7`，两条都带青铜鳞片，触发动作是 `end_turn` 而不是打牌）。
+  //     去掉这道门红 **2 例**。⚠ 机理与第二十六批百夫长的 `CENTURION_FURY` 完全相同。
   //     ⚠ 它与暗影客那条形状相同（`if (halfDead) return DARKLING_REINCARNATE`），但那一条
-  //     **真的被走到**：暗影客的「重生」是一条空 case，收尾是同步的**真** rollMove。
-  //     两者别按同一条推——判据永远是「收尾是 RollMove 还是 noOpRollMove」。
+  //     的分母厚得多：暗影客的「重生」是一条空 case、收尾是同步的**真** rollMove，
+  //     每次复活都要走一遍。**别按分母大小推形状，也别按形状推分母。**
   //  ②⚠⚠ **阶段位是 `miscInfo`，不是任何 Power**（参考在 `die` 那行自注
   //     `// todo change to status`）。它由复活那条 case 的 `miscInfo = true` 置起，
   //     整场只可能置一次——所以觉醒者只会假死一次，第二次死是真死。
