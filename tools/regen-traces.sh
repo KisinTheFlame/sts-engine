@@ -197,8 +197,25 @@ ENC_ALL="cultist jaw_worm jaw_worm_horde three_louse two_louse"
 #     所以它的 encounters 必须与那六个**互不相交**——第三幕的编队没有任何第二幕 variant
 #     点名，这条自动成立。⚠ `jaw_worm_horde` 虽然也是第三幕的，但它自第一个 commit 起就在
 #     第一幕的 `ENC_ALL` 里，**第三幕的 variant 绝不能点名它**。
+# 第三十三批：第三幕三个**单怪**编队（走**新追加的 variant 33**，variant 32 的 encounters
+#   一个字没动，那三个文件逐字节不变），牌组沿用 `BATCH_1 + SPOT_WEAKNESS`、40 个种子、
+#   **爬升度 0**、**目标策略 0**。选它们是因为三只怪**全由已登记的原语拼成**：
+#   ⚠ `orb_walker` 是 `hpDiscardRoll` 的**正主**（参考只在它那条注了
+#     `// first call is discarded by game`，MonsterSpecific.cpp:32-35），一次建怪掷 **2 次**
+#     monsterHpRng；它还是全参考项目 `GENERIC_STRENGTH_UP` 的**唯一宿主**
+#     （回合末 +3 力量，Monster.cpp:103-105）。激光一招同时往**抽牌堆**与**弃牌堆**各塞
+#     一张灼伤（两条不同的 Action，前者每张掷一次 cardRandomRng）。
+#   ⚠ `maw` 是 `hpNoRoll` 的**第二个宿主**（第一个是第二十三批的球状守卫者），
+#     **一次 monsterHpRng 都不掷**；它的吞噬是本项目第一条「段数由回合数算出来」的多段攻击
+#     （`attackPlayerHelper(bc, 5, (getMonsterTurnNumber()+1)/2)`）。
+#     ⚠ 文件名是 `maw` 而不是 `the_maw`——它来自参考枚举 `MonsterEncounter::MAW`，
+#     而它建的**怪**才叫 `THE_MAW`（同族的先例：`shell_parasite` / `automaton` / `collector`）。
+#     本批把我们侧的编队 id 也改成了这个名字。
+#   ⚠ `spire_growth` 带来 **CONSTRICTED**（束缚）：玩家回合末 `addToBot(DamagePlayer(层数))`，
+#     **不递减、不摘除**，所以它那一招一场仗最多出一次（出招规则的门里有
+#     `!player.hasStatus<CONSTRICTED>()`）。
 ENC_V0_ACT2="spheric_guardian chosen snake_plant three_byrds two_thieves chosen_and_byrds shell_parasite shelled_parasite_and_fungi snecko centurion_and_healer three_cultist cultist_and_chosen sentry_and_sphere gremlin_leader slavers book_of_stabbing automaton champ collector"
-ENC_V0_ACT3="three_shapes four_shapes sphere_and_two_shapes"
+ENC_V0_ACT3="three_shapes four_shapes sphere_and_two_shapes orb_walker spire_growth maw"
 ENC_V0_ACT2_ASC19="spheric_guardian@asc19 chosen@asc19 snake_plant@asc19 three_byrds@asc19 two_thieves@asc19 chosen_and_byrds@asc19 shell_parasite@asc19 shelled_parasite_and_fungi@asc19 snecko@asc19 centurion_and_healer@asc19 three_cultist@asc19 cultist_and_chosen@asc19 sentry_and_sphere@asc19 gremlin_leader@asc19 slavers@asc19 book_of_stabbing@asc19 automaton@asc19 champ@asc19 collector@asc19"
 ENC_V0_ASC0="small_slimes lots_of_slimes large_slime blue_slaver red_slaver looter exordium_thugs exordium_wildlife gremlin_gang gremlin_nob lagavulin three_sentries the_guardian slime_boss hexaghost $ENC_V0_ACT2"
 ENC_V0_TGT1="jaw_worm_horde@tgt1 two_louse@tgt1 three_louse@tgt1 small_slimes@tgt1 lots_of_slimes@tgt1 large_slime@tgt1 gremlin_gang@tgt1 exordium_thugs@tgt1 exordium_wildlife@tgt1 three_sentries@tgt1 slime_boss@tgt1 three_byrds@tgt1 two_thieves@tgt1 chosen_and_byrds@tgt1 sentry_and_sphere@tgt1 cultist_and_chosen@tgt1 three_cultist@tgt1 shelled_parasite_and_fungi@tgt1 centurion_and_healer@tgt1 gremlin_leader@tgt1 slavers@tgt1 automaton@tgt1 collector@tgt1"
