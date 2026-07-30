@@ -374,6 +374,13 @@ const ENCOUNTER: Record<string, string> = {
   //   所以快照里一开始有两个 `INVALID = 0`；自动机第一招把它们填成两颗青铜球。
   BOOK_OF_STABBING: "book_of_stabbing",
   AUTOMATON: "automaton",
+  // —— 第二十九批：第二幕最后两个 Boss（19 / 19 收官），走 variant 29。
+  // ⚠ `COLLECTOR` 是**编队**名，它建的**怪**才叫 `THE_COLLECTOR`——我们这边的编队 id
+  //   本批跟着改成了参考的名字（原先叫 `the_collector`，与怪同名）。
+  // ⚠ 这个编队 0 号位与 1 号位都是**预留空位**（`monsterCount = 3` / `monstersAlive = 1`），
+  //   收藏家在**2 号位**；所以快照里一开始有两个 `INVALID = 0`，第一招把它们填成火炬头。
+  CHAMP: "champ",
+  COLLECTOR: "collector",
 };
 const MONSTER: Record<string, string> = {
   CULTIST: "cultist",
@@ -443,6 +450,13 @@ const MONSTER: Record<string, string> = {
   BOOK_OF_STABBING: "book_of_stabbing",
   BRONZE_AUTOMATON: "bronze_automaton",
   BRONZE_ORB: "bronze_orb",
+  // —— 第二十九批。⚠ `TORCH_HEAD` 同样**不在任何建怪列表里**——唯一来源是收藏家的
+  //   `Actions::SpawnTorchHeads`，填进开局预留的 1 号位与 0 号位（**顺序就是 1 再 0**）。
+  //   ⚠ 我们这边怪的 id 是 `the_collector`（对齐 `MonsterId::THE_COLLECTOR`），
+  //   而**编队** id 是 `collector`——两者不同名，见上面 ENCOUNTER 那一栏。
+  THE_CHAMP: "champ",
+  THE_COLLECTOR: "the_collector",
+  TORCH_HEAD: "torch_head",
   // ⚠ **分裂留下的空格**。参考的 `MonsterGroup::arr` 是定长 5 的数组，`monsterCount` 只是
   // 「dump 到第几格」；史莱姆王分裂时 `arr[0]` 与 `arr[2]` 被写、`monsterCount = 3`，
   // 于是 1 号格那只**从没被构造过**的默认 `Monster` 也被 dump 出来
@@ -607,6 +621,26 @@ const MOVE: Record<string, string> = {
   BRONZE_ORB_BEAM: "orb_beam",
   BRONZE_ORB_STASIS: "stasis",
   BRONZE_ORB_SUPPORT_BEAM: "orb_support",
+  // —— 第二十九批：火炬头一条 + 冠军七条 + 收藏家四条 ——
+  // ⚠ 火炬头的意图**只由 `setMove` 写入**（收藏家的召唤里），它的 `getMoveForRoll`
+  //   落在 `default` 上返回 `INVALID`（MonsterSpecific.cpp:3364）。
+  TORCH_HEAD_TACKLE: "torch_tackle",
+  // ⚠ `THE_CHAMP_HEAVY_SLASH` 在我们这边叫 `champ_slash`、`THE_CHAMP_DEFENSIVE_STANCE`
+  //   叫 `champ_defend`（都是旧近似表起的名，招式 id 只需在本只怪里唯一）。
+  //   ⚠ 裸名 `execute` / `gloat` / `anger` / `taunt` 之前没人用过，直接用。
+  THE_CHAMP_DEFENSIVE_STANCE: "champ_defend",
+  THE_CHAMP_FACE_SLAP: "face_slap",
+  THE_CHAMP_TAUNT: "taunt",
+  THE_CHAMP_HEAVY_SLASH: "champ_slash",
+  THE_CHAMP_GLOAT: "gloat",
+  THE_CHAMP_EXECUTE: "execute",
+  THE_CHAMP_ANGER: "anger",
+  // ⚠ `THE_COLLECTOR_SPAWN` 在我们这边叫 `spawn_torches`、`THE_COLLECTOR_BUFF` 叫
+  //   `collector_buff`（裸名 `buff` 太泛）。
+  THE_COLLECTOR_BUFF: "collector_buff",
+  THE_COLLECTOR_FIREBALL: "fireball",
+  THE_COLLECTOR_MEGA_DEBUFF: "mega_debuff",
+  THE_COLLECTOR_SPAWN: "spawn_torches",
   // 分裂留下的空格：那只默认 `Monster` 的 `moveHistory[0]` 是 `MMID::INVALID`
   // （`monsterMoveStrings[0] == "INVALID"`，MonsterMoves.h:215）。我们的空占位
   // `currentMove` 是空串。⚠ 这一条只有那个空格用得到——所有真怪在 `MonsterGroup::init`

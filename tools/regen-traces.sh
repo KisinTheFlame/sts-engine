@@ -130,7 +130,27 @@ ENC_ALL="cultist jaw_worm jaw_worm_horde three_louse two_louse"
 #   ⚠ 青铜球带来 **STASIS**：它把玩家的一张牌从抽牌堆（空则弃牌堆）里扣住，
 #     挑牌按稀有度 RARE > UNCOMMON > COMMON 加权、消耗 **一次 cardRandomRng**，
 #     球死掉时把牌还进手牌。两头都在牌堆快照里逐帧可见。
-ENC_V0_ACT2="spheric_guardian chosen snake_plant three_byrds two_thieves chosen_and_byrds shell_parasite shelled_parasite_and_fungi snecko centurion_and_healer three_cultist cultist_and_chosen sentry_and_sphere gremlin_leader slavers book_of_stabbing automaton"
+# 第二十九批：**第二幕收官**（19 / 19）。冠军 + 收藏家两个 Boss，走**新追加的 variant 29**
+#   （variant 23~28 的 encounters 一个字没动，那十七个文件逐字节不变），
+#   牌组沿用 `BATCH_1 + SPOT_WEAKNESS`。
+#   ⚠ 文件名是 `collector` 而不是 `the_collector`——它来自参考枚举
+#     `MonsterEncounter::COLLECTOR`，而它建的**怪**才叫 `THE_COLLECTOR`（同族的先例是
+#     第二十五批的 `shell_parasite`、第二十八批的 `automaton`）。本批把我们侧的编队 id
+#     也改成了这个名字。
+#   ⚠ `collector` 是**第三种**「开局留空位」的写法（MonsterGroup.cpp:198-201）：
+#     `monsterCount = 2; createMonster(THE_COLLECTOR);`——0 号位与 1 号位都空、
+#     收藏家在**最后一格**（2 号位），`monsterCount = 3` / `monstersAlive = 1`。
+#     填空位的 `Actions::SpawnTorchHeads`（Actions.cpp:500-527）是**第三条召唤路径**，
+#     与地精那条、青铜球那条**八处形状全不同**：按 `3 - monstersAlive` 决定召几只、
+#     落位表 `{arr[1].isDying() ? 1 : 0, 0}`、`construct` 之后**又显式 initHp 一次**
+#     （每只 2 次 monsterHpRng）、用 `setMove` 而不是 `rollMove`（召唤本身不掷 aiRng）、
+#     末尾按**只数** `noOpRollMove`、没有 `++monsterTurnIdx`。
+#   ⚠ `champ` 的二阶段是**血量阈值锁存**，而且**不在 `Monster::onHpLost` 里**——
+#     那个 switch 压根没有 THE_CHAMP 这一格，锁存整条在 `getMoveForRoll`
+#     （`miscInfo` bit 2；bit 0~1 兼作防御姿态的已用次数）。它的暴怒还带
+#     `Monster::removeDebuffs()`（本项目第一次怪物侧清减益），嘲讽是第一只**同步**
+#     给玩家上减益的怪。
+ENC_V0_ACT2="spheric_guardian chosen snake_plant three_byrds two_thieves chosen_and_byrds shell_parasite shelled_parasite_and_fungi snecko centurion_and_healer three_cultist cultist_and_chosen sentry_and_sphere gremlin_leader slavers book_of_stabbing automaton champ collector"
 ENC_V0_ASC0="small_slimes lots_of_slimes large_slime blue_slaver red_slaver looter exordium_thugs exordium_wildlife gremlin_gang gremlin_nob lagavulin three_sentries the_guardian slime_boss hexaghost $ENC_V0_ACT2"
 ENC_V0_ASC19="cultist@asc19 jaw_worm@asc19 jaw_worm_horde@asc19 two_louse@asc19 three_louse@asc19 small_slimes@asc19 lots_of_slimes@asc19 large_slime@asc19 blue_slaver@asc19 red_slaver@asc19 looter@asc19 exordium_thugs@asc19 exordium_wildlife@asc19 gremlin_gang@asc19 gremlin_nob@asc19 lagavulin@asc19 three_sentries@asc19 the_guardian@asc19 slime_boss@asc19 hexaghost@asc19"
 # ⚠ 必须拼成**单行**：policy_of 用 `case " $ENC_V0 " in *" $1 "*` 做匹配，中间夹一个换行会让
