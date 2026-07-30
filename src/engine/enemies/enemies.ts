@@ -2067,60 +2067,165 @@ const ENEMY_LIST: EnemyDef[] = [
     intentRule: { scripted: [], weighted: [] },
   },
 
-  // —— 第三幕 Boss：铎努与迪卡（双子，互相增益）——
+  // —— 第三幕 Boss：迪卡与多努（双子，互相增益；第三十九批按参考逐位校准）——
+  //
+  // ⚠⚠ **建怪顺序与编队名相反**：`MonsterEncounter::DONU_AND_DECA` 建的是
+  //   `createMonster(DECA); createMonster(DONU);`（MonsterGroup.cpp:235-238）
+  //   ——**迪卡在 0 号位、多努在 1 号位**。两只怪身上写死的下标（迪卡给 `arr[1]` 加格挡、
+  //   多努给 `arr[0]` 加力量）全都依赖这个顺序，反了就静默错。
+  // ⚠ 两只**共用同一条 preBattleAction**（MonsterSpecific.cpp:195-198），见
+  //   sts-combat.ts 的 `PRE_BATTLE_ACTION.deca` / `.donu`。
   {
     id: "deca",
     name: "迪卡",
+    // MonsterIds.h:168 `{{250,250},{265,265}}`；`setRandomHp(hpRng, asc >= 9)`
+    //（MonsterSpecific.cpp:76-89，**Boss** 那一档，与六火 / 史莱姆王 / 冠军 / 收藏家同族）。
+    // ⚠ 上下界相同**照样掷一次**（`Random::random(int,int)` 无条件 `++counter`）——
+    //   不是 `hpNoRoll`。
     hpMin: 250,
     hpMax: 250,
     moves: [
       {
+        // 光束（MonsterSpecific.cpp:1683-1687）：
+        //     attackPlayerHelper(bc, asc4 ? 12 : 10, 2);
+        //     bc.addToBot( Actions::MakeTempCardInDiscard(CardId::DAZED, 2) );
+        //     setMove(MonsterMoveId::DECA_SQUARE_OF_PROTECTION);
+        // ⚠ 三处照抄：
+        //  ① 分档是 **asc4**（Boss 那一族 `getTriIdx(asc, 4, 19)` 的低阈值），落在
+        //     **第一个**实参上；段数恒 2（`MonsterMoveDamage.cpp:65` 那张表也是 `{asc4?12:10, 2}`）。
+        //  ② 塞牌是**入队**的，排在伤害之后、收尾之前；去向是**弃牌堆**
+        //     （`Actions::MakeTempCardInDiscard`，Actions.cpp:252-259 —— 循环里只有
+        //     `createTempCardInDiscard`，**一次 RNG 都不掷**，与 `pile:"draw"` 那条
+        //     每张掷一次 `cardRandomRng` 正相反）。
+        //  ③ 塞的是**两张恍惚**（`count: 2` 是那个 Action 的 `amount` 参数，不是两条效果）。
+        //     恍惚打不出（`CardInstance.cpp:329` 的例外只放行黏液），所以不进 `CARD_RULES`，
+        //     它唯一的可观察面是躺在弃牌堆快照里 + 回合末因 Ethereal 被消耗。
         id: "deca_beam",
         name: "光束",
-        effects: [{ kind: "deal_damage_multi", amount: 10, times: 2 }],
+        effects: [
+          {
+            kind: "deal_damage_multi",
+            amount: 10,
+            times: 2,
+            ascAmount: [{ atLeast: 4, amount: 12 }],
+          },
+          { kind: "add_card", cardId: "dazed", pile: "discard", count: 2 },
+        ],
+        // ⚠ `intent` 只管渲染（真实游戏这一格是「攻击 + 塞牌」双意图，而我们的
+        //   `EnemyIntentKind` 五个值互斥）。**攻击分类走 `MONSTER_ATTACK_MOVES` 白名单**。
         intent: "attack",
       },
       {
-        id: "deca_protect",
-        name: "守护",
-        effects: [{ kind: "gain_block", amount: 16 }],
+        // 守护方阵（MonsterSpecific.cpp:1689-1700）：
+        //     auto &deca = *this;
+        //     auto &donu = bc.monsters.arr[1];
+        //     deca.addBlock(16);
+        //     donu.addBlock(16);
+        //     if (asc19) { deca.buff<MS::PLATED_ARMOR>(3); donu.buff<MS::PLATED_ARMOR>(3); }
+        //     setMove(MonsterMoveId::DECA_BEAM);
+        // ⚠⚠ 四处照抄，其中第一处是本批最容易照搬邻居出错的地方：
+        //  ①⚠⚠ **一道门都没有**。第二十六批那三条「写死下标」的原语（百夫长的防守
+        //     `if (getAliveCount() > 1)`、秘法师的治疗/鼓舞 `if (monstersAlive > 1)`）**全都带门**，
+        //     而这一条与多努那条都不带——所以用 `noAliveGate: true`。
+        //     差别是**真的可观察**的：策略恒打 0 号位，迪卡先死是常态；反过来
+        //     「多努先死」在这个编队里一次都没出现（实测 0 / 120），所以**这一条的
+        //     `noAliveGate` 是盲区**、多努那条不是。见 TODOS 的盲区表。
+        //  ② **自己也加 16**，而且排在给友军之前（`deca` 那句在前）。百夫长的防守是
+        //     「只护奶妈、自己一点都不加」——形状完全不同。
+        //  ③ 两句都是**同步** `addBlock`（`Monster::addBlock` 就是 `block += amount`，
+        //     Monster.cpp:278-280），不是 `addToBot(MonsterGainBlock)`。
+        //  ④ 收尾是**同步 setMove**，一次 aiRng 都不掷，见 `MOVE_TURN_END`。
+        // ⚠ **asc19 那两句镀甲本批没有转写**（`ascCalibrated` 没置 → asc>0 直接抛错）：
+        //   它是「case 里多出来的一整条语句」，而给**写死 1 号位的友军**加 Power 目前没有
+        //   原语（`buff_ally` 写死的是 0 号位）。与第二十七批工头 asc18 那条同族处理：
+        //   留给第三幕铺爬升度的那一批一并加，**不半写**。
+        // ⚠ 这一招**不在** `isMoveAttack` 白名单里（它一点伤害都不带）。
+        id: "square_of_protection",
+        name: "守护方阵",
+        effects: [
+          { kind: "gain_block", amount: 16, sync: true },
+          { kind: "gain_block_ally_fixed", amount: 16, noAliveGate: true },
+        ],
         intent: "defend",
       },
     ],
-    intentRule: {
-      scripted: [],
-      weighted: [
-        { move: "deca_beam", weight: 50, maxInARow: 1 },
-        { move: "deca_protect", weight: 50, maxInARow: 1 },
-      ],
-    },
+    // 出招规则见 sts-combat.ts 的 `MOVE_RULES.deca`（MonsterSpecific.cpp:3272-3274）：
+    // **恒返回光束**，roll 被掷出来但一个字都不读。
+    // 旧近似表那份加权（50/50 + maxInARow）与参考的「开局光束 + 之后严格交替」毫无关系。
+    intentRule: { scripted: [], weighted: [] },
   },
   {
     id: "donu",
-    name: "铎努",
+    name: "多努",
+    // MonsterIds.h:169 `{{250,250},{265,265}}`，与迪卡逐字相同、同一条 `initHp` case。
     hpMin: 250,
     hpMax: 250,
     moves: [
       {
+        // 光束（MonsterSpecific.cpp:1672-1675）：
+        //     attackPlayerHelper(bc, asc4 ? 12 : 10, 2);
+        //     setMove(MonsterMoveId::DONU_CIRCLE_OF_POWER);
+        // ⚠ 与迪卡的光束**只差那条塞牌**：伤害、段数、分档、收尾形态全都一样，
+        //   但它们是两条独立的 `MonsterMoveId`（`MonsterMoveDamage.cpp:65-66` 也是两行）。
         id: "donu_beam",
         name: "光束",
-        effects: [{ kind: "deal_damage_multi", amount: 10, times: 2 }],
+        effects: [
+          {
+            kind: "deal_damage_multi",
+            amount: 10,
+            times: 2,
+            ascAmount: [{ atLeast: 4, amount: 12 }],
+          },
+        ],
         intent: "attack",
       },
       {
-        id: "donu_power",
-        name: "赋能",
-        effects: [{ kind: "apply_power", power: "strength", amount: 3, on: "all_enemies" }],
+        // 能量之环（MonsterSpecific.cpp:1677-1681）：
+        //     bc.monsters.arr[0].buff<MS::STRENGTH>(3); // shouldn't matter if deca is dead
+        //     buff<MS::STRENGTH>(3);
+        //     setMove(MonsterMoveId::DONU_BEAM);
+        // ⚠⚠ 三处照抄：
+        //  ①⚠⚠ **一道门都没有**，而且参考在第一句行尾**自注**了这件事
+        //     （`// shouldn't matter if deca is dead`）——它知道迪卡可能已经死了，
+        //     并且**故意**不判。秘法师的鼓舞写的是 `if (monstersAlive > 1) { arr[0].buff(...) }`，
+        //     形状差这一道门，所以这里用 `noAliveGate: true`。
+        //     ⚠ 这不是「当前同解」：策略恒打 0 号位，迪卡先死是常态，多努照样每两个怪物
+        //     回合给尸体 +3 力量，快照里逐帧可见（实测补上那道门红 58 例）。
+        //  ② 目标写死 **0 号位**（不是「随机友军」、也不是「场上每一只」），
+        //     自己**无条件**也 +3（不是二选一）——形状与秘法师的鼓舞逐字对应。
+        //  ③ 两句都是**同步** `buff`，收尾是**同步 setMove**、一次 aiRng 都不掷。
+        // ⚠ `buff` 是**累加**：一场仗多努会把两只的力量一路推上去（实测最大 18）。
+        // ⚠ 这一招**不在** `isMoveAttack` 白名单里。
+        id: "circle_of_power",
+        name: "能量之环",
+        effects: [{ kind: "buff_ally", power: "strength", amount: 3, noAliveGate: true }],
         intent: "buff",
       },
     ],
-    intentRule: {
-      scripted: [],
-      weighted: [
-        { move: "donu_beam", weight: 50, maxInARow: 1 },
-        { move: "donu_power", weight: 50, maxInARow: 1 },
-      ],
-    },
+    // 出招规则见 sts-combat.ts 的 `MOVE_RULES.donu`（MonsterSpecific.cpp:3276-3278）：
+    // **恒返回能量之环**（⚠ 与迪卡的「恒返回光束」是两条不同的常量），roll 被掷但不读。
+    intentRule: { scripted: [], weighted: [] },
+  },
+
+  // —— 第四幕 Boss：腐化之心（**尚未登记**，见下方 `ENCOUNTERS.the_heart` 的注释）——
+  //
+  // ⚠⚠ **这条 def 里只有血量区间，没有任何招式**，而且这是**故意的**：
+  //   它当前唯一的用途是当 `test/sts-combat-rules.test.ts` 那条「未登记怪物 rollMove 会
+  //   显式抛错」用例的样本——那条用例需要一只**在 `enemies.ts` 里、却不在 `MOVE_RULES` 里**
+  //   的怪，而第三十九批装完迪卡与多努之后，`enemies.ts` 里**每一只**怪都进 `MOVE_RULES` 了。
+  // ⚠ 血量是逐字抄的（`MonsterIds.h:165` `{{750,750},{800,800}}`，`setRandomHp(hpRng, asc>=9)`
+  //   的 Boss 档，`MonsterSpecific.cpp:76-89` 那组 case 里真的有 `CORRUPT_HEART`），
+  //   **不是编的**——第四幕那一批会直接用上它。招式与出招规则那一批再写：
+  //   现在写等于写一份没有预言机的实现，而「未验证的实现比没有实现更糟」。
+  // ⚠ 它**走不到任何战斗**：`the_heart` 不在 `SUPPORTED_ENCOUNTERS` 里（`startCombat` 当场
+  //   拒绝），直接调 `initCombat` 也会在 rollMove 那一步抛错——那正是用例要断言的东西。
+  {
+    id: "corrupt_heart",
+    name: "腐化之心",
+    hpMin: 750,
+    hpMax: 750,
+    moves: [],
+    intentRule: { scripted: [], weighted: [] },
   },
 
   {
@@ -3938,7 +4043,15 @@ const ENCOUNTERS: Record<string, EncounterDef> = {
   orb_walker: { id: "orb_walker", enemies: ["orb_walker"], isBoss: false },
   two_exploders: { id: "two_exploders", enemies: ["exploder", "exploder"], isBoss: false },
   reptomancer: { id: "reptomancer", enemies: ["reptomancer"], isBoss: false },
-  donu_deca: { id: "donu_deca", enemies: ["deca", "donu"], isBoss: true },
+  // ⚠ id 是 `donu_and_deca`（第三十九批从 `donu_deca` 改名）：编队 id 必须与参考的
+  //   `MonsterEncounter::DONU_AND_DECA` 同名——trace 文件名就是它，而
+  //   `SUPPORTED_ENCOUNTERS` 与 `test/golden/traces/*.jsonl` 是双向对齐的。
+  //   同族的先例：`the_guardian`（19）/ `shell_parasite`（25）/ `automaton`（28）/
+  //   `collector`（29）/ `maw`（33）。
+  // ⚠⚠ **成员顺序与编队名相反**：参考建的是 `createMonster(DECA); createMonster(DONU);`
+  //   （MonsterGroup.cpp:235-238），所以**迪卡在 0 号位、多努在 1 号位**。
+  //   两只怪身上写死的下标都依赖这个顺序。
+  donu_and_deca: { id: "donu_and_deca", enemies: ["deca", "donu"], isBoss: true },
   repulsor: { id: "repulsor", enemies: ["repulsor"], isBoss: false },
   // 复形怪（MonsterGroup.cpp:445-447）：单怪。
   transient: { id: "transient", enemies: ["transient"], isBoss: false },
@@ -3961,6 +4074,15 @@ const ENCOUNTERS: Record<string, EncounterDef> = {
   the_guardian: { id: "the_guardian", enemies: ["the_guardian"], isBoss: true },
   hexaghost: { id: "hexaghost", enemies: ["hexaghost"], isBoss: true },
   slime_boss: { id: "slime_boss", enemies: ["slime_boss"], isBoss: true },
+  // 第四幕：腐化之心（`MonsterEncounter::THE_HEART`，MonsterGroup.cpp 里是一句
+  // `createMonster(bc, MonsterId::CORRUPT_HEART);`）。**整个第四幕都还没有登记**，
+  // 它不在 `SUPPORTED_ENCOUNTERS` 里、`corrupt_heart` 也不在 `MOVE_RULES` 里。
+  //
+  // ⚠⚠ **它在这里的唯一用途是当那两条「未迁移 / 未登记」用例的样本**，第三十九批从
+  //   `donu_deca` 换过来的（那个编队本批装了）。判据与换法见 WORKFLOW「附：踩过的坑」，
+  //   本批重新评估的结论见 `test/sts-combat-wiring.test.ts` 里那条注释。
+  // ⚠ **不进任何编队池**：run 层还打不了第四幕。
+  the_heart: { id: "the_heart", enemies: ["corrupt_heart"], isBoss: true },
 };
 
 export function getEncounterDef(id: string): EncounterDef {
@@ -4130,9 +4252,10 @@ const ACT2_BOSS_POOL: readonly WeightedEncounter[] = [
   { id: "collector", weight: 1 },
 ];
 
-// Act3 Boss 池（切片：铎努与迪卡；后续补 觉醒者 / 时间吞噬者）。
+// Act3 Boss 池（三个都已登记：第三十七批觉醒者 / 第三十八批时间吞噬者 /
+// 第三十九批迪卡与多努）。
 const ACT3_BOSS_POOL: readonly WeightedEncounter[] = [
-  { id: "donu_deca", weight: 1 },
+  { id: "donu_and_deca", weight: 1 },
   { id: "time_eater", weight: 1 },
   { id: "awakened_one", weight: 1 },
 ];

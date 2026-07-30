@@ -109,20 +109,27 @@ describe("sts-combat 非法动作的拒绝路径", () => {
     expect(bc.drawPile).toHaveLength(2);
   });
 
-  // 样本编队选 `donu_deca`（第三幕最后一个 Boss，两只怪都还没登记 `MOVE_RULES`）。
+  // 样本编队选 `the_heart`（第四幕最终 Boss，第三十九批从 `donu_deca` 换过来）。
   // ⚠⚠ **编队样本没有永久解**：参考实现了全部编队，铺量的终点就是全部登记，
   //   所以这个样本每隔几批就得换一次（与「未迁移卡牌」的 `seek` 不同，那张牌参考压根没实现）。
-  //   判据是「挑最晚才会被登记的那个」——`donu_and_deca` 按 TODOS 的批次计划排在第三幕
-  //   **最后一批（第四十批）**，当下余量最大。完整理由与换法见 sts-combat-wiring.test.ts
-  //   里那条同源注释，以及 WORKFLOW 的「附：踩过的坑」。
-  // ⚠ 历史：`three_sentries`（第十八批顶掉）→ `giant_head`（**第三十五批**顶掉）→ 现在这个。
+  //   判据是「挑最晚才会被登记的那个」——第三幕第三十九批装满之后，剩下的只有第四幕两个
+  //   与六个事件编队，而 `the_heart` 是全游戏最后一场仗。完整理由与换法见
+  //   sts-combat-wiring.test.ts 里那条同源注释，以及 WORKFLOW 的「附：踩过的坑」。
+  // ⚠⚠ **这一条与 wiring 那一条的代价不同，别把两边的结论混起来。** 那一条只需要一个
+  //   「不在 `SUPPORTED_ENCOUNTERS` 里的字符串」（`stsCombatCoverage` 第一句就短路了）；
+  //   而**这一条要真的走进 `initCombat`**，所以它需要一只「在 `enemies.ts` 里、却不在
+  //   `MOVE_RULES` 里」的怪。第三十九批装完迪卡与多努之后 `enemies.ts` 里**一只都没有**了，
+  //   所以本批给 `corrupt_heart` 补了**只有血量、没有招式**的一条 def
+  //   （血量是 `MonsterIds.h:165` 逐字抄的，第四幕那一批会直接用上）。
+  // ⚠ 历史：`three_sentries`（第十八批顶掉）→ `giant_head`（第三十五批顶掉）→
+  //   `donu_deca`（**第三十九批**顶掉）→ 现在这个。
   it("未登记的怪物会显式抛错，不会静默错配 RNG", () => {
     expect(() =>
       initCombat({
         seedLong: 1n,
         floorNum: 1,
         ascension: 0,
-        encounterId: "donu_deca",
+        encounterId: "the_heart",
         deck: IRONCLAD_STARTER_DECK.map((defId) => ({ defId, upgraded: false })),
         playerHp: 80,
         playerMaxHp: 80,

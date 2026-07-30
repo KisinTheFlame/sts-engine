@@ -635,7 +635,7 @@ describe("接线：尚未迁移的内容显式抛错", () => {
     return coverage.supported ? "" : coverage.reason;
   };
 
-  // 样本编队选 `donu_deca`（第三幕最后一个 Boss）。
+  // 样本编队选 `the_heart`（第四幕最终 Boss，第三十九批从 `donu_deca` 换过来）。
   //
   // ⚠⚠ **这个样本与「未迁移卡牌」的 `seek` 不是一回事，别照搬那条的心态。**
   //   `seek` 是**永久**样本：参考项目三个 switch 里都没有它的 case，等于压根没实现，
@@ -643,22 +643,30 @@ describe("接线：尚未迁移的内容显式抛错", () => {
   //   铺量的终点就是全部登记。所以这个样本**每隔几批就得换一次**，
   //   WORKFLOW 的「附：踩过的坑」里写着这条。
   //
-  // 判据是「**挑最晚才会被登记的那个**」。当下（第三十五批）的答案是 `donu_deca`：
-  //   * 第一幕 20 个编队第二十批全装完，第二幕 19 个第二十九批全装完；
-  //   * 第三幕按 TODOS 的批次计划还剩 5 个，`donu_and_deca` 排在**最后一批（第四十批）**
-  //     ——它是收官批，装完第三幕 16 / 16。所以这个样本有 5 批的余量。
-  // ⚠ 别换成 `nemesis` / `reptomancer` / `awakened_one` / `time_eater`：它们分别排在
-  //   第三十六~三十九批，下一批就可能被顶掉。
-  // ⚠ 换到第四幕（`the_heart` / `shield_and_spear`）或事件编队（`MASKED_BANDITS_EVENT`
-  //   那一族）能撑更久，但那要先往 `enemies.ts` 里加**没有预言机的新数据**
-  //   （腐化之心 / 尖塔护盾 / 尖塔长矛 / 罗密欧 / 熊 / 尖头怪一只都还没有定义），
-  //   与「未验证的实现比没有实现更糟」相抵触。等第四幕真的排上日程再说。
-  // ⚠ 历史：`gremlin_nob`（第十八批顶掉）→ `giant_head`（**第三十五批**顶掉）→ 现在这个。
+  // 判据是「**挑最晚才会被登记的那个**」。第三幕第三十九批装满（16 / 16）之后，
+  // 剩下的只有**第四幕两个**（`shield_and_spear` / `the_heart`）与**六个事件编队**
+  // （`*_EVENT`，不在任何 `MonsterEncounterPool` 里，见 TODOS 的下一步候选）。
+  // `the_heart` 是全游戏最后一场仗，也是最晚会被登记的那个。
+  //
+  // ⚠⚠ **第三十九批重新评估并推翻了第三十五批否决第四幕的那条理由**（记在这里，
+  //   免得下一个人又照那条推）。当时写的是「换到第四幕要先往 `enemies.ts` 加没有预言机的
+  //   新数据」。对**这一条**用例来说那是不成立的：`stsCombatCoverage` 的第一句就是
+  //   `isEncounterSupported(encounterId)`（= `SUPPORTED_ENCOUNTERS.includes(...)`），
+  //   不命中就当场返回，**根本不会去查 `enemies.ts`**。所以这条用例只需要一个
+  //   「不在 `SUPPORTED_ENCOUNTERS` 里的字符串」，零新数据。
+  //   ⚠ 但同一条理由对**另一条**用例（`sts-combat-rules.test.ts` 的「未登记怪物
+  //   rollMove」）**仍然成立**：那条要真的走进 `initCombat`，所以需要一只
+  //   「在 `enemies.ts` 里、却不在 `MOVE_RULES` 里」的怪。两条用例因此代价不同，
+  //   详见那边的注释（本批给 `corrupt_heart` 只补了血量、没补招式）。
+  // ⚠ 别换成事件编队：它们**已经**有 `enemies.ts` 条目的可能性更低，而且它们不在任何
+  //   编队池里这件事本身也许有一天会变；`the_heart` 是唯一「按定义排在最后」的那个。
+  // ⚠ 历史：`gremlin_nob`（第十八批顶掉）→ `giant_head`（第三十五批顶掉）→
+  //   `donu_deca`（**第三十九批**顶掉）→ 现在这个。
   it("未迁移的编队：startCombat 抛错，且不留半个战斗状态", () => {
     const state = runAtMap();
-    expect(() => startCombat(state, "donu_deca")).toThrow(/donu_deca/);
+    expect(() => startCombat(state, "the_heart")).toThrow(/the_heart/);
     expect(state.combat).toBeNull();
-    expect(reason(state, "donu_deca")).toContain("尚未迁移");
+    expect(reason(state, "the_heart")).toContain("尚未迁移");
   });
 
   // 样本牌选 `seek` 搜寻：参考项目三个 switch 里都**没有 case**，等于压根没实现，

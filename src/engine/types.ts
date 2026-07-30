@@ -631,7 +631,23 @@ export type Effect =
   // 形状与 `heal_ally` 逐字对应（写死 0 号位、自己无条件、两句都同步），只是换成 buff。
   // ⚠ 与 `apply_power` + `on: "all_enemies"` **不是一回事**：那个是「场上每一只」，
   //   这个是「0 号位与自己」——三只以上的编队里两者会分岔（当前没有这样的编队）。
-  | { kind: "buff_ally"; power: PowerId; amount: number; ascAmount?: AscTier[] }
+  //
+  // noAliveGate（第三十九批）：**连那道 `monstersAlive > 1` 的门都没有**。多努的能量之环
+  //   整条 case 就是 `bc.monsters.arr[0].buff<MS::STRENGTH>(3); buff<MS::STRENGTH>(3);`
+  //   （`MonsterSpecific.cpp:1677-1681`），而且参考在第一句行尾自注
+  //   `// shouldn't matter if deca is dead`——它**知道**迪卡可能已经死了，并且**故意**
+  //   不判。省略 = 秘法师那种带门的形状。
+  //   ⚠⚠ 与 `gain_block_ally_fixed.noAliveGate`（青铜球那条）**不是同一种「当前同解」**：
+  //   青铜球那条可以证明门恒真（球活着 ⇒ 自动机也活着），而这条**真的会走到 false 侧**
+  //   ——harness 的策略恒打 0 号位，迪卡先死是常态，多努照样每两个回合给尸体 +3 力量。
+  //   实测「补上那道门」红 58 例，见 TODOS「验证方式 · 第三十九批」。
+  | {
+      kind: "buff_ally";
+      power: PowerId;
+      amount: number;
+      ascAmount?: AscTier[];
+      noAliveGate?: boolean;
+    }
   // 敌人用：**蜥蜴法师的召唤**（第三十六批）。对齐 `Monster::reptomancerSummon`
   //（MonsterSpecific.cpp:3589-3608）——本项目**第四条也是最后一条**召唤路径。
   // ⚠ 第三十六批之前这里是一个通用的 `{ kind: "summon"; defIds: string[] }`，那是旧近似

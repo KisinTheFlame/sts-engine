@@ -269,8 +269,31 @@ ENC_ALL="cultist jaw_worm jaw_worm_horde three_louse two_louse"
 #     `TIME_EATER` 本来也没有别的 variant 点名）。
 #   ⚠ `time_eater` 是**单怪**编队（`MonsterGroup.cpp:441-443` 一句 createMonster），
 #     与觉醒者那种「邪教徒 ×2 + Boss」不同——策略从第一张牌起就在打 Boss 本人。
+# 第三十九批：第三幕 Boss **迪卡与多努**，第三幕收官（16 / 16）。走**新追加的 variant 39**
+#   （variant 38 的 encounters 一个字没动，`time_eater.jsonl` 逐字节不变）。
+#   40 种子、**爬升度 0**、**目标策略 0**。
+#   ⚠⚠ 文件名是 `donu_and_deca`（来自参考枚举 `MonsterEncounter::DONU_AND_DECA`），
+#     而**建怪顺序与名字相反**：`createMonster(DECA); createMonster(DONU);`
+#     （MonsterGroup.cpp:235-238）——迪卡在 0 号位、多努在 1 号位。
+#     本批把我们侧的编队 id 从 `donu_deca` 改成了这个名字（同族先例：`shell_parasite` /
+#     `automaton` / `collector` / `maw`）。
+#   ⚠⚠ 它带来的不是新机制，而是第二十六批那三条「写死下标」原语的**反例**：百夫长的防守与
+#     秘法师的治疗 / 鼓舞全都带 `monstersAlive > 1` 的门，而迪卡的守护方阵
+#     （MonsterSpecific.cpp:1689-1700）与多努的能量之环（:1677-1681）**一道门都没有**
+#     ——参考还在多努那句行尾自注 `// shouldn't matter if deca is dead`。
+#     `buff_ally` 因此加了一位 `noAliveGate`，而且**这一位真的走到了 false 侧**
+#     （策略恒打 0 号位 → 迪卡先死 56 / 120，多努照样给尸体 +3 力量）。
+#   ⚠ 四条 case 的收尾**全是同步 `setMove`**：整场仗除开局那两次 rollMove 之外
+#     **一次 aiRng 都不掷**（`rng.ai` 恒为 2），全参考唯一一个「全员静态循环」的编队。
+#     于是四条招式的覆盖**任何牌组都满足**（第二个怪物回合就全走过了）。
+#   ⚠⚠ **牌组沿用第三十八批那 59 张全升级的（逐字节相同），而这是量出来的**：
+#     22 张标准牌组下 120 / 120 条**一次都没打死过迪卡**，那条「无门的友军 buff」
+#     结构性没有预言机。七副候选的实测对比表见 harness 注释与 TODOS。
+#     ⚠ 两者指纹（牌组内容 + 升级位 + 爬升度 + 目标策略）**完全相同**，所以 encounters
+#     必须互不相交：variant 38 只点名 `TIME_EATER`、variant 39 只点名 `DONU_AND_DECA`。
+#     这与第二十四~二十九批共用 `BATCH_1 + SPOT_WEAKNESS` 是同一条规矩。
 ENC_V0_ACT2="spheric_guardian chosen snake_plant three_byrds two_thieves chosen_and_byrds shell_parasite shelled_parasite_and_fungi snecko centurion_and_healer three_cultist cultist_and_chosen sentry_and_sphere gremlin_leader slavers book_of_stabbing automaton champ collector"
-ENC_V0_ACT3="three_shapes four_shapes sphere_and_two_shapes orb_walker spire_growth maw three_darklings transient writhing_mass giant_head nemesis reptomancer awakened_one time_eater"
+ENC_V0_ACT3="three_shapes four_shapes sphere_and_two_shapes orb_walker spire_growth maw three_darklings transient writhing_mass giant_head nemesis reptomancer awakened_one time_eater donu_and_deca"
 ENC_V0_ACT2_ASC19="spheric_guardian@asc19 chosen@asc19 snake_plant@asc19 three_byrds@asc19 two_thieves@asc19 chosen_and_byrds@asc19 shell_parasite@asc19 shelled_parasite_and_fungi@asc19 snecko@asc19 centurion_and_healer@asc19 three_cultist@asc19 cultist_and_chosen@asc19 sentry_and_sphere@asc19 gremlin_leader@asc19 slavers@asc19 book_of_stabbing@asc19 automaton@asc19 champ@asc19 collector@asc19"
 ENC_V0_ASC0="small_slimes lots_of_slimes large_slime blue_slaver red_slaver looter exordium_thugs exordium_wildlife gremlin_gang gremlin_nob lagavulin three_sentries the_guardian slime_boss hexaghost $ENC_V0_ACT2"
 ENC_V0_TGT1="jaw_worm_horde@tgt1 two_louse@tgt1 three_louse@tgt1 small_slimes@tgt1 lots_of_slimes@tgt1 large_slime@tgt1 gremlin_gang@tgt1 exordium_thugs@tgt1 exordium_wildlife@tgt1 three_sentries@tgt1 slime_boss@tgt1 three_byrds@tgt1 two_thieves@tgt1 chosen_and_byrds@tgt1 sentry_and_sphere@tgt1 cultist_and_chosen@tgt1 three_cultist@tgt1 shelled_parasite_and_fungi@tgt1 centurion_and_healer@tgt1 gremlin_leader@tgt1 slavers@tgt1 automaton@tgt1 collector@tgt1"

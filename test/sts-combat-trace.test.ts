@@ -454,6 +454,11 @@ const ENCOUNTER: Record<string, string> = {
   //   ⚠ 编队与它建的 Boss **同名**，而且是**单怪**（`MonsterGroup.cpp:441-443` 一句
   //     `createMonster`）——与觉醒者那种「邪教徒 ×2 + Boss」不同。
   TIME_EATER: "time_eater",
+  // —— 第三十九批：走 harness 新追加的 variant 39（variant 38 的 encounters 一个字没动）。
+  //   ⚠⚠ **编队名与建怪顺序相反**：`DONU_AND_DECA` 建的是 `createMonster(DECA);
+  //     createMonster(DONU);`（MonsterGroup.cpp:235-238），所以快照里 **0 号位是迪卡、
+  //     1 号位是多努**。这不是笔误，参考的枚举名就是这么写的。
+  DONU_AND_DECA: "donu_and_deca",
 };
 const MONSTER: Record<string, string> = {
   CULTIST: "cultist",
@@ -576,6 +581,13 @@ const MONSTER: Record<string, string> = {
   //     之后一路涨到 11、**第 12 张牌那一帧归零**（又被折叠）并多出 `STRENGTH: 2`。
   //   ⚠ 加速那一帧最显眼：`hp` 直接跳回 `maxHp / 2 = 228`，身上的虚弱 / 易伤 / 枷锁全消失。
   TIME_EATER: "time_eater",
+  // —— 第三十九批：迪卡（0 号位）与多努（1 号位）。
+  //   ⚠ 两只开局都是 `ARTIFACT: 2`，玩家第一次给它们上易伤 / 虚弱时逐层扣掉。
+  //   ⚠ 快照里最容易看漏的一段是**迪卡死掉之后**：`hp: 0` / `alive: false`，可它的
+  //     `STRENGTH` 每两个怪物回合还在 +3（多努的能量之环没有 `monstersAlive > 1` 那道门），
+  //     `block` 也停在最后一次守护方阵留下的 16。那正是本批 `noAliveGate` 的预言机。
+  DECA: "deca",
+  DONU: "donu",
   // ⚠ **分裂留下的空格**。参考的 `MonsterGroup::arr` 是定长 5 的数组，`monsterCount` 只是
   // 「dump 到第几格」；史莱姆王分裂时 `arr[0]` 与 `arr[2]` 被写、`monsterCount = 3`，
   // 于是 1 号格那只**从没被构造过**的默认 `Monster` 也被 dump 出来
@@ -844,6 +856,15 @@ const MOVE: Record<string, string> = {
   TIME_EATER_HEAD_SLAM: "te_head_slam",
   TIME_EATER_RIPPLE: "te_ripple",
   TIME_EATER_HASTE: "haste",
+  // —— 第三十九批：迪卡与多努各两条 ——
+  // ⚠ 四条**没有一条是掷出来的**（开局那次除外）：`getMoveForRoll` 对两只各返回一个常量，
+  //   之后每条 case 的收尾都是同步 `setMove`。所以快照里的意图是严格的 2-循环，
+  //   而且两只**相位相反**（迪卡先攻、多努先辅）。
+  // ⚠ 参考的枚举名带怪名前缀，我们这边的招式 id 不带（比对是逐怪进行的）。
+  DECA_BEAM: "deca_beam",
+  DECA_SQUARE_OF_PROTECTION: "square_of_protection",
+  DONU_BEAM: "donu_beam",
+  DONU_CIRCLE_OF_POWER: "circle_of_power",
   // 分裂留下的空格：那只默认 `Monster` 的 `moveHistory[0]` 是 `MMID::INVALID`
   // （`monsterMoveStrings[0] == "INVALID"`，MonsterMoves.h:215）。我们的空占位
   // `currentMove` 是空串。⚠ 这一条只有那个空格用得到——所有真怪在 `MonsterGroup::init`

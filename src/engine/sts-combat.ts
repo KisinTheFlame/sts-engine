@@ -2484,6 +2484,28 @@ const MOVE_RULES: Record<string, MoveForRoll> = {
     }
     return "te_ripple";
   },
+
+  // —— 第三十九批：第三幕 Boss 迪卡与多努 ——
+  //
+  // 对齐 MonsterSpecific.cpp:3272-3278。两条 case 各只有一句 `return`，**一个分支都没有**：
+  //
+  //     case MonsterId::DECA: { return MonsterMoveId::DECA_BEAM; }
+  //     case MonsterId::DONU: { return MonsterMoveId::DONU_CIRCLE_OF_POWER; }
+  //
+  // ⚠ 三处照抄：
+  //  ① **roll 被掷出来但一个字都不读**（`Monster::rollMove` 顶上那句
+  //     `bc.aiRng.random(99)` 是无条件的），所以一次 rollMove 恒消耗 **1 次** aiRng。
+  //     与邪教徒那种「roll 被消耗但不影响结果」同族。
+  //  ② **两只返回的是不同的招**（迪卡开光束、多努开能量之环），不是同一个常量。
+  //     这就是「迪卡先打人、多努先增益」的开局节奏，抄反了第一个怪物回合就错。
+  //  ③⚠⚠ **`getMoveForRoll` 在这个编队里只被调用一次**——开局那次 `MonsterGroup::init`
+  //     的 rollMove。四条 case 的收尾全是**同步 `setMove`**（见 `MOVE_TURN_END`），
+  //     没有一条排 `RollMove` / `NoOpRollMove`，所以整场仗的意图链是严格的 2-循环：
+  //     迪卡「光束 → 守护 → 光束 → …」、多努「能量之环 → 光束 → 能量之环 → …」。
+  //     这也是为什么四条招式的覆盖**任何牌组都满足**（第二个怪物回合就全走过了），
+  //     本批选牌组要解决的是别的事（见 TODOS「牌组先量再定」）。
+  deca: () => "deca_beam",
+  donu: () => "circle_of_power",
 };
 
 // ============================================================================
@@ -3474,6 +3496,22 @@ const MOVE_TURN_END: Record<string, MoveTurnEnd> = {
   "time_eater/haste": (bc, m) => {
     rollMove(bc, m); // ★ 消耗一次 aiRng（同步的真 rollMove）
   },
+
+  // —— 第三十九批：迪卡与多努，四条 case 全是**同步 setMove**（MonsterSpecific.cpp:
+  //   1672-1700）——整个编队从开局那次 rollMove 之后**再也不掷一次 aiRng**。
+  //
+  // ⚠⚠ 这是本项目**唯一**一个「全员静态循环」的编队：四条收尾都是第一形态
+  //   （`{ setMove }`，同步、不掷 aiRng），既没有 `RollMove` 也没有 `NoOpRollMove`。
+  //   最像的先例是酸液史莱姆（小）的「舔舐 ↔ 冲撞」，但那只怪是编队里的一员，
+  //   这里是整场仗。⚠ 后果之一是 `rng.ai` 计数器在这个编队里**恒是 2**（开局两次 rollMove），
+  //   所以任何一条收尾抄成 `no_op_roll` 都会当场被计数器抓住。
+  // ⚠ 两条链是**互相错开**的：迪卡「光束 → 守护 → 光束…」、多努「能量之环 → 光束 →
+  //   能量之环…」，于是每个怪物回合恰好是「一攻一辅」，玩家永远同时挨一次 20 点双击
+  //   与一次 16 格挡或 +3 力量。抄成同相位（比如两只都从光束起步）会让伤害分布整个变形。
+  "deca/deca_beam": { setMove: "square_of_protection" },
+  "deca/square_of_protection": { setMove: "deca_beam" },
+  "donu/donu_beam": { setMove: "circle_of_power" },
+  "donu/circle_of_power": { setMove: "donu_beam" },
 };
 
 /**
@@ -4817,6 +4855,16 @@ function rollCurlUp(bc: BattleContext): number {
   return bc.rng.monsterHpRng.random(min, max); // ★ 消耗一次 monsterHpRng
 }
 
+/**
+ * 迪卡与多努共用的开局 buff（对齐 `Monster::preBattleAction` 里那条**两个 case 标签落在
+ * 同一个函数体上**的 case，MonsterSpecific.cpp:195-198）。**不消耗 RNG。**
+ *
+ * ⚠ 分档是 **asc19**（Boss 那一族的高阈值），不是常见的 asc17。
+ */
+function decaDonuPreBattle(bc: BattleContext, m: CombatMonster): void {
+  addPower(m.powers, "artifact", bc.ascension >= 19 ? 3 : 2);
+}
+
 const PRE_BATTLE_ACTION: Record<string, PreBattleAction> = {
   // 虱子蜷缩：首次受到未被格挡的攻击时获得格挡，层数开局掷定（走 monsterHpRng）。
   //
@@ -5220,6 +5268,23 @@ const PRE_BATTLE_ACTION: Record<string, PreBattleAction> = {
   time_eater: (_bc, m) => {
     addPower(m.powers, "time_warp", 0);
   },
+
+  // 迪卡与多努（MonsterSpecific.cpp:195-198，第三十九批）。⚠ 参考把两只**并在同一条
+  // case 上**（`case DECA: case DONU:` 共用一个函数体），整条只有一句：
+  //     buff<MS::ARTIFACT>(asc19 ? 3 : 2);
+  // ⚠ 三处照抄：
+  //  ① **不消耗任何 RNG**；
+  //  ② 分档是 **asc19**（Boss 那一族 `getTriIdx(asc, 4, 19)` 的**高**阈值），
+  //     不是常见的 asc17——照搬邻居必错。asc0 是 2 层。
+  //  ③ 两只**层数相同**，所以这里写成同一个函数、两个键各指一次（与参考的
+  //     「两个 case 标签落在同一个函数体上」同构）。
+  // ⚠ 神器是第**四 / 五**个宿主（前三个：哨卫 1 层、球状守卫者 3 层、青铜自动机 3 层）。
+  //   它拦的是 `debuffEnemy` 那条路（易伤 / 虚弱 / 缴械…），每拦一次减一层；
+  //   起始牌组里那张精准打击（BASH）上的易伤正是它最常见的消耗者
+  //   ——实测 120 条 trace 里 106 条看得见迪卡的神器被扣掉。
+  // ⚠ `ARTIFACT` 会进 trace 的怪物 powers 快照（`ARTIFACT: 2`），漏了当场抛「未映射的 power」。
+  deca: decaDonuPreBattle,
+  donu: decaDonuPreBattle,
 };
 
 type EncounterSetup = (bc: BattleContext) => void;
@@ -5664,6 +5729,16 @@ const MONSTER_ATTACK_MOVES: ReadonlySet<string> = new Set([
   //   两者都不带伤害，所以参考不把它们收进白名单，与我们的 `intent` 字段无关。
   "time_eater/te_reverberate",
   "time_eater/te_head_slam",
+  // 迪卡与多努（`:451-452`，第三十九批）。⚠ 四招里**只有两条光束在**，而且参考把它们
+  //   并排写在一起：`DECA_BEAM` / `DONU_BEAM` → 在；
+  //   `DECA_SQUARE_OF_PROTECTION` / `DONU_CIRCLE_OF_POWER` → **不在**（都不带伤害）。
+  // ⚠ 迪卡的光束还会往弃牌堆塞两张恍惚，照样算攻击——判据仍是**有没有走
+  //   `attackPlayerHelper`**，与「这一招还顺手做了别的没有」无关（同族：觉醒者的污泥、
+  //   时间吞噬者的头槌）。
+  // ⚠ 两只怪的招式 id 在我们这边不带怪名前缀（`deca_beam` / `donu_beam`），
+  //   但键是 `defId/moveId`，所以两条互不干扰。
+  "deca/deca_beam",
+  "donu/donu_beam",
 ]);
 
 /**
@@ -11674,9 +11749,15 @@ function takeTurn(bc: BattleContext, m: CombatMonster): string | null {
       //   `buff<MS::STRENGTH>(strBuff);`（MonsterSpecific.cpp:588-598）
       // 形状与 `heal_ally` 逐字对应（写死 0 号位、自己无条件、两句都同步）。
       // ⚠ `buff` 是**累加**（`setStatus(getStatus + n)`），不是覆盖——鼓舞两次就是 +4。
+      // ⚠ `noAliveGate`（第三十九批）：多努的能量之环**连那道门都没有**，整条 case 就是
+      //   `bc.monsters.arr[0].buff<MS::STRENGTH>(3); buff<MS::STRENGTH>(3);`
+      //   （MonsterSpecific.cpp:1677-1681），参考还在第一句行尾自注
+      //   `// shouldn't matter if deca is dead`。⚠ 它与青铜球那条 `noAliveGate` 不同：
+      //   那条当前可证同解，这条**真的会走到 false 侧**（策略恒打 0 号位 → 迪卡先死，
+      //   多努照样给尸体 +3 力量，快照里逐帧可见）。
       const { power } = eff;
       const strBuff = ascValue(bc, eff.amount, eff.ascAmount);
-      if (bc.monstersAlive > 1) {
+      if (eff.noAliveGate === true || bc.monstersAlive > 1) {
         const knight = bc.monsters[0];
         if (knight !== undefined) {
           addPower(knight.powers, power, strBuff);
@@ -13117,6 +13198,26 @@ export const SUPPORTED_ENCOUNTERS: readonly string[] = [
   //     ——它们是全项目仅有的两种「出牌队列里还压着东西」的产出者。
   //   ⚠ 这个编队**只有 asc0 的背书**：时间吞噬者的 `ascCalibrated` 没有置。
   "time_eater",
+  // —— 第三十九批：第三幕 Boss **迪卡与多努**，第三幕收官（16 / 16）。走 harness 新追加的
+  //   variant 39（variant 38 的 encounters 一个字没动，`time_eater.jsonl` 逐字节不变）。
+  //   40 种子、**爬升度 0**、**目标策略 0**。
+  //   ⚠⚠ **编队 id 与建怪顺序相反**：`MonsterEncounter::DONU_AND_DECA` 建的是
+  //     `createMonster(DECA); createMonster(DONU);`（MonsterGroup.cpp:235-238）
+  //     ——**迪卡在 0 号位、多努在 1 号位**。两只怪身上写死的下标全靠这个顺序。
+  //   ⚠⚠ 它带来的不是新机制，而是**第二十六批那三条「写死下标」原语的反例**：
+  //     百夫长 / 秘法师那三招全都带 `monstersAlive > 1` 的门，而这两只**一道门都没有**
+  //     （参考还在多努那句行尾自注 `// shouldn't matter if deca is dead`）。
+  //     `buff_ally` 因此多了一位 `noAliveGate`，与第二十八批青铜球给
+  //     `gain_block_ally_fixed` 加的那一位同名同形——但**这一位真的走到了 false 侧**
+  //     （策略恒打 0 号位 → 迪卡先死 56 / 120，多努照样给尸体 +3 力量）。
+  //   ⚠ 四条 case 的收尾**全是同步 `setMove`**，整场仗除开局那两次 rollMove 之外
+  //     **一次 aiRng 都不掷**——全参考唯一一个「全员静态循环」的编队。
+  //   ⚠ 牌组沿用**第三十八批那 59 张全升级**的（逐字节相同）。两者指纹相同，所以
+  //     encounters 必须互不相交：variant 38 只点名 `TIME_EATER`、这个只点名
+  //     `DONU_AND_DECA`，成立。理由与七副候选牌组的实测对比见 TODOS。
+  //   ⚠ 这个编队**只有 asc0 的背书**：两只怪的 `ascCalibrated` 都没有置
+  //     （神器 3 层、光束 12 点、守护方阵那两句 asc19 镀甲一条都没有预言机）。
+  "donu_and_deca",
 ];
 
 export function isEncounterSupported(encounterId: string): boolean {
