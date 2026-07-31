@@ -120,6 +120,20 @@ type Trace = {
    */
   targetPolicy?: number;
   /**
+   * 生成这条 trace 的**遗物 / 药水组编号**（第四十批新增的轴）。
+   *
+   * 0（缺省）= harness 历来的 `RELIC_ROTATION` / `POTION_ROTATION` 轮换；非 0 = 这个
+   * variant 在 `DeckVariant.relics` / `.potions` 里**点名**了自己的一套。与 `ascension` /
+   * `targetPolicy` 同一招：harness **只在非 0 时输出**，所以既有 116 个文件逐字节不变
+   * （管线改造那一步单独跑过一次 `--check` 证明了这一点）。
+   *
+   * ⚠ **重放侧并不需要它**：实际遗物已经逐字记在 `relics` 里、药水记在每一帧快照里。
+   * 它存在的意义有两条——`tools/split-traces.mjs` 靠它把这些行分到 `<编队>@relicN.jsonl`，
+   * 以及 variant 指纹靠它把「牌组相同、遗物不同」的两个 variant 分开（缺了这一维就是
+   * 冻结前缀静默变长那颗哑弹）。
+   */
+  relicSet?: number;
+  /**
    * 入场时（`BattleContext::init` **之前**）的玩家生命，第二十一批新增。
    *
    * ⚠ `initial.player.hp` 是 **init 之后**的值，而 `BattleContext::init` 里已经跑过
@@ -1244,15 +1258,16 @@ const start = (t: Trace): BattleContext =>
     potionRng: new StsRandom(BigInt(t.potionRngSeed)),
   });
 
-// 分组 = 编队 × 爬升度 × 目标策略，与 `tools/split-traces.mjs` 的分文件键同形
-// （**后缀顺序也必须一致：先 asc 后 tgt**）。混在一个 describe 里的话，失败时看不出翻的是
-// asc0 还是 asc19、打的是 0 号位还是最后一格。
+// 分组 = 编队 × 爬升度 × 目标策略 × 遗物组，与 `tools/split-traces.mjs` 的分文件键同形
+// （**后缀顺序也必须一致：asc → tgt → relic**）。混在一个 describe 里的话，失败时看不出
+// 翻的是 asc0 还是 asc19、打的是 0 号位还是最后一格、身上带的是哪套遗物。
 const byEncounter = new Map<string, Trace[]>();
 for (const t of traces) {
   const key =
     t.encounter +
     (t.ascension ? `@asc${String(t.ascension)}` : "") +
-    (t.targetPolicy ? `@tgt${String(t.targetPolicy)}` : "");
+    (t.targetPolicy ? `@tgt${String(t.targetPolicy)}` : "") +
+    (t.relicSet ? `@relic${String(t.relicSet)}` : "");
   const list = byEncounter.get(key) ?? [];
   list.push(t);
   byEncounter.set(key, list);

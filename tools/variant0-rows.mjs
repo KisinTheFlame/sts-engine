@@ -25,7 +25,11 @@ const signature = (line) => {
     // 所以它不会把任何一段拆开；写上是为了「两处指纹必须一致」这条不变量不留缺口。
     `|${t.ascension === undefined ? "" : String(t.ascension)}` +
     // 目标策略同理（第三十一批新增的轴）。同样每个文件里只有一个取值。
-    `|${t.targetPolicy === undefined ? "" : String(t.targetPolicy)}`
+    `|${t.targetPolicy === undefined ? "" : String(t.targetPolicy)}` +
+    // 遗物组同理（第四十批新增）。⚠ 这一维是**必需的**，不是补齐：遗物战线会出现
+    // 「牌组逐字节相同、只有遗物不同」的两个 variant，缺了它两者的行会被认成同一段，
+    // 冻结前缀静默变长。
+    `|${t.relicSet === undefined ? "" : String(t.relicSet)}`
   );
 };
 

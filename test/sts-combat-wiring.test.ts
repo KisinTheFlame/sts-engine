@@ -717,14 +717,16 @@ describe("接线：覆盖面登记与 trace 数据双向对齐", () => {
       ...new Set(
         readdirSync(traceDir)
           .filter((f) => f.endsWith(".jsonl"))
-          // `<编队>@ascN` / `<编队>@tgtN` 是同一个编队在另一个**爬升度**（第二十一批）
-          // 或另一个**目标策略**（第三十一批）上的数据，不是新编队——把后缀全部剥掉再去重，
-          // 否则这条对齐会把 `cultist@asc19` / `centurion_and_healer@tgt1` 当成没登记的编队。
-          // ⚠ 顺序与 `tools/split-traces.mjs` 的拼接顺序一致（先 asc 后 tgt），
-          //   所以从右往左剥：先 `@tgtN` 再 `@ascN`。
+          // `<编队>@ascN` / `<编队>@tgtN` / `<编队>@relicN` 是同一个编队在另一个
+          // **爬升度**（第二十一批）、另一个**目标策略**（第三十一批）或另一套
+          // **遗物 / 药水**（第四十批）上的数据，不是新编队——把后缀全部剥掉再去重，
+          // 否则这条对齐会把 `cultist@asc19` / `large_slime@relic1` 当成没登记的编队。
+          // ⚠ 顺序与 `tools/split-traces.mjs` 的拼接顺序一致（asc → tgt → relic），
+          //   所以从右往左剥：先 `@relicN`、再 `@tgtN`、最后 `@ascN`。
           .map((f) =>
             f
               .replace(/\.jsonl$/, "")
+              .replace(/@relic\d+$/, "")
               .replace(/@tgt\d+$/, "")
               .replace(/@asc\d+$/, ""),
           ),
