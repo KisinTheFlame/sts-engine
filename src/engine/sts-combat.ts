@@ -10460,7 +10460,9 @@ function onUseAttackCard(bc: BattleContext, item: CardQueueItem, card: CombatCar
  * 激怒。状态/诅咒牌走 onUseStatusOrCurseCard，同样没有。
  *
  * ⚠ 参考在这里还有 `++p.skillsPlayedThisTurn`。它唯一的读者是拆信刀（LETTER_OPENER，
- * 每 3 张技能牌打 5 点全体伤害），遗物轮换里没有它——写了也没有预言机走到，留 TODO。
+ * 每 3 张技能牌打 5 点全体伤害），还没登记。⚠ **「不在遗物轮换里」这条理由第四十批起
+ * 不成立了**——variant 现在能点名遗物（见 WORKFLOW「遗物 / 药水这条轴」），拆信刀已排进
+ * 下一批的候选表。留 TODO 只是因为本批不做它。
  *
  * TODO(后续PR): 爆发（`onUseSkillCard` 里的 queuePurgeCard）、复制药水、回响形态、残影、
  *   六芒星的眩晕、华彩，以及墨水瓶 / 橙色药丸 / 拆信刀三个遗物。

@@ -988,11 +988,16 @@ trace 的 `initial` 快照取在 `BattleContext::init` **之后**，而 `init` �
 第二十三批开了第二幕之后这条路就断了。第三十一批因此新开**第三个乘积**：
 
 ```cpp
-emitProduct(variants, encounters);          // 第一幕，冻结
-emitProduct(act2Variants, act2Encounters);  // 第二幕，冻结
-emitProduct(tgtVariants, tgtEncounters);    // 目标策略，冻结
-emitProduct(act3Variants, act3Encounters);  // 第三幕（第三十二批），**必须最后**
+emitProduct(variants, encounters);            // 第一幕，冻结
+emitProduct(act2Variants, act2Encounters);    // 第二幕，冻结
+emitProduct(tgtVariants, tgtEncounters);      // 目标策略，冻结
+emitProduct(act3Variants, act3Encounters);    // 第三幕（第三十二批），装满后不再增长
+emitProduct(relicVariants, relicEncounters);  // 遗物/药水（第四十批），**必须最后**
 ```
+
+⚠ **第五个乘积是第四十批加的，而它挂得下正是因为第三幕装满了。** 它的编队列表是
+**三幕全部 54 个**（遗物的读点散在三幕里，而一个乘积只绑一份编队列表——这就是它必须
+另开一个乘积、而不是往 `act3Variants` 里塞的原因）。
 
 ⚠ **推论：从此往 `variants` / `act2Variants` / `tgtVariants` 里追加 variant 都不再免费**
 ——那会让排在它后面的乘积的文件全部作废。新东西一律另开乘积挂到最后。
@@ -1008,6 +1013,8 @@ emitProduct(act3Variants, act3Encounters);  // 第三幕（第三十二批），
 遗物 / 药水那条战线）现在都能做了。
 ⚠ **规矩本身没变，只是主语换了人**：新东西一律挂到**当前最后一个**乘积之后，
 永远不要往前面任何一个乘积的 variant 列表里追加。
+✅ **第四十批把它接了过去**：现在「必须最后」的是 `relicVariants`，因为遗物 / 药水这条
+战线每批都要往它里面追加一个 variant。下一条新轴要挂在**它**后面。
 
 ⚠ **诊断线索（复核方补）**：这类错误不会静默——`--check` 会红——但它红的样子很容易误判。
 表现是**某一整个乘积的文件一次性全红，而它之前的乘积一个都没红**。
@@ -1053,6 +1060,108 @@ emitProduct(act3Variants, act3Encounters);  // 第三幕（第三十二批），
   换目标策略碰不到。
 - ❌ **狂怒连斩的 asc2 伤害档仍然 0 例**：本批只做 asc0。关门条件从「结构性不可达」
   变成了「需要 `asc19 × tgt1` 那个组合」——**这是一条真的可以做的路**，不再是死结。
+
+### 遗物 / 药水这条轴（第四十批起）
+
+第三条与爬升度、目标策略**同构**的轴：编队那一维上的第三个后缀，`large_slime@relic1.jsonl`。
+它改的是 harness **发给这一批 trace 的遗物与药水**。
+
+#### ⚠⚠ 先记住：`RELIC_ROTATION` / `POTION_ROTATION` 这两张表已经**冻结**
+
+与第一幕那份 `encounters` 列表、与 variant 0 同级。理由不是习惯，是算式：
+
+```cpp
+RELIC_ROTATION[(traceIdx * 2 + k) % RELIC_ROTATION.size()]    // 8 项
+POTION_ROTATION[(traceIdx * 3 + i) % POTION_ROTATION.size()]  // 13 项
+```
+
+**两张表的长度就是模数**，而 `traceIdx` 是全语料共享的单调计数器。所以
+
+- ❌ **往末尾追加不安全**，而且这是量出来的：给 `RELIC_ROTATION` 追加第 9 项之后跑
+  `--check`，**116 / 116 个文件全红**，第一个文件的**第一行**就已经不同
+  （`traceIdx = 4` 是 `% 8` 与 `% 9` 头一次分岔的下标）。
+- ❌ 原地替换某一项同样不安全（模数没变，但那一格轮到的 trace 全换了遗物）。
+- ❌ 把模数写死成 `% 8` 再追加 = 追加的项永远选不中，等于没加。
+
+⚠⚠ **「追加到末尾免费」这个直觉只对编队列表成立**——variant 没点名的编队在种子循环**之前**
+`continue`、不消耗 `traceIdx`；对**轮换表**不成立。两者别混。
+
+#### 做法：`DeckVariant` 上的显式清单，空 = 走旧轮换
+
+机制四处，加起来不到 40 行：
+
+1. harness 的 `DeckVariant` 多三样：`std::vector<RelicSpec> relics`、
+   `std::vector<Potion> potions`（**空 = 走旧轮换**）、`int relicSet = 0`；
+   trace 头部**只在 `relicSet` 非 0 时**输出 `"relicSet":N`。
+   ⚠ `traceIdx` 照旧无条件 `++`，所以别的 variant 拿到的轮换一位没动。
+2. `split-traces.mjs` 的分组键加后缀、指纹加一维；`variant0-rows.mjs` 的指纹跟着加。
+3. `regen-traces.sh` 的 `ENC_V0` 里加 `<编队>@relicN`——一份文件里只有一个 variant，
+   于是整份冻结。
+4. **重放侧一个字都不用改**：遗物已经逐字记在 `relics` 里、药水记在每一帧快照里
+   （与目标策略那条轴同理，与爬升度那条不同）。
+
+⚠⚠ **两步验证，第一步不能跳**：先只加字段与后缀、**不加任何新 variant**，跑
+`tools/regen-traces.sh --check`，**116 个文件逐字节复现**；不过就停下来查。
+第四十批实测全过（这是这条套路第五次做，一次都没白做）。
+
+#### ⚠⚠ `relicSet` 不是装饰：variant 指纹里原本没有遗物这一维
+
+`split-traces.mjs` / `variant0-rows.mjs` 的指纹此前是**「整副牌组内容 + 升级位 + 爬升度 +
+目标策略」**。遗物这条战线**必然**会出现「牌组逐字节相同、只有遗物不同」的两个 variant
+（第四十批的 `writhing_mass@relic2` / `@relic3` 就差一颗御守），没有这一维它们会
+**指纹撞号** → 行落进同一个文件、被当成一整块，`variant0-rows.mjs` 数出来的冻结前缀
+**静默变长**。所以 `relicSet` 同时进**指纹**与**分组键**，撞号按构造消失。
+
+**后缀顺序固定为 `<编队>[@ascN][@tgtN][@relicN]`**，三处必须一致：`split-traces.mjs`、
+`sts-combat-trace.test.ts` 的 describe 键、`sts-combat-wiring.test.ts` 剥后缀时
+**从右往左**（先 `@relic`、再 `@tgt`、最后 `@asc`）。
+
+**怎么验证撞号真的不会发生**（第四十批用的三条，逐条都是可跑的检查，不是推理）：
+
+1. harness 里加了一道显式检查：`relicVariants` 里任意两个 variant 的 `relicSet` 不许相同，
+   且不许为 0（否则当场 `return 1`）。
+2. 不同 `relicSet` ⇒ 分组键不同 ⇒ **落进不同的文件**，一个文件里不可能有两个遗物组。
+3. 装之前对每一个新文件跑 `node tools/variant0-rows.mjs <f>`，断言它**等于整份行数**。
+   撞号的唯一症状就是这个数偏大——直接量它，比推理可靠。
+
+#### `RelicSpec` 要带 `data`
+
+`initRelics` 对**御守**与**蜥蜴尾**写的是 `p.setHasRelic<X>(r.data)`
+（`BattleContext.cpp:185-186`）——它**覆盖**从 run 层拷进来的位，所以
+**`data = 0` 的御守在战斗内等于没有**。第四十批的 `@relic3` 若给它 0，会退化成 `@relic2`
+的逐字节副本、御守那道门一点背书都拿不到。给 2（真实游戏拿到时的充能数）。
+⚠ 别的遗物也读 `data`（快乐花、拳套、笔尖、印记…），登记到它们时逐个回 `initRelics` 看。
+
+#### 组批：按「一个 variant 能同时关掉几条」来排，遗物是可以叠的
+
+`RelicContainer::add` 就是 `push_back` + 置位（`Game.cpp:14-17`），**没有上限、没有副作用**，
+所以一个 variant 带一把遗物是免费的。第四十批的 `@relic1` 一个 variant 带三颗
+（贤者之石 + 地精之角 + 手钻）、八个编队，一次关掉九条盲区。
+
+⚠ **唯一的容量约束在 `initRelics` 内部**：`atBattleStart` 是
+`fixed_list<RelicId, 8>`、`atBattleStartPreDraw` 是 `fixed_list<..., 4>`，而 `fixed_list`
+**全项目没有越界检查**。挑遗物时先看它落进哪个 `push_back`。harness 里加了一道
+「一个 variant 不许超过 8 颗遗物」的粗检查兜底。
+
+⚠ **药水清单的正当用途是「消除混淆变量」，不是「换个花样」。** 第四十批只在一处用了它：
+`@relic2` / `@relic3` 是一对只差一颗御守的 A/B，**必须**把药水钉死——不钉的话两个 variant
+的 `traceIdx` 不同，轮换会发给它们不同的药水，这份 A/B 立刻失去意义。
+⚠ 顺带一条实测的教训：**别指望用「发火焰药水」去覆盖某条非攻击伤害的路径**——
+`pickAction` 把喝药水排在出牌**之前**，三瓶药在第 1 回合就全喝光了，那时怪还没加过格挡。
+
+#### ⚠ 这条轴会掀开「此前不可观察的建模差异」，这正是它的价值
+
+第四十批当场撞上一个：`Monster::construct` 只写 `id` / `idx` / `initHp` /
+虱子与暗影客的 `miscInfo`，**状态位、力量、格挡、意图历史一个都不碰**；而四个召唤宿主里
+**只有青铜自动机没有 `arr[idx] = Monster()`**（那张 13 维表的倒数第五行）。
+在贤者之石之前，自动机的 0 / 2 号位是从没被写过的空格，「保留」与「清空」同解；
+贤者之石的 `initRelics` 那一格给**包括空格在内**的每一格 +1 力量，于是青铜球应该带
+**2** 点力量（残留 1 + 召唤 1）而不是 1 点——`automaton@relic1` 的 120 条**全红**。
+
+**判据：装一个「给全场加东西」的遗物时，先问一句「参考的这个循环有没有过滤」，
+再问「有没有哪个格子会被后来的怪覆盖、而覆盖时不清空」。** 隔壁 `R::BRIMSTONE` 的同型
+循环写的是 `if (m.isTargetable())`，贤者之石那格是裸的 `i < monsterCount`——
+**同一个 switch 里两种写法并存**。
 
 ### 生成并安装
 
@@ -1191,6 +1300,16 @@ git checkout -- src/engine/sts-combat.ts
 看着像「首领一死当场判胜」这条路有了厚背书——其实那 46 例**全部**来自快照里少了一个
 power 条目。它真正的语义在这个编队上**一次都没走到**：14 次胜利全部是「场上一只活怪
 都不剩」，`monstersAlive == 0` 那一半单独就够判胜了。
+
+⚠⚠ **第四十批撞上假非 0 的第三种形状：探针换掉了一个对象，而别处还持有旧引用。**
+青铜自动机那条「就地 construct」的第一版探针写成「把 `bc.monsters[0] = constructMonster(...)`
+换回去」，红 **735 例**（= 四个 automaton 文件的全部），看着比正解漂亮得多。
+其实换掉之后下面几句 `addPower(orb1.powers, "minion", 1)` / `rollMove(bc, orb1)` 里的 `orb1`
+仍然指着**被顶掉的旧对象**——那次变异顺带删掉了 MINION 与两次 rollMove，红的是那些。
+换成只动一句（就地 construct 时补 `slot.powers = []`）之后是 **120 例**，才是真数字。
+
+> **判据（补一条）：探针换掉一个对象时，先数一遍还有谁持有旧引用。**
+> 这在 TS 里比在 C++ 里更容易踩——`arr[i] = newObj` 不会让别处的 `const x = arr[i]` 跟着变。
 
 > **判据（补一条）：一个 Power 既进快照、又有行为时，「去掉它」量到的是两者之和。
 > 要单独钉住行为那一半，得写一个只动行为、不动快照的探针**（这里是「首领死时身边
