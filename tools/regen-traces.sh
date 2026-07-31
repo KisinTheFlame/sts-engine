@@ -304,7 +304,25 @@ ENC_V0_ASC19="cultist@asc19 jaw_worm@asc19 jaw_worm_horde@asc19 two_louse@asc19 
 # ⚠ `jaw_worm_horde@tgt1` / `two_louse@tgt1` / `three_louse@tgt1` 的**基名**在 `ENC_ALL` 里，
 #   但 `policy_of` 是**全名精确匹配**（带后缀的名字不在 `ENC_ALL` 里），所以它们照旧走
 #   variant0 策略 = 整份冻结。这正是我们要的：这些文件里只有 variant 31 一个 variant。
-ENC_V0="$ENC_V0_ASC0 $ENC_V0_ASC19 $ENC_V0_TGT1 $ENC_V0_ACT3"
+# 第四十批：**遗物 / 药水**这条战线的第一批（第五个乘积）。文件名后缀是 `@relicN`——
+# harness 只在 `DeckVariant.relicSet` 非 0 时输出那个字段，所以既有 116 个文件的名字与
+# 内容一个字节都不动（管线改造那一步单独跑过一次 `--check` 证明了这一点）。
+#
+#   @relic1 = 贤者之石 + 地精之角 + 手钻，八个编队 —— 贤者之石在参考里有**八个读点**
+#             （initRelics 一个 + 七处召唤/分裂/复活），这八个编队是「一个读点一个宿主」。
+#   @relic2 = 暗石护符 + 手钻，蠕动血块
+#   @relic3 = **@relic2 再加一颗御守**（`data = 2`），蠕动血块
+#
+# ⚠⚠ @relic2 与 @relic3 的牌组、种子、楼层、爬升度、目标策略**全同**，药水也**钉死**成同一
+#   张，所以两份文件的输入差别**只有御守这一颗**。于是「御守那道门」的背书是一次直接的
+#   逐行 diff（实测 67 / 120 条不同，全部是 maxHp 80 → 86），不需要变异测试来推。
+#   ⚠ 药水必须钉死：不钉的话两个 variant 的 traceIdx 不同 → 轮换发给它们的药水就不同，
+#     这份 A/B 立刻失去意义。
+# ⚠ 这也是「牌组相同 → encounters 必须不相交」那条规矩的第二个例外（第一个是爬升度轴）：
+#   variant 指纹里第四十批加了 `relicSet` 这一维，所以两个 variant 可以共用牌组**并且**
+#   共用编队——它们的行落进 `@relic2` / `@relic3` 两份不同的文件，撞不上。
+ENC_V0_RELIC="large_slime@relic1 slime_boss@relic1 spheric_guardian@relic1 gremlin_leader@relic1 automaton@relic1 collector@relic1 three_darklings@relic1 reptomancer@relic1 writhing_mass@relic2 writhing_mass@relic3"
+ENC_V0="$ENC_V0_ASC0 $ENC_V0_ASC19 $ENC_V0_TGT1 $ENC_V0_ACT3 $ENC_V0_RELIC"
 
 policy_of() {
   case " $ENC_ALL " in *" $1 "*) echo all; return;; esac

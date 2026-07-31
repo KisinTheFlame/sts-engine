@@ -3749,14 +3749,16 @@ const ENEMY_LIST: EnemyDef[] = [
         //     rollMove(bc);
         // ⚠ 参考**不建模那张寄生虫诅咒**（真实游戏是往牌组里塞一张，属于 run 层），
         //   战斗内只剩「标记已植入」这一句 + 两个遗物的副作用。
-        // ⚠ 两个遗物（御守 / 暗石护符）**都不在 harness 的八个轮换里**，所以那一支
-        //   结构性不可达，留 TODO 不实现（同贤者之石那一族）。见 sts-combat.ts。
+        // ✅ 两个遗物（御守 / 暗石护符）第四十批登记了——它们此前不在 harness 的八个
+        //   轮换里，那一支结构性不可达；现在 variant 可以**点名**遗物，于是有预言机了。
+        //   落成第二条效果 `obtain_curse`（那一句在参考里就是同一条 case 的第二句）。
         // ⚠ 收尾是**同步的真 `rollMove`**（第六形态），不是 `addToBot(RollMove)`——
         //   而且必须排在 `miscInfo = true` **之后**，否则出招规则会再选一次植入。
         // ⚠ 旧近似表**根本没有这一招**（只列了四条攻击），本批补上。
         id: "wm_implant",
         name: "植入",
-        effects: [{ kind: "set_misc_info", amount: 1 }],
+        // ⚠ 顺序照抄：先置位、再走那两个遗物的分支。
+        effects: [{ kind: "set_misc_info", amount: 1 }, { kind: "obtain_curse" }],
         intent: "debuff",
       },
     ],

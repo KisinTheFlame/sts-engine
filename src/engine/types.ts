@@ -494,6 +494,18 @@ export type Effect =
   // ⚠ **同步**（参考那一句不在任何 `addToBot` 里），而且排在紧随其后那次同步 `rollMove`
   //   之前——出招规则读的正是它，顺序错了「植入」会连出两次。
   | { kind: "set_misc_info"; amount: number }
+  // 敌人用：**往玩家牌组里塞一张诅咒**（第四十批）。唯一的用户仍是蠕动血块的「植入」。
+  // ⚠⚠ **参考不建模那张牌**（塞进 master deck 属于 run 层），所以这条效果在战斗内
+  //   **只剩两个遗物的反应**（MonsterSpecific.cpp:1541-1545）：
+  //       if (!bc.player.hasRelic<R::OMAMORI>()) {
+  //           if (bc.player.hasRelic<R::DARKSTONE_PERIAPT>()) { bc.player.increaseMaxHp(6); }
+  //       }
+  //   两个遗物都没有的场次（此前的全部语料）它是**彻底的空操作**——这正是它到第四十批
+  //   才登记的原因：在此之前写了也没有任何 trace 能分辨。
+  // ⚠ 它与 `set_misc_info` 是**同一条 case 里的两句**，参考的顺序是先置位再走这一支；
+  //   拆成两条效果是为了别把遗物反应误挂到觉醒者那条 `set_misc_info` 上。
+  // ⚠ **同步**（那两句都不在 `addToBot` 里）。
+  | { kind: "obtain_curse" }
   // sync：敌人专用。参考的怪物加格挡有**两种写法并存**——绝大多数是**同步** `addBlock(n)`
   // （拾荒者烟雾弹 MonsterSpecific.cpp:937 等 20 余处），少数是 `addToBot(MonsterGainBlock)`
   // （颚虫的猛击/咆哮 :858/:865 等 6 处）。省略 = 入队（既有怪都是这一种）。

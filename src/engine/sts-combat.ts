@@ -3715,6 +3715,38 @@ function constructMonster(bc: BattleContext, defId: string): CombatMonster {
   return m;
 }
 
+/**
+ * **就地** construct 一只怪，不新建实体（对齐裸的 `arr[idx].construct(bc, id, idx)`）。
+ *
+ * ⚠⚠ **这不是 `constructMonster` 的一个包装，差别是「那一格原来的东西留不留」。**
+ * `Monster::construct`（Monster.cpp:109-135）只写四样：`id` / `idx` / `initHp` /
+ * 虱子与暗影客的 `miscInfo`。**状态位、力量、格挡、意图历史一个都不碰。**
+ * 所以参考里「先 `arr[idx] = Monster()` 再 construct」与「直接 construct」是两种行为，
+ * 而四个召唤宿主里**只有青铜自动机走后者**（WORKFLOW 那张 13 维表的 `= Monster()` 一行：
+ * 地精首领有 / 自动机**没有** / 收藏家有 / 蜥蜴法师有）。
+ *
+ * ⚠ 在第四十批之前这个差别**结构性不可观察**：自动机的 0 / 2 号位是开局预留、
+ * 从没被写过的空格，里面什么都没有，「保留」与「清空」同解。**贤者之石把它掀开了**
+ * ——`initRelics` 那一格给**包括空格在内**的每一格 +1 力量（那个循环没有任何过滤），
+ * 于是青铜球出生时身上就带着 1 点残留力量，再加召唤自己那 +1 = **2**。
+ * 实测：按「新建实体」建模时 `automaton@relic1` 的 120 条全红（快照里球是 1 点力量、
+ * 参考是 2 点）。
+ *
+ * ⚠ `alive` 是我们对 `!isDeadOrEscaped()` 的建模，三位里 construct 只动 `curHp`；
+ * 逃跑那一位我们没有单独的字段，但青铜球不会逃跑，所以这里按「血 > 0 且不半死」算。
+ */
+function constructMonsterInPlace(bc: BattleContext, slot: CombatMonster, defId: string): void {
+  const fresh = constructMonster(bc, defId); // ★ 掷血量（青铜球带 hpDiscardRoll，2 次）
+  slot.defId = defId;
+  slot.hp = fresh.hp;
+  slot.maxHp = fresh.maxHp;
+  // construct 的怪种特例只写 `miscInfo`，其余字段原样留着——所以这里也只搬这一个。
+  if (fresh.miscInfo !== 0) {
+    slot.miscInfo = fresh.miscInfo;
+  }
+  slot.alive = slot.hp > 0 && !slot.halfDead;
+}
+
 function createMonster(bc: BattleContext, defId: string): CombatMonster {
   const m = constructMonster(bc, defId);
   bc.monsters.push(m);
@@ -3802,9 +3834,35 @@ function spawnSplitMonster(bc: BattleContext, defId: string, at: number, hp: num
   // 先落位再 rollMove，对齐 `arr[idx] = Monster(); arr[idx].initSpawnedMonster(...)`。
   bc.monsters[at] = nm;
   rollMove(bc, nm); // ★ 消耗 aiRng（1 次；中号酸液的分支可能追加 1 次）
-  // TODO(后续PR): 贤者之石（PHILOSOPHERS_STONE）会给分裂出来的两只各 +1 力量
-  //   （MonsterSpecific.cpp:3378 / :3406）。harness 的遗物轮换里没有它
-  //   （trace_dump.cpp:218 那八个），写了也没有预言机走到。
+  // ⚠ 贤者之石那一支**不在这里**：参考是「两只都造完之后」才一起 buff，见调用方。
+}
+
+/**
+ * 贤者之石给「刚上场的怪」+1 力量。参考在**七处**逐字重复同一句
+ * `if (bc.player.hasRelic<R::PHILOSOPHERS_STONE>()) { …buff<MS::STRENGTH>(1); }`：
+ *
+ * | 出处                                | 位置                                                       |
+ * | ----------------------------------- | ---------------------------------------------------------- |
+ * | `largeSlimeSplit`（:3406）          | **两只都造完之后**，在 `monstersAlive++` 之前               |
+ * | `slimeBossSplit`（:3433）           | 同上                                                       |
+ * | `Actions::SummonGremlins`（:488）   | `monstersAlive += 2` 之后、**`buff<MINION>` 之前**         |
+ * | `Monster::spawnBronzeOrbs`（:3454） | `buff<MINION>` **之后**、`rollMove` 之前                   |
+ * | `Actions::SpawnTorchHeads`（:517）  | 循环内，`buff<MINION>` 之后、`++monstersAlive` 之前         |
+ * | `Monster::reptomancerSummon`（:3601）| 循环内，`buff<MINION>` 之后、`noOpRollMove` 之前            |
+ * | `DARKLING_REINCARNATE`（:1494）     | `buff<MS::REGROW>()` 之后、收尾的 `rollMove` 之前           |
+ *
+ * ⚠ **相对 `buff<MINION>` 的先后逐处不同**（地精是之前、另外三条召唤是之后），照抄。
+ * 当前观察不到差别——harness 的快照按 `MonsterStatus` **枚举序**输出，不是获得顺序
+ * （`monsterStatuses` 逐个下标扫），而我们这边比对时也按 id 归一。**照抄，别对齐成一种。**
+ *
+ * ⚠ 这一句与 `initRelics` 里那一格（开局给全场 +1）是**两件事**：那一格只跑一次、
+ * 覆盖开局就在场的怪；这一句覆盖开局之后才出现的怪。缺任何一边都会让「后来的怪没力量」
+ * 或「开局的怪没力量」。
+ */
+function philosophersStoneBuff(bc: BattleContext, m: CombatMonster): void {
+  if (hasRelic(bc, "philosophers_stone")) {
+    addPower(m.powers, "strength", 1);
+  }
 }
 
 function splitMonster(bc: BattleContext, m: CombatMonster): void {
@@ -3821,6 +3879,11 @@ function splitMonster(bc: BattleContext, m: CombatMonster): void {
   //   真的会发生：王分裂出的尖刺大在 0 号格，它再分裂时 idx2 = 1 —— 而 1 号格正是王
   //   留下的那个空位（第十九批实测走到了这一支；第十四批当时写的是一道显式抛错）。
   spawnSplitMonster(bc, into[1], idx2, hp);
+
+  // 贤者之石：**两只都造完之后**才 buff（MonsterSpecific.cpp:3406-3409），
+  // 排在 `monstersAlive++` 之前。见 `philosophersStoneBuff`。
+  philosophersStoneBuff(bc, bc.monsters[idx1]);
+  philosophersStoneBuff(bc, bc.monsters[idx2]);
 
   bc.monstersAlive += 1;
   // `monsterCount = std::min(monsterCount+1, 4)`（MonsterSpecific.cpp:3384）。
@@ -3856,7 +3919,7 @@ function splitMonster(bc: BattleContext, m: CombatMonster): void {
 //     两次 aiRng（两只新怪各自 rollMove），而大史莱姆那条是 2 + 2 = 4 次起步。
 //
 // 两者相同的只有中间那一段：`arr[idx] = Monster()` + `initSpawnedMonster(…, curHp)`
-//（不掷血量、maxHp 压成当前血量、不继承状态、各自 rollMove）与贤者之石那个 TODO。
+//（不掷血量、maxHp 压成当前血量、不继承状态、各自 rollMove），以及紧随其后的贤者之石那一支。
 // ============================================================================
 
 function slimeBossSplit(bc: BattleContext, m: CombatMonster): void {
@@ -3871,6 +3934,10 @@ function slimeBossSplit(bc: BattleContext, m: CombatMonster): void {
   }
   spawnSplitMonster(bc, into[0], 0, hp); // ★ 消耗一次 aiRng（尖刺大）
   spawnSplitMonster(bc, into[1], 2, hp); // ★ 消耗一次 aiRng（酸液大）
+
+  // 贤者之石：与 `largeSlimeSplit` 同形，两只都造完之后一起 buff（:3433-3436）。
+  philosophersStoneBuff(bc, bc.monsters[0]);
+  philosophersStoneBuff(bc, bc.monsters[2]);
 
   // ②③④ 三个都是**赋值**。`monsterCount` 由数组长度表达，上面已经补到 3。
   bc.monstersAlive = 2;
@@ -4053,8 +4120,11 @@ function summonGremlins(bc: BattleContext): void {
   }
   // ⑥ 只动 monstersAlive，monsterCount（= 数组长度）不变。
   bc.monstersAlive += 2;
-  // TODO(后续PR): 贤者之石（PHILOSOPHERS_STONE）会给召唤出来的两只各 +1 力量
-  //   （Actions.cpp:487-490，与两个分裂函数里那一支同源）。harness 的遗物轮换里没有它。
+  // 贤者之石（Actions.cpp:488-491）：⚠ 这一条排在 **`buff<MINION>` 之前**，与另外三条
+  // 召唤（青铜球 / 火炬头 / 匕首都是 MINION 在前）相反。照抄，见 `philosophersStoneBuff`。
+  for (const nm of spawned) {
+    philosophersStoneBuff(bc, nm);
+  }
   for (const nm of spawned) {
     addPower(nm.powers, "minion", 1);
   }
@@ -4102,16 +4172,25 @@ function summonGremlins(bc: BattleContext): void {
  */
 function spawnBronzeOrbs(bc: BattleContext): void {
   // ②⑤ 下标写死、每颗两次 monsterHpRng。参考先 construct 0 号再 construct 2 号。
-  const orb1 = constructMonster(bc, "bronze_orb"); // ★ 2 次 monsterHpRng（白掷 + 正式）
-  bc.monsters[0] = orb1;
-  const orb2 = constructMonster(bc, "bronze_orb"); // ★ 2 次 monsterHpRng
-  bc.monsters[2] = orb2;
+  // ⚠⚠ ⑤ 是「**没有** `arr[idx] = Monster()`」——四个召唤宿主里只有这一个是**就地
+  //   construct**，那一格原来的状态位 / 力量 / 格挡 / 意图历史**全部留着**。
+  //   第四十批的贤者之石把这个差别变成了可观察的：开局 `initRelics` 给包括 0 / 2 号
+  //   空格在内的每一格 +1 力量，于是球出生时就带 1 点，再加召唤那 +1 = 2。
+  //   逐条见 `constructMonsterInPlace`。
+  const orb1 = bc.monsters[0];
+  const orb2 = bc.monsters[2];
+  if (orb1 === undefined || orb2 === undefined) {
+    throw new Error("sts-combat: 青铜自动机召唤时 0 / 2 号格不存在（编队构建器没预留空位？）");
+  }
+  constructMonsterInPlace(bc, orb1, "bronze_orb"); // ★ 2 次 monsterHpRng（白掷 + 正式）
+  constructMonsterInPlace(bc, orb2, "bronze_orb"); // ★ 2 次 monsterHpRng
   // ⑥ MINION 标记（进怪物快照）。
   addPower(orb1.powers, "minion", 1);
   addPower(orb2.powers, "minion", 1);
-  // TODO(后续PR): 贤者之石（PHILOSOPHERS_STONE）会给召唤出来的两颗各 +1 力量
-  //   （MonsterSpecific.cpp:3454-3457，与两个分裂函数、地精召唤里那一支同源）。
-  //   harness 的遗物轮换里没有它，写了也没有预言机走到。
+  // 贤者之石（MonsterSpecific.cpp:3454-3457）：⚠ 这里排在 `buff<MINION>` **之后**、
+  // 两次 rollMove 之前，与地精召唤那条（MINION 在后）相反。见 `philosophersStoneBuff`。
+  philosophersStoneBuff(bc, orb1);
+  philosophersStoneBuff(bc, orb2);
   // ⑦ 两颗各自 rollMove，排在 buff 之后。
   rollMove(bc, orb1); // ★ 消耗一次 aiRng
   rollMove(bc, orb2); // ★ 消耗一次 aiRng
@@ -4178,9 +4257,9 @@ function summonTorchHeads(bc: BattleContext): void {
     setMove(torchHead, "torch_tackle");
     // ⑥ MINION 标记（进怪物快照）。
     addPower(torchHead.powers, "minion", 1);
-    // TODO(后续PR): 贤者之石（PHILOSOPHERS_STONE）会给召唤出来的每只 +1 力量
-    //   （Actions.cpp:517-519，与两个分裂函数、另两条召唤里那一支同源）。
-    //   harness 的遗物轮换里没有它，写了也没有预言机走到。
+    // 贤者之石（Actions.cpp:517-519）：在**循环里面**，MINION 之后、`++monstersAlive`
+    // 之前。见 `philosophersStoneBuff`。
+    philosophersStoneBuff(bc, torchHead);
     // ⑧ 每召一只加一次。
     bc.monstersAlive += 1;
   }
@@ -4251,9 +4330,9 @@ function reptomancerSummon(bc: BattleContext, daggerCount: number): void {
     setMove(dagger, "dagger_stab");
     // ⑧ MINION 标记（进怪物快照）。
     addPower(dagger.powers, "minion", 1);
-    // TODO(后续PR): 贤者之石（PHILOSOPHERS_STONE）会给召唤出来的每只 +1 力量
-    //   （MonsterSpecific.cpp:3600-3602，与另外三条召唤、两个分裂函数里那一支同源）。
-    //   harness 的遗物轮换里没有它，写了也没有预言机走到。
+    // 贤者之石（MonsterSpecific.cpp:3601-3603）：在**循环里面**，MINION 之后、
+    // `noOpRollMove` 之前。见 `philosophersStoneBuff`。
+    philosophersStoneBuff(bc, dagger);
     // ⑨ 每只各还一次 aiRng（noOpRollMove，掷完丢掉）——**在循环里面**。
     bc.rng.aiRng.random(99); // ★ 消耗一次 aiRng，取值丢弃
     // ⑩ 本回合不行动。
@@ -7356,12 +7435,49 @@ function monsterAttacked(bc: BattleContext, m: CombatMonster, rawDamage: number)
     addPower(m.powers, "strength", angry);
   }
   // 格挡吸收：先扣伤害再削格挡，两者都基于进入时的原值（对齐 Monster::attacked）。
+  const hadBlock = m.block > 0; // ★ 手钻的门读的是**进入这一击时**有没有格挡
   const tempDamage = damage;
   damage -= m.block;
   m.block = Math.max(0, m.block - tempDamage);
-  // TODO(后续PR): 手钻（破盾时上易伤）。
+  handDrillOnBlockBroken(bc, m, hadBlock);
   if (damage > 0) {
     monsterDamageUnblocked(bc, m, damage);
+  }
+}
+
+/**
+ * 手钻（HAND_DRILL，第四十批）：把这只怪的格挡打光时给它 2 层易伤。
+ *
+ * 参考在**两处**逐字写了同一段（`Monster::attacked` :433-435、`Monster::damage` :488-490）：
+ * ```cpp
+ * const bool hadBlock = block > 0;
+ * const int tempDamage = damage;
+ * damage -= block;
+ * block = std::max(0, block - tempDamage);
+ * if (hadBlock && block == 0 && bc.player.hasRelic<RelicId::HAND_DRILL>()) {
+ *     bc.addToBot(Actions::DebuffEnemy<MS::VULNERABLE>(idx, 2, false));
+ * }
+ * ```
+ * ⚠ 五处照抄：
+ *  ①⚠⚠ **两条伤害路径上各有一份**——所以**非攻击伤害也算**（燃烧 / 荆棘 / 火焰药水 /
+ *     爆炸药水 / 自爆走 `damage`）。这与蜷缩 / 镀甲那一族「只挂在 `attacked` 上」正相反，
+ *     与虚无缥缈那一族（也是两条路各一份）同族。
+ *  ②⚠ 门是「**进来时有格挡** 且 **打完之后归零**」的合取，不是「伤害溢出了格挡」：
+ *     一击恰好打光格挡（`damage == block`）照样触发，而对本来就没格挡的怪**不触发**。
+ *  ③ 位置在**格挡吸收之后、`damage > 0` 那道门之前**——所以「这一击被格挡完全吃掉」时
+ *     易伤照样上。
+ *  ④ 是 `addToBot`（**入队**），不是同步：同一批动作里排在它前面的还是先结算。
+ *  ⑤ `isSourceMonster = false`（玩家来源），所以这层易伤**本回合末就开始递减**。
+ *
+ * ⚠ 它排在 `Monster::attacked` 里狂怒的**下方**、`attackedUnblockedHelper` 的**上方**
+ *   ——不是那条 else-if 链上的一格，而是链外的一个独立 if。
+ */
+function handDrillOnBlockBroken(bc: BattleContext, m: CombatMonster, hadBlock: boolean): void {
+  if (hadBlock && m.block === 0 && hasRelic(bc, "hand_drill")) {
+    const idx = bc.monsters.indexOf(m);
+    addToBot(bc, (c) => {
+      debuffEnemy(c, idx, "vulnerable", 2, false);
+    });
   }
 }
 
@@ -7736,8 +7852,40 @@ function monsterDie(bc: BattleContext, m: CombatMonster): void {
     //   于是这一击若还排着别的动作，牌在它们执行**之前**就已经回到手里了。
     returnStasisCard(bc, m);
   }
-  // TODO(后续PR): 尸爆 / 地精角 / 活体样本。
-  // ✅ 觉醒者的假死（`Monster::die` 的**第一个**分支）第三十七批已补，见函数开头那一格。
+  // TODO(后续PR): 尸爆（CORPSE_EXPLOSION）——它排在这里、地精角之前，是一个**独立的 if**
+  //   （Monster.cpp:312-315，`DamageAllEnemy(maxHp * 层数)`）。唯一来源是静默的牌，还没登记。
+  // 地精之角（GREMLIN_HORN，第四十批）：对齐 Monster.cpp:317-320 的
+  //     if (bc.player.hasRelic<RelicId::GREMLIN_HORN>()) {
+  //         bc.addToBot( Actions::GainEnergy(1) );
+  //         bc.addToBot( Actions::DrawCards(1) );
+  //     }
+  // ⚠ 四处照抄：
+  //  ①⚠⚠ **它在判胜 `return` 之后**——打死场上最后一只怪时一条都不跑。所以「最后一击」
+  //     永远不给能量也不抽牌，这与孢子云 / 重生 / 停滞是同一条总纲（见函数头注释）。
+  //  ② **两条独立的 `addToBot`**，不是一条动作里做两件事。可观察面：一只怪死时若还排着
+  //     别的动作，回能量与抽牌之间插得进东西；连死两只时顺序是「能量、抽牌、能量、抽牌」。
+  //  ③ 它排在尸爆那个独立 if **之后**、活体样本**之前**，不在孢子云那条 else-if 链上
+  //     ——所以带孢子云的真菌兽死掉时**两者都触发**。
+  //  ④ `Actions::GainEnergy` 的函数体就是 `player.energy += amount`（Actions.cpp:155-159 →
+  //     Player::gainEnergy，Player.cpp:105-107），没有任何上限或钩子。
+  if (hasRelic(bc, "gremlin_horn")) {
+    addToBot(bc, (c) => {
+      c.player.energy += 1;
+    });
+    addToBot(bc, (c) => {
+      drawCards(c, 1);
+    });
+  }
+  // ⚠⚠ **活体样本（THE_SPECIMEN）故意不登记，理由不是「不在轮换里」。** 参考给它排的是
+  //   `addToBot(Actions::SetState(InputState::SELECT_ENEMY_THE_SPECIMEN_APPLY_POISON))`
+  //   （Monster.cpp:322-324），而那个 InputState 在**整个参考项目里只出现两次**：这一处写入，
+  //   与 `InputState.h:48` 的枚举声明。没有任何 `isValidAction` / `Action::execute` /
+  //   枚举器能应答它，而 `executeActions` 的主循环第一句就是
+  //   `if (inputState != InputState::EXECUTING_ACTIONS) break;`（BattleContext.cpp:756-758）
+  //   ——于是第一只怪一死，整场战斗**永久卡住**。
+  //   它属于「参考压根没实现完」那一族（与卡牌那边的 `SEEK` 同类），**没有预言机**：
+  //   给某个 variant 发这颗遗物只会让那一批 trace 在第一次怪物死亡处截断。
+  //   ✅ 觉醒者的假死（`Monster::die` 的**第一个**分支）第三十七批已补，见函数开头那一格。
 }
 
 /**
@@ -8044,6 +8192,34 @@ const RELIC_IMMEDIATE: Record<string, (bc: BattleContext) => void> = {
   lantern: (bc) => {
     bc.player.energy += 1;
   },
+  // 贤者之石（第四十批）：对齐 `BattleContext::initRelics` 的那一格
+  // （BattleContext.cpp:198-204）：
+  //     case R::PHILOSOPHERS_STONE:
+  //         for (int i = 0; i < monsters.monsterCount; ++i) {
+  //             auto &m = monsters.arr[i];
+  //             m.buff<MS::STRENGTH>(1);
+  //         }
+  //         p.energyPerTurn++;
+  //         break;
+  // ⚠ 四处照抄：
+  //  ①⚠⚠ **循环没有任何过滤**——不是 `isTargetable()`、不是 `isAlive()`，而是裸的
+  //     `i < monsterCount`。所以**预留但从没构造过的空格也会 +1 力量**：地精首领的 0 号位、
+  //     青铜自动机的 0/2、收藏家的 0/1、蜥蜴法师的 0/3。参考那些格子里躺着默认构造的
+  //     `Monster`，`buff` 照样写它的 strength 字段，而 harness 的快照按 `monsterCount`
+  //     逐格 dump（`"id":"INVALID = 0"` 那一格会带上 `"STRENGTH":1`）。
+  //     ⚠ 隔壁那一格是反例：`R::BRIMSTONE` 的同型循环写的是 `if (m.isTargetable())`
+  //     （BattleContext.cpp:126-133）。**两个都在同一个 switch 里，逐条看清用的是哪个。**
+  //  ② **时点在怪物建好之后**：`BattleContext::init` 的顺序是 `monsters.init` →
+  //     `cards.init` → `initRelics`（BattleContext.cpp:56/69/71），所以开局那一帧就带着力量。
+  //  ③ 是**同步** buff（这一格里一个 addToBot 都没有），属于 initRelics 的**第一遍**。
+  //  ④ `energyPerTurn++` 而不是 `energy++`：`init` 末尾那句 `player.energy += energyPerTurn`
+  //     排在 initRelics 之后，所以第一回合也吃得到；灯笼那条才是「只加这一回合」。
+  philosophers_stone: (bc) => {
+    for (const m of bc.monsters) {
+      addPower(m.powers, "strength", 1);
+    }
+    bc.player.energyPerTurn += 1;
+  },
 };
 
 /** 第二遍：入队执行，落在开局抽牌之后。 */
@@ -8059,6 +8235,29 @@ const RELIC_AT_BATTLE_START: Record<string, (bc: BattleContext) => void> = {
     }),
   bag_of_preparation: (bc) => addToBot(bc, (c) => drawCards(c, 2)),
 };
+
+/**
+ * 战斗内有行为、但**不经过 `initRelics`** 的遗物（第四十批）。
+ *
+ * 参考的遗物钩子并不集中在一处：`initRelics` 只收「开局改属性 / 排一条开局动作」的那些，
+ * 其余散在各自的时点上。这张表就是那些时点的索引：
+ *
+ * | 遗物                             | 钩子位置                                                        |
+ * | -------------------------------- | --------------------------------------------------------------- |
+ * | 地精之角 `gremlin_horn`          | `Monster::die` 末尾（Monster.cpp:317-320），回 1 能量 + 抽 1 张 |
+ * | 手钻 `hand_drill`                | `Monster::attacked` :433 与 `Monster::damage` :488，破盾上易伤  |
+ * | 御守 `omamori`                   | `WRITHING_MASS_IMPLANT`（:1541），拦住暗石护符那一支            |
+ * | 暗石护符 `darkstone_periapt`     | 同上（:1543），`increaseMaxHp(6)`                                |
+ *
+ * ⚠ 贤者之石**不在**这张表里：它两头都有（`initRelics` 那一格 + 七处召唤/分裂/复活），
+ * 所以走 `RELIC_IMMEDIATE` 就已经被认出来了。
+ */
+const RELIC_OTHER_HOOKS: ReadonlySet<string> = new Set([
+  "gremlin_horn",
+  "hand_drill",
+  "omamori",
+  "darkstone_periapt",
+]);
 
 function initRelics(bc: BattleContext): void {
   for (const id of bc.relics) {
@@ -10735,9 +10934,14 @@ function monsterDamage(bc: BattleContext, idx: number, rawDamage: number): void 
   if (hasPower(m.powers, "intangible") && damage > 0) {
     damage = 1;
   }
+  const hadBlock = m.block > 0; // ★ 同 `monsterAttacked`，手钻的门读进入这一击时的格挡
   const tempDamage = damage;
   damage -= m.block;
   m.block = Math.max(0, m.block - tempDamage);
+  // 手钻（Monster.cpp:488-490）：与 `Monster::attacked` 里那一份**逐字相同**，
+  // 所以非攻击伤害（燃烧 / 荆棘 / 火焰药水 / 爆炸药水 / 自爆）打光格挡也上易伤。
+  // ⚠ 它排在下面这道 `damage <= 0 → return` 的门**之前**，照抄。
+  handDrillOnBlockBroken(bc, m, hadBlock);
   if (damage <= 0) {
     return;
   }
@@ -12000,14 +12204,16 @@ function takeTurn(bc: BattleContext, m: CombatMonster): string | null {
       //     ——它读的正是刚被置回 false 的 `halfDead`。
       // ⚠ 参考在这条 case 上自注 `// todo does it heep its buffs and debuffs?`：那是作者的
       //   **疑问**、不是结论。照抄它实际做的（`die` 已经清空过，这里只补 REGROW）。
-      // TODO(后续PR): 贤者之石（PHILOSOPHERS_STONE）那句 `buff<MS::STRENGTH>(1)`。
-      //   harness 的遗物轮换里没有它（trace_dump.cpp:257-265 那八个），写了也没有预言机
-      //   走到——与 `spawnSplitMonster` 里那条同族，一起等「遗物轮换扩容」那一批。
+      // ⑥ 贤者之石（MonsterSpecific.cpp:1494-1496）：排在 `buff<MS::REGROW>()` **之后**、
+      //    收尾那次 rollMove 之前。⚠ 它是七处里唯一一处宿主**不是新造的怪**——复活的暗影客
+      //    刚被 `resetAllStatusEffects()` 清过 bit，所以这次 +1 是从 0 起算（而不是叠加）。
+      //    见 `philosophersStoneBuff`。
       m.hp = Math.trunc(m.maxHp / 2);
       m.halfDead = false;
       m.alive = true;
       bc.monstersAlive += 1;
       addPower(m.powers, "regrow", 1);
+      philosophersStoneBuff(bc, m);
     } else if (eff.kind === "awakened_rebirth") {
       // 觉醒者的复活（第三十七批）。对齐 `MMID::AWAKENED_ONE_REBIRTH` 那条 case 的**前七句**
       // （MonsterSpecific.cpp:1712-1718；末尾的 `setMove` + `noOpRollMove` 是收尾，
@@ -12067,14 +12273,34 @@ function takeTurn(bc: BattleContext, m: CombatMonster): string | null {
       //  ① **同步**（那一句不在任何 addToBot 里），所以紧随其后的同步 `rollMove` 读得到它
       //     ——这正是「植入一场仗只出一次」的实现（出招规则的 `haveUsedImplant`）。
       //  ② 覆盖而不是自增：参考写的是 `= true`，再植入一次也还是 1。
-      //  ③ ⚠ 那条 case 里紧跟着的是两个遗物的分支：
-      //         if (!hasRelic<OMAMORI>()) { if (hasRelic<DARKSTONE_PERIAPT>()) increaseMaxHp(6); }
-      //     TODO(后续PR): 御守（OMAMORI）与暗石护符（DARKSTONE_PERIAPT）都**不在** harness
-      //     的八个遗物轮换里，这一支结构性不可达；现在写了也没有 trace 走得到，
-      //     与贤者之石那几条同族。等「遗物轮换扩容」那一批。
-      //  ⚠ 参考**不建模那张寄生虫诅咒**（真实游戏往牌组塞一张，属于 run 层），
-      //    所以这一招在战斗内除了这个标志位之外**什么都不做**。
+      //  ③ ⚠ 那条 case 里紧跟着的是两个遗物的分支，第四十批登记成了下面的 `obtain_curse`。
       m.miscInfo = eff.amount;
+    } else if (eff.kind === "obtain_curse") {
+      // 往玩家牌组塞一张诅咒（蠕动血块的植入，MonsterSpecific.cpp:1541-1545，第四十批）。
+      // ⚠ 参考**不建模那张寄生虫诅咒本身**（塞进 master deck 属于 run 层），战斗内只剩
+      //   两个遗物的反应：
+      //       if (!bc.player.hasRelic<R::OMAMORI>()) {
+      //           if (bc.player.hasRelic<R::DARKSTONE_PERIAPT>()) { bc.player.increaseMaxHp(6); }
+      //       }
+      // ⚠ 五处照抄：
+      //  ① 形状是**嵌套的两个 if**，照抄（御守在外、暗石护符在内）。⚠ 御守这一层在
+      //     `Deck::obtain` 那边还会**递减充能**（Deck.cpp:157-160），这里**只读不减**
+      //     ——同一个遗物两处两种写法，别顺手补上递减。
+      //  ②⚠⚠ **御守在战斗内的「有没有」取决于它的 `data`**：`initRelics` 那一格写的是
+      //     `p.setHasRelic<R::OMAMORI>(r.data)`（BattleContext.cpp:185-186），
+      //     所以 `data = 0` 的御守在战斗内**等于没有**。harness 因此给它发 `data = 2`
+      //     （真实游戏拿到时的充能数）。⚠ 全参考只有御守与蜥蜴尾是这个形状。
+      //  ③ `Player::increaseMaxHp(6)` = `maxHp += 6; heal(6);`（Player.cpp:151-154）——
+      //     **上限与当前生命都涨**，不是只涨上限。两者都进快照。
+      //  ④ 是**同步**（那两句都不在 addToBot 里），排在 `miscInfo = true` 之后、
+      //     收尾那次同步 `rollMove` 之前。
+      //  ⑤ 两个遗物都没有时它是**彻底的空操作**——此前 116 个文件里的
+      //     `writhing_mass.jsonl` 正是这一侧的背书。
+      if (!hasRelic(bc, "omamori")) {
+        if (hasRelic(bc, "darkstone_periapt")) {
+          increasePlayerMaxHp(bc, 6);
+        }
+      }
     } else if (eff.kind === "split") {
       // 分裂：**同步**执行，不入队——参考的那条 case 就是一句裸的
       // `largeSlimeSplit(bc, ...)`（MonsterSpecific.cpp:365 / :1221），
@@ -13301,9 +13527,19 @@ export function isPotionSupported(potionId: string): boolean {
   return POTION_RULES[potionId] !== undefined;
 }
 
-/** 战斗内行为已转写的遗物（两遍 initRelics 的并集）。 */
+/**
+ * 战斗内行为已转写的遗物 = 两遍 `initRelics` 的并集 **∪ `RELIC_OTHER_HOOKS`**。
+ *
+ * ⚠ 第三项是第四十批加的：那一批的四个遗物（地精之角 / 手钻 / 御守 / 暗石护符）在
+ * `initRelics` 里**一个字都没有**，它们的钩子分别挂在 `Monster::die`、两条伤害路径、
+ * 以及蠕动血块的植入上。只看那两张表会把它们报成「没登记」。
+ */
 export function isRelicSupported(relicId: string): boolean {
-  return RELIC_IMMEDIATE[relicId] !== undefined || RELIC_AT_BATTLE_START[relicId] !== undefined;
+  return (
+    RELIC_IMMEDIATE[relicId] !== undefined ||
+    RELIC_AT_BATTLE_START[relicId] !== undefined ||
+    RELIC_OTHER_HOOKS.has(relicId)
+  );
 }
 
 // ============================================================================
