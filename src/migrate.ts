@@ -84,6 +84,7 @@ export function migrateLoadedState(raw: unknown): GameState {
     migrateCombatBatch11(live, state);
     migrateMonsterMiscInfo(live);
     migratePlayerLastAttack(live);
+    migratePlayerTurnCounters(live);
   }
 
   return state as unknown as GameState;
@@ -100,6 +101,27 @@ function migratePlayerLastAttack(combat: Record<string, unknown>): void {
   const player = asRecord(combat["player"]);
   if (player) {
     backfill(player, "lastAttackUnblockedDamage", 0);
+  }
+}
+
+/**
+ * 玩家的 `attacksPlayedThisTurn` / `skillsPlayedThisTurn`（第四十一批，对齐
+ * `Player::attacksPlayedThisTurn` / `skillsPlayedThisTurn`，Player.h:80-81）。
+ *
+ * 回填 0 是**无损**的，理由与 `lastAttackUnblockedDamage` 那条同型：这两个计数器的读者
+ * 只有苦无 / 装饰扇 / 手里剑 / 开信刀四颗遗物，而它们的战斗内行为**本批才转写**——
+ * 在此之前这四颗遗物在战斗内是纯粹的摆设（`relics.ts` 的 `hooks` 是空的，
+ * `initRelics` 三张表里也没有它们），没有任何东西读过这两个字段。
+ * ⚠ 老档确实可能停在「本回合已打过两张攻击牌」的时点上，回填 0 会让那一局的计数从头算起；
+ * 但那个「正确的续算值」从来就不存在——旧引擎压根没有这个字段。
+ * ⚠ 顺带记一笔：`isRelicSupported` 目前**没有任何调用者**（`stsCombatCoverage` 只查编队 /
+ * 牌 / 药水，不查遗物）。这是接线侧的一处缺口，不属于本批范围，已记进 TODOS。
+ */
+function migratePlayerTurnCounters(combat: Record<string, unknown>): void {
+  const player = asRecord(combat["player"]);
+  if (player) {
+    backfill(player, "attacksPlayedThisTurn", 0);
+    backfill(player, "skillsPlayedThisTurn", 0);
   }
 }
 

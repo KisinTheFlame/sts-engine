@@ -321,7 +321,24 @@ ENC_V0_ASC19="cultist@asc19 jaw_worm@asc19 jaw_worm_horde@asc19 two_louse@asc19 
 # ⚠ 这也是「牌组相同 → encounters 必须不相交」那条规矩的第二个例外（第一个是爬升度轴）：
 #   variant 指纹里第四十批加了 `relicSet` 这一维，所以两个 variant 可以共用牌组**并且**
 #   共用编队——它们的行落进 `@relic2` / `@relic3` 两份不同的文件，撞不上。
-ENC_V0_RELIC="large_slime@relic1 slime_boss@relic1 spheric_guardian@relic1 gremlin_leader@relic1 automaton@relic1 collector@relic1 three_darklings@relic1 reptomancer@relic1 writhing_mass@relic2 writhing_mass@relic3"
+# 第四十一批：遗物战线第二批（`@relic4`，走**新追加的 variant**，排在 variant 43 之后；
+#   variant 40~42 的 encounters 一个字没动，那 10 个文件逐字节不变）。
+#
+#   @relic4 = 硫磺 + 苦无 + 装饰扇 + 手里剑 + 开信刀，四个编队
+#             （gremlin_leader / automaton / collector / reptomancer）
+#
+# ⚠⚠ **编队选的是「有预留空位」那四个，而且这是硫磺唯一的可观察面**：硫磺与第四十批的
+#   贤者之石是**同一个 switch 里两种写法**——硫磺的循环写 `if (m.isTargetable())`，
+#   贤者之石那格是裸的 `i < monsterCount`。两者只在「预留但从没构造过的格子」上分岔，
+#   而全参考项目只有这四个编队有这样的格子。两条并排量正好互为背书。
+# ⚠ 硫磺还有**第二个读点**：`Player::applyStartOfTurnRelics`（Player.cpp:497-505）每个
+#   玩家回合重复一遍同样的函数体。`initRelics` 只覆盖第 1 回合。
+# ⚠⚠ **牌组不是 `BATCH_1 + SPOT_WEAKNESS`，而且是量出来的**（第四次「先量再定」）：
+#   开信刀要**一回合内打三张技能牌**，那副 22 张牌组下 480 条 trace 只触发 **59** 次
+#   （56 条走到过）；加 4×灵巧 + 4×直觉 + 4×优雅（12 张 0 费、都不消耗）之后是 **1966** 次
+#   （479 条走到过），代价是攻击那道门从 969 掉到 722。对比表见 harness 注释与 TODOS。
+# ⚠ 牌组变了 ⇒ variant 指纹变了；`relicSet` 又是 4，撞号规则双重满足。
+ENC_V0_RELIC="large_slime@relic1 slime_boss@relic1 spheric_guardian@relic1 gremlin_leader@relic1 automaton@relic1 collector@relic1 three_darklings@relic1 reptomancer@relic1 writhing_mass@relic2 writhing_mass@relic3 gremlin_leader@relic4 automaton@relic4 collector@relic4 reptomancer@relic4"
 ENC_V0="$ENC_V0_ASC0 $ENC_V0_ASC19 $ENC_V0_TGT1 $ENC_V0_ACT3 $ENC_V0_RELIC"
 
 policy_of() {
