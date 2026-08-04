@@ -1122,6 +1122,23 @@ const POWER: Record<string, string> = {
   //   真正的数值住在 `Player::cardDrawPerTurn`（快照里看不到，只能从「下回合抽了几张」
   //   间接看出来）。⚠ 它带 skipFirst：施加的那个回合末不摘，下一个回合开始抽完牌才摘。
   DRAW_REDUCTION: "draw_reduction",
+  // —— 第四十三批（遗物战线第四批）——
+  // 缓冲：**玩家身上**，石化螺旋开局 1 层。挡掉一次会让玩家失去生命的伤害（连 1 点都不留），
+  // 每挡一次 -1 层、归零就整条消失。两个读点（`Player::damage` / `Player::attacked`）的
+  // 位置不同，见 sts-combat 的两段注释。
+  BUFFER: "buffer",
+  // 聚焦：**玩家身上**，数据磁盘开局 1 层。⚠⚠ **参考在战斗内一次都不读它**——它是 `Player`
+  // 的一个独立 int 字段，唯一的读者（偏移）没有产出者。它的全部可观察面就是这一条快照。
+  FOCUS: "focus",
+  // 敏捷流失：**玩家身上**，二元性每打出一张攻击牌 +1 层。回合末 `debuff<DEXTERITY>(-层数)`
+  // 并整条摘掉——与灵活的 LOSE_STRENGTH 逐字同形，枚举序排在它**之前**（13 vs 14）。
+  LOSE_DEXTERITY: "lose_dexterity",
+  // 下回合格挡：**玩家身上**，自成型黏土每次掉血 +3 层。下个玩家回合开始
+  // （`applyStartOfTurnPowers`，清格挡**之后**）一次性变成等量格挡并整条摘掉。
+  NEXT_TURN_BLOCK: "next_turn_block",
+  // ⚠ PLATED_ARMOR / STRENGTH / LOSE_STRENGTH 早就在表里，本批是 PLATED_ARMOR 第一次出现在
+  //   **玩家**身上（线与针开局 4 层）。同一个映射直接复用，但两侧是两套代码：
+  //   玩家侧的递减在 `Player::attacked` 里、加格挡在 `callEndOfTurnActions` 里。
 };
 
 const mapPotion = (p: string): string | null => (p in POTION ? POTION[p]! : p);

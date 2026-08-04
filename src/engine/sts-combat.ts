@@ -6041,7 +6041,7 @@ function drawCards(bc: BattleContext, count: number): void {
   if (bc.drawPile.length < amountToDraw) {
     const temp = amountToDraw - bc.drawPile.length;
     addToTop(bc, (c) => drawCards(c, temp), true, { kind: "draw_cards", count: temp });
-    onShuffle();
+    onShuffle(bc);
     addToTop(bc, (c) => emptyDeckShuffle(c));
     if (bc.drawPile.length > 0) {
       drawCards(bc, bc.drawPile.length); // 同步递归（参考自注 `// the game adds this to top`）
@@ -6071,12 +6071,25 @@ function moveDiscardPileIntoDrawPile(bc: BattleContext): void {
 }
 
 /**
- * 洗牌触发点（对齐 BattleContext::onShuffle）。
- * TODO(遗物PR): 算盘（+6 格挡）、日晷（每三次洗牌 +2 能量）、什锦。
- * 目前无一登记，故是空实现——但保留这个调用点，免得将来漏掉时点。
+ * 洗牌触发点（对齐 `BattleContext::onShuffle`，BattleContext.cpp:2826-2844）。
+ *
+ * 参考的函数体是三条并列的 `if`，顺序由源码定死：算盘 → 什锦 → 日晷。
+ *
+ * ⚠ 算盘（THE_ABACUS，第四十三批）：`addToBot(Actions::GainBlock(6))`。
+ *  ① 是 `addToBot`（入队），而两个调用点都是**同步**调它的——所以那 6 点格挡排在
+ *     调用方随后入队的洗牌 / 抽牌动作**之前**（`drawCards` 那条路上，`onShuffle()` 在
+ *     两次 `addToTop` **之间**，于是最终执行序是「洗牌 → 抽牌 → 加格挡」）。
+ *  ② `Actions::GainBlock` 的 `clearOnCombatVictory` 是 false。
+ *  ③ 触发点是「洗牌」而不是「抽牌堆见底」：深呼吸那条路也算一次。
+ *
+ * ⚠ 什锦（MELANGE）**在参考里整条被注释掉了**（`// addToBot(Actions::SetState(InputState::SCRY, 3))`，
+ *   BattleContext.cpp:2831-2833），所以它没有预言机、不登记——与 SEEK 那族卡同理。
+ * TODO(遗物PR): 日晷（SUNDIAL，`sundialCounter` 是跨战斗计数器，读 `r.data`）。
  */
-function onShuffle(): void {
-  // 无 RNG 消耗；日晷是跨洗牌计数器，需要玩家级状态，随遗物迁移一起做。
+function onShuffle(bc: BattleContext): void {
+  if (hasRelic(bc, "the_abacus")) {
+    addToBot(bc, (c) => gainBlock(c, 6), false);
+  }
 }
 
 /** 手牌上限（对齐 CardManager::MAX_HAND_SIZE）。 */
@@ -6169,10 +6182,24 @@ function notifyRemoveFromCombat(bc: BattleContext, card: CombatCard): void {
  * ⚠ 参考另有一份 `CardInstance::triggerOnExhaust`（CardInstance.cpp:207）也处理哨兵、
  * 且是 addToTop——但那个函数**全项目无人调用**，是死代码，不要照它写。
  *
- * TODO(遗物PR): 卡戎的骨灰（addToTop DamageAllEnemy 3）、枯枝（随机牌入手，消耗 cardRandomRng）。
+ * ⚠ 卡戎的骨灰（CHARONS_ASHES，第四十三批）是这个函数的**第一句**
+ *   （BattleContext.cpp:2850-2852）：`addToTop(Actions::DamageAllEnemy(3));`
+ *  ①⚠⚠ 是 **`addToTop`**，而紧随其后的黑暗拥抱 / 无痛之心是 `addToBot`——所以骨灰的
+ *     3 点伤害排在它们**之前**结算，且插在调用方还没出队的动作前面。
+ *  ② 3 点是**非攻击**全体伤害（`DamageAllEnemy` 走 `Monster::damage`，不吃力量与易伤，
+ *     但照样被怪物格挡吸收，也照样能触发手钻那道破盾门）。
+ *  ③ `clearOnCombatVictory` 取默认的 true。
+ *  ④ 触发点是「任何一张牌进消耗堆」——包括回合末以太牌（眩晕 / 幽灵护甲）的消耗，
+ *     不只是「打出带消耗的牌」。
+ *
+ * TODO(遗物PR): 枯枝（DEAD_BRANCH，`getTrulyRandomCardInCombat` 从**整个牌池**造一张牌
+ *   进手牌——随机牌可能是未登记的牌，trace 会不可重放，故本批不登记）。
  * TODO(后续PR): 死灵诅咒（消耗时自己再回手，排在无痛之心与哨兵之间）。
  */
 function triggerAndMoveToExhaustPile(bc: BattleContext, card: CombatCard): void {
+  if (hasRelic(bc, "charons_ashes")) {
+    addToTop(bc, (c) => damageAllEnemiesNonAttack(c, 3));
+  }
   const darkEmbrace = getPower(bc.player.powers, "dark_embrace");
   if (darkEmbrace > 0) {
     addToBot(bc, (c) => drawCards(c, darkEmbrace));
@@ -7015,6 +7042,27 @@ export function executeActions(bc: BattleContext): void {
       onTurnEnding(bc);
       continue;
     }
+    // ⑥b 不休陀螺（UNCEASING_TOP，第四十三批）：对齐 BattleContext.cpp:825-836，
+    //     位置就在⑥那个 `continue` 与⑦之间：
+    //         if (player.hasRelic<R::UNCEASING_TOP>()) {
+    //             // turn cannot have ended here
+    //             if (cards.cardsInHand == 0) {
+    //                 drawCards(1);
+    //             }
+    //         }
+    // ⚠ 四处照抄：
+    //  ①⚠⚠ **位置就是它的全部语义**：这里是「队列排空、回合没结束、马上要把控制权交回玩家」
+    //     的那一格。放到别处（比如打完每张牌之后）会在动作还没抽干时就补牌。
+    //  ②⚠ 抽牌是**同步**的 `drawCards(1)`，不是 `addToBot(Actions::DrawCards(1))`
+    //     ——参考在这里直接调 `BattleContext::drawCards`，紧接着就 `break`（**不再回到
+    //     循环顶部**）。所以这次抽牌顺带入队的效果（进化 / 烈焰吐息）会留在队列里，
+    //     等玩家的下一个动作触发 `executeActions` 时才结算。
+    //  ③ 门是 `cardsInHand == 0`，与「这一回合抽过几张」无关：一回合内可以触发很多次。
+    //  ④ 参考在这里有三条 `assert`（回合没结束、两个队列都空），是这一格位置的自证；
+    //     我们的主循环走到这里时同样满足，不复制断言。
+    if (hasRelic(bc, "unceasing_top") && bc.hand.length === 0) {
+      drawCards(bc, 1);
+    }
     // ⑦ 无事可做 → 把控制权还给玩家。
     bc.inputState = "player_normal";
     break;
@@ -7365,8 +7413,24 @@ export function calculateCardDamage(
   bc: BattleContext,
   targetIdx: number,
   baseDamage: number,
+  card: CombatCard,
 ): number {
   let damage = Math.fround(baseDamage);
+
+  // —— 玩家遗物 AtDamageModify（对齐 BattleContext.cpp:2706-2715）——
+  //
+  // ⚠⚠ **这一段排在力量之前**，也就是所有加法/乘法的最前面。位置就是它全部的可观察面：
+  //   打击假人若挪到虚弱之后，那 3 点就不会被虚弱的 ×0.75 打折。
+  // ⚠ 打击假人（STRIKE_DUMMY，第四十三批）：`if (STRIKE_DUMMY && card.isStrikeCard()) damage += 3;`
+  //   判据是**牌名**（`isCardStrikeCard`，见 `isStrikeCard`），与颜色、与升级与否都无关；
+  //   而且它按**每一次结算**加 3——双重打击那种「一张牌打两下」的会各加一次。
+  // ⚠ 这是 `calculateCardDamage` 第一次需要知道「是哪张牌」，所以本批给它加了 `card` 形参
+  //   （参考的签名一直是 `calculateCardDamage(const CardInstance &card, int targetIdx, int base)`，
+  //   我们此前少的就是第一个实参）。
+  if (hasRelic(bc, "strike_dummy") && isStrikeCard(card.defId)) {
+    damage = Math.fround(damage + 3);
+  }
+  // TODO(遗物PR): 腕刃（WRIST_BLADE，`card.costForTurn == 0` 时 +4，排在打击假人之后）。
 
   // 玩家 Power AtDamageGive
   damage = Math.fround(damage + getPower(bc.player.powers, "strength"));
@@ -7396,8 +7460,17 @@ export function calculateCardDamage(
     const slowMult = Math.fround(1 + Math.fround(getPower(target.powers, "slow") * SLOW_STEP));
     damage = Math.fround(damage * slowMult);
   }
+  // 易伤（对齐 BattleContext.cpp:2752-2758）。⚠ 纸蛙（PAPER_PHROG，第四十三批）就在这里：
+  //     if (monster.hasStatus<MS::VULNERABLE>()) {
+  //         if (player.hasRelic<R::PAPER_PHROG>()) { damage *= 1.75f; }
+  //         else                                   { damage *= 1.5f;  }
+  //     }
+  // ⚠ 三处照抄：① 是**同一道门里的二选一**，不是「先 ×1.5 再补一份」——写成两次乘法
+  //   （1.5 × 1.1667）在 float 域上会分岔；② 倍率写死 `1.75f`，与真实游戏一致；
+  //   ③ 它只管**玩家的牌打怪**这条路，怪物打玩家那边的易伤倍率是另一处
+  //   （`Monster::calculateDamageToPlayer` 里的奇特蘑菇，见 `calculateDamageToPlayer`）。
   if (target !== undefined && getPower(target.powers, "vulnerable") > 0) {
-    damage = Math.fround(damage * 1.5);
+    damage = Math.fround(damage * (hasRelic(bc, "paper_phrog") ? 1.75 : 1.5));
   }
 
   // —— 怪物 Power AtDamageReceiveFinal ——
@@ -7542,7 +7615,24 @@ function handDrillOnBlockBroken(bc: BattleContext, m: CombatMonster, hadBlock: b
   }
 }
 
-function monsterDamageUnblocked(bc: BattleContext, m: CombatMonster, damage: number): void {
+function monsterDamageUnblocked(bc: BattleContext, m: CombatMonster, rawDamage: number): void {
+  // 靴子（THE_BOOT，第四十三批）：`attackedUnblockedHelper` 的**第一句**（Monster.cpp:340-342）：
+  //     if (bc.player.hasRelic<RelicId::THE_BOOT>() && damage > 0 && damage < 5) {
+  //         damage = 5;
+  //     }
+  // ⚠ 五处照抄：
+  //  ①⚠⚠ **位置在整条 else-if 链之前**，所以被抬高的 5 点会一路传下去——变换那一格的
+  //     `addDebuff<STRENGTH>(-damage)` 与末尾的扣血读到的都是 5。
+  //  ②⚠ 判的是**过完怪物格挡之后**剩下的量（调用方已经减过）：格挡把 12 点削到 3 点时
+  //     靴子照样把它抬成 5。
+  //  ③ 上界是 `< 5`（**不含** 5），与鸟居的 `<= 5` 不对称——两条并排看很容易抄串。
+  //  ④ 它**只挂在 `attackedUnblockedHelper` 这条路上**（`damageUnblockedHelper` 里没有），
+  //     所以非攻击伤害（荆棘 / 燃烧 / 骨灰 / 火焰药水）**不吃这条**。
+  //  ⑤ 是「置为 5」而不是「加到 5」。
+  let damage = rawDamage;
+  if (hasRelic(bc, "the_boot") && damage > 0 && damage < 5) {
+    damage = 5;
+  }
   // onAttacked 链（对齐 attackedUnblockedHelper 的 if/**else-if**顺序，Monster.cpp:348-396）。
   // 参考的顺序是：无敌 → **镀甲** → 蜷缩 → 飞行 → 易塑/反应 → **荆棘** → **沉睡** → 变换。
   // ⚠ 第五格是**一格装两条 Power**（`hasStatus<MALLEABLE>() || hasStatus<REACTIVE>()`），
@@ -8170,6 +8260,23 @@ function debuffEnemy(
       p.justApplied = true;
     }
   }
+  // 冠军腰带（CHAMPION_BELT，第四十三批）：对齐 `BattleContext::debuffEnemy` 的**最后一句**
+  // （BattleContext.h:294-296）：
+  //     if (s == MS::VULNERABLE && player.hasRelic<RelicId::CHAMPION_BELT>()) {
+  //         addToBot(Actions::DebuffEnemy<MS::WEAK>(idx, 1, false) );
+  //     }
+  // ⚠ 五处照抄：
+  //  ①⚠⚠ **它在神器那道门的下方**——被神器吃掉的那次易伤**不会**带出虚弱（提前 return 了）。
+  //  ②⚠ 它**不管来源**：怪物给玩家上易伤走的是 `Player::debuff`（另一个函数），
+  //     但**怪物给怪物**、以及玩家的牌/遗物给怪物的易伤都会走到这里。
+  //  ③ 虚弱是 `addToBot`（入队）而易伤本身是同步落下的——所以同一批动作里排在中间的
+  //     效果先跑，虚弱最后才上。
+  //  ④ 层数写死 **1**，与触发它的那次易伤的层数无关。
+  //  ⑤ `isSourceMonster = false`，所以这层虚弱**本回合末就开始递减**。
+  //  ⚠ 递归安全：这条排的是虚弱，虚弱不会再触发它。
+  if (power === "vulnerable" && hasRelic(bc, "champion_belt")) {
+    addToBot(bc, (c) => debuffEnemy(c, idx, "weak", 1, false));
+  }
 }
 
 /**
@@ -8225,7 +8332,7 @@ function decrementDebuff(m: CombatMonster, id: string): void {
 // 卡牌行为（逐卡转写自参考 useAttackCard / useSkillCard 的 switch 分支）
 //
 // 关键语义：伤害/格挡在**入队时**就用当时的状态算好并捕获，不在执行时再算
-// （对齐 `addToBot(Actions::AttackEnemy(t, calculateCardDamage(...)))`）。
+// （对齐 `addToBot(Actions::AttackEnemy(t, calculateCardDamage(..., card)))`）。
 // 故痛击的易伤只影响其后打出的牌，不影响痛击自身那一击。
 // ============================================================================
 
@@ -8326,6 +8433,70 @@ const RELIC_IMMEDIATE: Record<string, (bc: BattleContext) => void> = {
   ink_bottle: (bc) => {
     bc.player.inkBottleCounter = 0;
   },
+  // —— 第四十三批：`initRelics` 第一遍里的「一两行开局效果」族 ——
+  //
+  // ⚠⚠ 下面五颗**函数体逐字相同**（`p.energyPerTurn++`），在参考里是五个独立的 case
+  //   （BattleContext.cpp:244 / :248 / :256 / :276 / :206）。合并成一条「五选一」的写法
+  //   在数值上同解，但会让「漏抄其中一颗」变得不可观察——保持五条各自独立。
+  // ⚠ `energyPerTurn++` 而不是 `energy++`：`BattleContext::init` 末尾那句
+  //   `player.energy += player.energyPerTurn` 排在 `initRelics` 之后，所以第一回合也吃得到，
+  //   而且此后**每回合**都多一点（灯笼那条 `gainEnergy(1)` 才是「只加这一回合」）。
+  //   两者的差别在第 2 回合的快照上当场可见。
+  // ⚠ 这五颗在真实游戏里各带一条**战斗外**的代价（破损王冠少一张奖励牌、咖啡滤压壶不能休息、
+  //   诅咒钥匙开箱得诅咒、融合锤不能锻造、如尼圆顶看不到意图），参考一条都没实现——
+  //   预言机只认这一句，照抄。
+  busted_crown: (bc) => {
+    bc.player.energyPerTurn += 1;
+  },
+  coffee_dripper: (bc) => {
+    bc.player.energyPerTurn += 1;
+  },
+  cursed_key: (bc) => {
+    bc.player.energyPerTurn += 1;
+  },
+  fusion_hammer: (bc) => {
+    bc.player.energyPerTurn += 1;
+  },
+  // 如尼圆顶（RUNIC_DOME，BattleContext.cpp:206-208）。⚠ 卡面的「看不到敌人意图」在参考里
+  // **没有任何实现**（`R::RUNIC_DOME` 全项目只有这一处），而 harness 的快照是直接 dump
+  // `moveHistory[0]` 的——所以它在 trace 里就只是 +1 能量。照抄参考。
+  runic_dome: (bc) => {
+    bc.player.energyPerTurn += 1;
+  },
+  // 诱变强化剂（MUTAGENIC_STRENGTH，BattleContext.cpp:288-291）：
+  //     case R::MUTAGENIC_STRENGTH: // this appears to be applied before clockwork if it was acquired first
+  //         p.buff<PS::STRENGTH>(3);
+  //         p.debuff<PS::LOSE_STRENGTH>(3);
+  //         break;
+  // ⚠ 三处照抄：
+  //  ①⚠ **加力量走 `buff`、还债走 `debuff`**——两个方向的函数不同，而 `Player::debuff`
+  //     里有神器那道门。所以「开局带神器」时这 3 层 LOSE_STRENGTH 会被神器吃掉，
+  //     玩家白赚 3 点力量（真实游戏同此，参考那句注释说的正是这个获得顺序问题）。
+  //  ② 还债在**第一个玩家回合末**结算（`applyEndOfTurnPowers` 的 LOSE_STRENGTH=14 那一格），
+  //     不是「下一回合开始」。
+  //  ③ 快照里开局那一帧同时有 `STRENGTH: 3` 与 `LOSE_STRENGTH: 3`。
+  mutagenic_strength: (bc) => {
+    addPower(bc.player.powers, "strength", 3);
+    debuffPlayer(bc, "lose_strength", 3);
+  },
+  // 石化螺旋（FOSSILIZED_HELIX，BattleContext.cpp:272-274）：`p.buff<PS::BUFFER>(1)`。
+  // ⚠ 缓冲的两个读点在 `Player::damage`（:196-199）与 `Player::attacked`（:220-224），
+  //   见 `damagePlayerNonAttack` / `dealDamageToPlayer` 里那两段——两处的**位置不同**。
+  fossilized_helix: (bc) => addPower(bc.player.powers, "buffer", 1),
+  // 数据磁盘（DATA_DISK，BattleContext.cpp:264-266）：`p.buff<PS::FOCUS>(1)`。
+  // ⚠⚠ **聚焦在参考里战斗内一次都不被读**：它是 `Player` 的一个独立 int 字段
+  //   （与力量/敏捷/神器同族，Player.h:188/240/274），唯一的读者是偏移（BIAS）那条
+  //   `DecrementStatus<FOCUS>`（Player.cpp:577-579），而偏移全项目没有产出者。
+  //   它的全部可观察面是**快照里那一条 `FOCUS: 1`**（harness 的 `playerStatusValue`
+  //   照样输出它）——与孢子云那 2 层同族：层数不被读，但漏了当场红。
+  data_disk: (bc) => addPower(bc.player.powers, "focus", 1),
+  // 线与针（THREAD_AND_NEEDLE，BattleContext.cpp:354-356）：`p.buff<PS::PLATED_ARMOR>(4)`。
+  // ⚠⚠ 这是**玩家侧**的镀甲，与带壳寄生虫那条**怪物侧**的是两套代码，只是共用一个 Power id：
+  //   * 回合末加格挡：`callEndOfTurnActions` 里紧接金属化之后的那一句（BattleContext.cpp:2100）；
+  //   * 递减：`Player::attacked` 的 `if (damage > 0)` 分支里（Player.cpp:245-247），
+  //     **只有攻击伤害且真的破了格挡**才减——非攻击伤害（燃烧 / 荆棘 / 束缚）不减。
+  //     这与怪物侧那条「在 else-if 链上、且带 `SHELLED_PARASITE` 特例」的形状完全不同。
+  thread_and_needle: (bc) => addPower(bc.player.powers, "plated_armor", 4),
 };
 
 /** 第二遍：入队执行，落在开局抽牌之后。 */
@@ -8376,6 +8547,61 @@ const RELIC_OTHER_HOOKS: ReadonlySet<string> = new Set([
   "shuriken",
   "letter_opener",
   "orange_pellets",
+  // —— 第四十三批 ——
+  // | 遗物                       | 钩子位置                                                          |
+  // | -------------------------- | ----------------------------------------------------------------- |
+  // | 冠军腰带 `champion_belt`   | `debuffEnemy` 末尾（BattleContext.h:294），上易伤时附带 1 层虚弱   |
+  // | 姜 `ginger`                | `Player::debuff`（Player.h:367），虚弱免疫                         |
+  // | 芜菁 `turnip`              | 同上（:371），脆弱免疫                                            |
+  // | 打击假人 `strike_dummy`    | `calculateCardDamage` :2708，打击牌 +3                            |
+  // | 纸蛙 `paper_phrog`         | 同上 :2753，怪物易伤倍率 1.5 → 1.75                               |
+  // | 纸鹤 `paper_krane`         | `Monster::calculateDamageToPlayer` :573，怪物虚弱倍率 0.75 → 0.6  |
+  // | 奇特蘑菇 `odd_mushroom`    | 同上 :581，玩家易伤倍率 1.5 → 1.25                                |
+  // | 靴子 `the_boot`            | `attackedUnblockedHelper` :340，1~4 点未格挡伤害抬成 5            |
+  // | 鸟居 `torii`               | `Player::attacked` :235，1~5 点未格挡伤害压成 1                   |
+  // | 如尼方块 `runic_cube`      | `Player::hpWasLost` :307，addToTop 抽 1                           |
+  // | 自成型黏土 `self_forming_clay` | 同上 :303，`buff<NEXT_TURN_BLOCK>(3)`                         |
+  // | 魔力之花 `magic_flower`    | `Player::heal` :161，回血量 ×3/2（整数除）                        |
+  // | 血腥雕像 `bloody_idol`     | `Player::gainGold` :92，得金币后回 5 血                           |
+  // | 鸟面坛 `bird_faced_urn`    | `onUsePowerCard` :1885，回 2 血                                   |
+  // | 二元性 `duality`           | `onUseAttackCard` :1736，+1 敏捷 + 1 层敏捷流失                   |
+  // | 卡戎的骨灰 `charons_ashes` | `triggerAndMoveToExhaustPile` :2850，addToTop 全体 3 点           |
+  // | 奇异汤匙 `strange_spoon`   | `onAfterUseCard` :2016，消耗牌 50% 不消耗（★ cardRandomRng）       |
+  // | 算盘 `the_abacus`          | `onShuffle` :2827，+6 格挡                                        |
+  // | 不休陀螺 `unceasing_top`   | `executeActions` :825，手牌空时同步抽 1                           |
+  // | 斗篷夹扣 `cloak_clasp`     | `callEndOfTurnActions` :2067，+手牌数格挡                         |
+  // | 山铜 `orichalcum`          | 同上 :2081，无格挡时 addToTop +6                                  |
+  // | 石历 `stone_calendar`      | 同上 :2087，第 7 回合末全体 52 点                                 |
+  // | 卡钳 `calipers`            | `afterMonsterTurns` :2214，清格挡那条链的第三格                   |
+  // | 如尼金字塔 `runic_pyramid` | `discardAtEndOfTurn` :2519，不弃手牌                              |
+  // | 怀表 `pocketwatch`         | `applyStartOfTurnPostDrawRelics`（Player.cpp:663），上回合 ≤3 张抽 3 |
+  // | 冰淇淋 `ice_cream`         | `Player::rechargeEnergy` :726，能量累加而不是覆盖                 |
+  "champion_belt",
+  "ginger",
+  "turnip",
+  "strike_dummy",
+  "paper_phrog",
+  "paper_krane",
+  "odd_mushroom",
+  "the_boot",
+  "torii",
+  "runic_cube",
+  "self_forming_clay",
+  "magic_flower",
+  "bloody_idol",
+  "bird_faced_urn",
+  "duality",
+  "charons_ashes",
+  "strange_spoon",
+  "the_abacus",
+  "unceasing_top",
+  "cloak_clasp",
+  "orichalcum",
+  "stone_calendar",
+  "calipers",
+  "runic_pyramid",
+  "pocketwatch",
+  "ice_cream",
 ]);
 
 function initRelics(bc: BattleContext): void {
@@ -8435,6 +8661,29 @@ function applyStartOfTurnRelics(bc: BattleContext): void {
  *   已登记的两颗按这个顺序排；中间未登记的那些登记时插回各自的位置。
  */
 const RELIC_AT_TURN_START: ReadonlyArray<readonly [string, (bc: BattleContext) => void]> = [
+  // 战争艺术（ART_OF_WAR，第四十三批）：这张表的**第一句**（Player.cpp:492-496）：
+  //     if (hasRelic<R::ART_OF_WAR>()) {
+  //         if (attacksPlayedThisTurn == 0) {
+  //             bc.addToBot(Actions::GainEnergy(1));
+  //         }
+  //     }
+  // ⚠⚠ **它读的是上一个回合的张数**：`attacksPlayedThisTurn` 的清零排在
+  //   `applyStartOfTurnRelics` **之后**（BattleContext.cpp:2240-2242，参考在那里自注
+  //   `// this has to be here because some relics check this info.`）。所以卡面那句
+  //   「若上回合没有打出攻击牌」全靠这个顺序——把清零挪到前面来，这颗遗物就**每回合都触发**。
+  // ⚠ 是 `addToBot`（入队），不是同步加能量；`clearOnCombatVictory` 取 `Actions::GainEnergy`
+  //   的默认值 true。
+  // ⚠ 第 1 个玩家回合拿不到（`init` 不走 `afterMonsterTurns`），与硫磺那条同理。
+  [
+    "art_of_war",
+    (bc) => {
+      if (bc.player.attacksPlayedThisTurn === 0) {
+        addToBot(bc, (c) => {
+          c.player.energy += 1;
+        });
+      }
+    },
+  ],
   // 硫磺（BRIMSTONE）：Player.cpp:497-505，与 `initRelics` 那一格**逐字相同**——
   //     if (hasRelic<R::BRIMSTONE>()) {
   //         buff<PS::STRENGTH>(2);
@@ -8453,6 +8702,42 @@ const RELIC_AT_TURN_START: ReadonlyArray<readonly [string, (bc: BattleContext) =
         if (m.alive) {
           addPower(m.powers, "strength", 1);
         }
+      }
+    },
+  ],
+  // 船长之轮（CAPTAINS_WHEEL，第四十三批）：Player.cpp:507-511，排在硫磺**之后**、
+  // 达摩鲁之前：
+  //     if (hasRelic<R::CAPTAINS_WHEEL>()) {
+  //         if (bc.turn == 2) {
+  //             bc.addToBot( Actions::GainBlock(18) );
+  //         }
+  //     }
+  // ⚠⚠ 门是 `bc.turn == 2` 而**不是**「第 2 个玩家回合」：`BattleContext::turn` 初值 0、
+  //   在 `afterMonsterTurns` 的**开头**就已经自增过，而这个函数排在那次自增之后。
+  //   所以 `turn == 2` 命中的是玩家的**第 3 个**回合（真实游戏卡面写「第 3 回合」，一致）。
+  // ⚠ `== 2` 而不是 `>= 2`：只给一次。
+  // ⚠ `Actions::GainBlock` 的 `clearOnCombatVictory` 是 **false**（Actions.cpp:161-165）。
+  [
+    "captains_wheel",
+    (bc) => {
+      if (bc.turn === 2) {
+        addToBot(bc, (c) => gainBlock(c, 18), false);
+      }
+    },
+  ],
+  // 号角（HORN_CLEAT，第四十三批）：Player.cpp:529-533，排在快乐花**之后**、熏香炉之前：
+  //     if (hasRelic<R::HORN_CLEAT>()) {
+  //         if (bc.turn == 1) {
+  //             bc.addToBot( Actions::GainBlock(14) );
+  //         }
+  //     }
+  // ⚠ 与船长之轮**同族但差一格**：`turn == 1` = 玩家的第 2 个回合（卡面写「第 2 回合」）。
+  //   两条并排放着正好互为对照，别把常数（14 / 18）与回合数（1 / 2）抄串。
+  [
+    "horn_cleat",
+    (bc) => {
+      if (bc.turn === 1) {
+        addToBot(bc, (c) => gainBlock(c, 14), false);
       }
     },
   ],
@@ -9306,8 +9591,8 @@ type CardRule = (
 
 const CARD_RULES: Record<string, CardRule> = {
   // 打击：造成 6(升级 9) 点伤害。对齐 BattleContext.cpp:967 STRIKE_RED。
-  strike: (bc, item, up) => {
-    const dmg = calculateCardDamage(bc, item.target, up ? 9 : 6);
+  strike: (bc, item, up, card) => {
+    const dmg = calculateCardDamage(bc, item.target, up ? 9 : 6, card);
     addToBot(bc, (c) => attackEnemy(c, item.target, dmg));
   },
   // 防御：获得 5(升级 8) 点格挡。GainBlock 的 clearOnCombatVictory=false。
@@ -9316,8 +9601,8 @@ const CARD_RULES: Record<string, CardRule> = {
     addToBot(bc, (c) => gainBlock(c, blk), false);
   },
   // 痛击：造成 8(升级 10) 点伤害并施加 2(升级 3) 层易伤。对齐 BattleContext.cpp:980 BASH。
-  bash: (bc, item, up) => {
-    const dmg = calculateCardDamage(bc, item.target, up ? 10 : 8);
+  bash: (bc, item, up, card) => {
+    const dmg = calculateCardDamage(bc, item.target, up ? 10 : 8, card);
     addToBot(bc, (c) => attackEnemy(c, item.target, dmg));
     addToBot(bc, (c) => debuffEnemy(c, item.target, "vulnerable", up ? 3 : 2));
   },
@@ -9325,8 +9610,8 @@ const CARD_RULES: Record<string, CardRule> = {
   // —— 铁甲常用卡首批 ——
 
   // 愤怒：伤害 + 复制一张自身进弃牌堆。
-  anger: (bc, item, up) => {
-    const dmg = calculateCardDamage(bc, item.target, up ? 8 : 6);
+  anger: (bc, item, up, card) => {
+    const dmg = calculateCardDamage(bc, item.target, up ? 8 : 6, card);
     addToBot(bc, (c) => attackEnemy(c, item.target, dmg));
     addToBot(bc, (c) => {
       c.discardPile.push(makeCardInstance(c, "anger", up));
@@ -9334,21 +9619,21 @@ const CARD_RULES: Record<string, CardRule> = {
   },
 
   // 顺劈斩：对全体。基础值先加精力，再由 AttackAllEnemy 逐怪算伤害。
-  cleave: (bc, _item, up) =>
-    attackAllEnemies(bc, (up ? 11 : 8) + getPower(bc.player.powers, "vigor")),
+  cleave: (bc, _item, up, card) =>
+    attackAllEnemies(bc, (up ? 11 : 8) + getPower(bc.player.powers, "vigor"), card),
 
   // 十字打击：伤害 + 虚弱。
-  clothesline: (bc, item, up) => {
-    const dmg = calculateCardDamage(bc, item.target, up ? 14 : 12);
+  clothesline: (bc, item, up, card) => {
+    const dmg = calculateCardDamage(bc, item.target, up ? 14 : 12, card);
     addToBot(bc, (c) => attackEnemy(c, item.target, dmg));
     addToBot(bc, (c) => debuffEnemy(c, item.target, "weak", up ? 3 : 2));
   },
 
   // 重刃：⚠ 基础值已含 2×力量，再过一次 calculateCardDamage 又加一次力量——
   // 力量实际算了**三**次。这是参考的算法，不是笔误，照抄。
-  heavy_blade: (bc, item, up) => {
+  heavy_blade: (bc, item, up, card) => {
     const base = 14 + (up ? 4 : 2) * getPower(bc.player.powers, "strength");
-    const dmg = calculateCardDamage(bc, item.target, base);
+    const dmg = calculateCardDamage(bc, item.target, base, card);
     addToBot(bc, (c) => attackEnemy(c, item.target, dmg));
   },
 
@@ -9358,16 +9643,16 @@ const CARD_RULES: Record<string, CardRule> = {
   //（敏捷 2 时给 9 点而非 7 点）。全项目 15 处同类写法都是单层、只有这里嵌套，
   // 且无测试覆盖——已确认是笔误并在参考侧修复（sts_lightspeed 49c5390），
   // 样例数据随之重新生成。此处按正确的单层实现。
-  iron_wave: (bc, item, up) => {
+  iron_wave: (bc, item, up, card) => {
     const blk = calculateCardBlock(bc, up ? 7 : 5);
-    const dmg = calculateCardDamage(bc, item.target, up ? 7 : 5);
+    const dmg = calculateCardDamage(bc, item.target, up ? 7 : 5, card);
     addToBot(bc, (c) => gainBlock(c, blk), false);
     addToBot(bc, (c) => attackEnemy(c, item.target, dmg));
   },
 
   // 柄击：伤害 + 抽牌。
-  pommel_strike: (bc, item, up) => {
-    const dmg = calculateCardDamage(bc, item.target, up ? 10 : 9);
+  pommel_strike: (bc, item, up, card) => {
+    const dmg = calculateCardDamage(bc, item.target, up ? 10 : 9, card);
     addToBot(bc, (c) => attackEnemy(c, item.target, dmg));
     addToBot(bc, (c) => drawCards(c, up ? 2 : 1));
   },
@@ -9380,8 +9665,8 @@ const CARD_RULES: Record<string, CardRule> = {
   },
 
   // 雷霆之击：对全体伤害 + 全体 1 层易伤。
-  thunderclap: (bc, _item, up) => {
-    attackAllEnemies(bc, (up ? 7 : 4) + getPower(bc.player.powers, "vigor"));
+  thunderclap: (bc, _item, up, card) => {
+    attackAllEnemies(bc, (up ? 7 : 4) + getPower(bc.player.powers, "vigor"), card);
     addToBot(bc, (c) => {
       for (let i = c.monsters.length - 1; i >= 0; i -= 1) {
         if (c.monsters[i]?.alive === true) {
@@ -9392,15 +9677,15 @@ const CARD_RULES: Record<string, CardRule> = {
   },
 
   // 双重打击：同一伤害值打两次（伤害只算一次，两击等值）。
-  twin_strike: (bc, item, up) => {
-    const dmg = calculateCardDamage(bc, item.target, up ? 7 : 5);
+  twin_strike: (bc, item, up, card) => {
+    const dmg = calculateCardDamage(bc, item.target, up ? 7 : 5, card);
     addToBot(bc, (c) => attackEnemy(c, item.target, dmg));
     addToBot(bc, (c) => attackEnemy(c, item.target, dmg));
   },
 
   // 全身撞击：伤害等于**当前格挡**（入队时取值）。
-  body_slam: (bc, item) => {
-    const dmg = calculateCardDamage(bc, item.target, bc.player.block);
+  body_slam: (bc, item, _up, card) => {
+    const dmg = calculateCardDamage(bc, item.target, bc.player.block, card);
     addToBot(bc, (c) => attackEnemy(c, item.target, dmg));
   },
 
@@ -9413,8 +9698,8 @@ const CARD_RULES: Record<string, CardRule> = {
   // ==========================================================================
 
   // 撕咬：造成 7(升级 8) 点伤害，回复 2(升级 3) 点生命。对齐 BattleContext.cpp:986 BITE。
-  bite: (bc, item, up) => {
-    const dmg = calculateCardDamage(bc, item.target, up ? 8 : 7);
+  bite: (bc, item, up, card) => {
+    const dmg = calculateCardDamage(bc, item.target, up ? 8 : 7, card);
     addToBot(bc, (c) => attackEnemy(c, item.target, dmg));
     // HealPlayer 的 clearOnCombatVictory=false（Actions.cpp:117）：打出致命一击后战斗虽已
     // 胜利，这口血照样要回。标 true 会让它被 clearPostCombatActions 吞掉。
@@ -9422,8 +9707,8 @@ const CARD_RULES: Record<string, CardRule> = {
   },
 
   // 血肉巨兵：造成 32(升级 42) 点伤害。对齐 BattleContext.cpp:999 BLUDGEON。
-  bludgeon: (bc, item, up) => {
-    const dmg = calculateCardDamage(bc, item.target, up ? 42 : 32);
+  bludgeon: (bc, item, up, card) => {
+    const dmg = calculateCardDamage(bc, item.target, up ? 42 : 32, card);
     addToBot(bc, (c) => attackEnemy(c, item.target, dmg));
   },
 
@@ -9434,7 +9719,7 @@ const CARD_RULES: Record<string, CardRule> = {
   // ② 易伤判定排在攻击**之前**，所以即便这一击打死目标，能量与抽牌照样兑现；
   // ③ 三个 addToTop 的推入顺序是「抽牌 → 能量 → 攻击」，故实际执行顺序反过来：
   //    先结算攻击，再回能量，最后抽牌。
-  dropkick: (bc, item, up) => {
+  dropkick: (bc, item, up, card) => {
     addToBot(bc, (c) => {
       const m = c.monsters[item.target];
       if (m?.alive === true && getPower(m.powers, "vulnerable") > 0) {
@@ -9443,7 +9728,7 @@ const CARD_RULES: Record<string, CardRule> = {
           c2.player.energy += 1;
         });
       }
-      const dmg = calculateCardDamage(c, item.target, up ? 8 : 5);
+      const dmg = calculateCardDamage(c, item.target, up ? 8 : 5, card);
       addToTop(c, (c2) => attackEnemy(c2, item.target, dmg));
     });
   },
@@ -9455,8 +9740,8 @@ const CARD_RULES: Record<string, CardRule> = {
   // 夹在扣血与 checkCombat **之间**——顺序照抄。
   // 参考的豁免条件还有小怪(MINION) / 半死(halfDead) / 重生(REGROW)，当前登记的四种怪
   // 一个都不具备，故未转写；登记那些怪时必须补回来。
-  feed: (bc, item, up) => {
-    const dmg = calculateCardDamage(bc, item.target, up ? 12 : 10);
+  feed: (bc, item, up, card) => {
+    const dmg = calculateCardDamage(bc, item.target, up ? 12 : 10, card);
     addToBot(bc, (c) => {
       const m = c.monsters[item.target];
       if (m === undefined || !m.alive) {
@@ -9476,8 +9761,8 @@ const CARD_RULES: Record<string, CardRule> = {
   // ⚠ 两个循环都是 addToTop，且**攻击先入队、消耗后入队**，于是执行顺序整个反过来：
   // 先随机消耗 N 张，再打 N 次。N 是动作执行时的手牌数（本牌此时已被 useCard 移出手牌）。
   // 伤害在打牌时算好一次，N 次攻击等值。
-  fiend_fire: (bc, item, up) => {
-    const dmg = calculateCardDamage(bc, item.target, up ? 10 : 7);
+  fiend_fire: (bc, item, up, card) => {
+    const dmg = calculateCardDamage(bc, item.target, up ? 10 : 7, card);
     addToBot(bc, (c) => {
       const n = c.hand.length;
       for (let i = 0; i < n; i += 1) {
@@ -9490,8 +9775,8 @@ const CARD_RULES: Record<string, CardRule> = {
   },
 
   // 精钢闪光：造成 3(升级 6) 点伤害，抽 1 张牌。对齐 BattleContext.cpp:1040 FLASH_OF_STEEL。
-  flash_of_steel: (bc, item, up) => {
-    const dmg = calculateCardDamage(bc, item.target, up ? 6 : 3);
+  flash_of_steel: (bc, item, up, card) => {
+    const dmg = calculateCardDamage(bc, item.target, up ? 6 : 3, card);
     addToBot(bc, (c) => attackEnemy(c, item.target, dmg));
     addToBot(bc, (c) => drawCards(c, 1));
   },
@@ -9502,16 +9787,16 @@ const CARD_RULES: Record<string, CardRule> = {
   // ⚠ 伤害在**打牌时**就算好，所以失血引起的加力量（破裂）不影响这一击——参考里那两行
   // 注释正是作者自问自答确认了这一点。失血走 PlayerLoseHp(2, **true**)，
   // clearOnCombatVictory=false。
-  hemokinesis: (bc, item, up) => {
-    const dmg = calculateCardDamage(bc, item.target, up ? 20 : 15);
+  hemokinesis: (bc, item, up, card) => {
+    const dmg = calculateCardDamage(bc, item.target, up ? 20 : 15, card);
     addToBot(bc, (c) => playerLoseHp(c, 2, true), false);
     addToBot(bc, (c) => attackEnemy(c, item.target, dmg));
   },
 
   // 冲拳：造成 4(升级 5) 次 2 点伤害。消耗。对齐 BattleContext.cpp:1100 PUMMEL。
   // 伤害只算一次，各击等值（与双重打击同款写法）。
-  pummel: (bc, item, up) => {
-    const dmg = calculateCardDamage(bc, item.target, 2);
+  pummel: (bc, item, up, card) => {
+    const dmg = calculateCardDamage(bc, item.target, 2, card);
     const hits = up ? 5 : 4;
     for (let i = 0; i < hits; i += 1) {
       addToBot(bc, (c) => attackEnemy(c, item.target, dmg));
@@ -9524,7 +9809,7 @@ const CARD_RULES: Record<string, CardRule> = {
   // ⚠ 与顺劈斩那类 AttackAllEnemy 不同：ReaperAction **逐怪现算现打**，不预先算伤害矩阵。
   // ⚠ 也**不调 checkCombat**——参考里那段被注释掉了（Actions.cpp:1148）。少了这一步，
   // 收割打死最后一只怪时排队动作不会被清，回血因此仍会落地。照抄。
-  reaper: (bc, _item, up) => {
+  reaper: (bc, _item, up, card) => {
     const base = (up ? 5 : 4) + getPower(bc.player.powers, "vigor");
     addToBot(bc, (c) => {
       let healAmount = 0;
@@ -9534,7 +9819,7 @@ const CARD_RULES: Record<string, CardRule> = {
           continue;
         }
         const hpBefore = m.hp;
-        monsterAttacked(c, m, calculateCardDamage(c, i, base));
+        monsterAttacked(c, m, calculateCardDamage(c, i, base, card));
         healAmount += hpBefore - m.hp;
       }
       if (healAmount > 0) {
@@ -9549,8 +9834,8 @@ const CARD_RULES: Record<string, CardRule> = {
   // ⚠ 时序反直觉但照抄：消耗动作本身先入队，但它执行时又把逐张消耗 addToBot 到队尾，
   // 于是排在攻击与 OnAfterCardUsed **之后**——实际是「先打伤害，再消耗那些非攻击牌」。
   // 手牌下标按**降序**消耗，因此下标始终有效。伤害在打牌时算好（消耗之前）。
-  sever_soul: (bc, item, up) => {
-    const dmg = calculateCardDamage(bc, item.target, up ? 22 : 16);
+  sever_soul: (bc, item, up, card) => {
+    const dmg = calculateCardDamage(bc, item.target, up ? 22 : 16, card);
     addToBot(bc, (c) => {
       for (let i = c.hand.length - 1; i >= 0; i -= 1) {
         const card = c.hand[i];
@@ -9570,7 +9855,7 @@ const CARD_RULES: Record<string, CardRule> = {
   // ⚠ 基础值（含精力）在**打牌时**取，但目标与最终伤害在每次动作**执行时**才算——参考
   // 自己标注这是为了绕开「精力打完即清」的时序而刻意留的 hack，照抄。
   // 攻击走 addToTop，故节奏是「掷目标 → 立刻结算这一击 → 再掷下一个目标」。
-  sword_boomerang: (bc, _item, up) => {
+  sword_boomerang: (bc, _item, up, card) => {
     const base = 3 + getPower(bc.player.powers, "vigor");
     const hits = up ? 4 : 3;
     for (let i = 0; i < hits; i += 1) {
@@ -9580,15 +9865,15 @@ const CARD_RULES: Record<string, CardRule> = {
           return;
         }
         const idx = getRandomMonsterIdx(c); // ★ 消耗一次 cardRandomRng
-        const dmg = calculateCardDamage(c, idx, base);
+        const dmg = calculateCardDamage(c, idx, base, card);
         addToTop(c, (c2) => attackEnemy(c2, idx, dmg));
       });
     }
   },
 
   // 迅捷打击：造成 7(升级 10) 点伤害。对齐 BattleContext.cpp:1148 SWIFT_STRIKE。
-  swift_strike: (bc, item, up) => {
-    const dmg = calculateCardDamage(bc, item.target, up ? 10 : 7);
+  swift_strike: (bc, item, up, card) => {
+    const dmg = calculateCardDamage(bc, item.target, up ? 10 : 7, card);
     addToBot(bc, (c) => attackEnemy(c, item.target, dmg));
   },
 
@@ -9628,7 +9913,7 @@ const CARD_RULES: Record<string, CardRule> = {
   // 少判这个条件会白吃两次 shuffleRng，counter 立刻错位。
   deep_breath: (bc, _item, up) => {
     if (bc.discardPile.length > 0) {
-      onShuffle(); // 同步调用（参考在入队之前直接调），当前无副作用
+      onShuffle(bc); // 同步调用（参考在入队之前直接调）
       addToBot(bc, (c) => {
         shuffleCards(c, c.discardPile); // ★ 消耗一次 shuffleRng
         moveDiscardPileIntoDrawPile(c);
@@ -9761,8 +10046,8 @@ const CARD_RULES: Record<string, CardRule> = {
   // 上勾拳：造成 13 点伤害，施加 1(升级 2) 层虚弱与 1(升级 2) 层易伤。
   // 对齐 BattleContext.cpp:1172 UPPERCUT。⚠ 升级只加减益层数，伤害恒为 13。
   // 顺序固定：伤害 → 虚弱 → 易伤。
-  uppercut: (bc, item, up) => {
-    const dmg = calculateCardDamage(bc, item.target, 13);
+  uppercut: (bc, item, up, card) => {
+    const dmg = calculateCardDamage(bc, item.target, 13, card);
     addToBot(bc, (c) => attackEnemy(c, item.target, dmg));
     addToBot(bc, (c) => debuffEnemy(c, item.target, "weak", up ? 2 : 1, false));
     addToBot(bc, (c) => debuffEnemy(c, item.target, "vulnerable", up ? 2 : 1, false));
@@ -9913,8 +10198,8 @@ const CARD_RULES: Record<string, CardRule> = {
 
   // 头槌：造成 9(升级 12) 点伤害，把弃牌堆里选一张置于抽牌堆顶。
   // 对齐 BattleContext.cpp:1049 HEADBUTT。
-  headbutt: (bc, item, up) => {
-    const dmg = calculateCardDamage(bc, item.target, up ? 12 : 9);
+  headbutt: (bc, item, up, card) => {
+    const dmg = calculateCardDamage(bc, item.target, up ? 12 : 9, card);
     addToBot(bc, (c) => attackEnemy(c, item.target, dmg));
     addToBot(bc, (c) => headbuttAction(c));
   },
@@ -9989,23 +10274,23 @@ const CARD_RULES: Record<string, CardRule> = {
 
   // 献焰：对全体造成 21(升级 28) 点伤害，往**弃牌堆**塞一张灼伤。
   // 对齐 BattleContext.cpp:1068 IMMOLATE。塞牌不消耗 RNG。
-  immolate: (bc, _item, up) => {
-    attackAllEnemies(bc, (up ? 28 : 21) + getPower(bc.player.powers, "vigor"));
+  immolate: (bc, _item, up, card) => {
+    attackAllEnemies(bc, (up ? 28 : 21) + getPower(bc.player.powers, "vigor"), card);
     addToBot(bc, (c) => makeTempCardInDiscard(c, "burn", 1));
   },
 
   // 鲁莽冲锋：造成 7(升级 10) 点伤害，把一张眩晕**洗入抽牌堆**。
   // 对齐 BattleContext.cpp:1127 RECKLESS_CHARGE。★ 洗入消耗一次 cardRandomRng。
-  reckless_charge: (bc, item, up) => {
-    const dmg = calculateCardDamage(bc, item.target, up ? 10 : 7);
+  reckless_charge: (bc, item, up, card) => {
+    const dmg = calculateCardDamage(bc, item.target, up ? 10 : 7, card);
     addToBot(bc, (c) => attackEnemy(c, item.target, dmg));
     addToBot(bc, (c) => makeTempCardInDrawPile(c, "dazed", 1)); // ★ 消耗一次 cardRandomRng
   },
 
   // 狂野劈砍：造成 12(升级 17) 点伤害，把一张伤口**洗入抽牌堆**。
   // 对齐 BattleContext.cpp:1187 WILD_STRIKE。★ 洗入消耗一次 cardRandomRng。
-  wild_strike: (bc, item, up) => {
-    const dmg = calculateCardDamage(bc, item.target, up ? 17 : 12);
+  wild_strike: (bc, item, up, card) => {
+    const dmg = calculateCardDamage(bc, item.target, up ? 17 : 12, card);
     addToBot(bc, (c) => attackEnemy(c, item.target, dmg));
     addToBot(bc, (c) => makeTempCardInDrawPile(c, "wound", 1)); // ★ 消耗一次 cardRandomRng
   },
@@ -10024,8 +10309,8 @@ const CARD_RULES: Record<string, CardRule> = {
   // —— 以太（回合末未打出则消失，结算点见 discardAtEndOfTurn）——
 
   // 杀戮：造成 20(升级 28) 点伤害。以太。对齐 BattleContext.cpp:1003 CARNAGE。
-  carnage: (bc, item, up) => {
-    const dmg = calculateCardDamage(bc, item.target, up ? 28 : 20);
+  carnage: (bc, item, up, card) => {
+    const dmg = calculateCardDamage(bc, item.target, up ? 28 : 20, card);
     addToBot(bc, (c) => attackEnemy(c, item.target, dmg));
   },
 
@@ -10039,8 +10324,8 @@ const CARD_RULES: Record<string, CardRule> = {
 
   // 戏剧性登场：对全体造成 8(升级 12) 点伤害。固有。消耗。
   // 对齐 BattleContext.cpp:1022 DRAMATIC_ENTRANCE。
-  dramatic_entrance: (bc, _item, up) =>
-    attackAllEnemies(bc, (up ? 12 : 8) + getPower(bc.player.powers, "vigor")),
+  dramatic_entrance: (bc, _item, up, card) =>
+    attackAllEnemies(bc, (up ? 12 : 8) + getPower(bc.player.powers, "vigor"), card),
 
   // 心灵冲击：造成等同于**抽牌堆张数**的伤害。固有。对齐 BattleContext.cpp:1081 MIND_BLAST。
   // ⚠ 张数在**打牌时**取（本牌此刻还在手上，不影响抽牌堆）；升级只降费（2 → 1），
@@ -10049,8 +10334,8 @@ const CARD_RULES: Record<string, CardRule> = {
   // ⚠ 它的背书**只来自 23 张的聚焦牌组变体**（variant 3/4）：85 张全牌组里它是固有牌、
   // 每条 trace 起手必有、抽牌堆约 80 张 → 一击 80 点会把邪教徒/颚虫第一回合打死，
   // 1230 条 trace 从 ~40 步塌成 1 步。所以它**故意不在全牌组变体里**。
-  mind_blast: (bc, item) => {
-    const dmg = calculateCardDamage(bc, item.target, bc.drawPile.length);
+  mind_blast: (bc, item, _up, card) => {
+    const dmg = calculateCardDamage(bc, item.target, bc.drawPile.length, card);
     addToBot(bc, (c) => attackEnemy(c, item.target, dmg));
   },
 
@@ -10155,7 +10440,7 @@ const CARD_RULES: Record<string, CardRule> = {
   // TODO(后续PR): 参考在 `item.purgeOnUse` 时还会 `findAndUpgradeSpecialData` 去回填牌堆里
   //   的本体（双击/复制那套复制打出）。purgeOnUse 尚未登记，恒为假。
   rampage: (bc, item, up, card) => {
-    const dmg = calculateCardDamage(bc, item.target, 8 + card.specialData);
+    const dmg = calculateCardDamage(bc, item.target, 8 + card.specialData, card);
     addToBot(bc, (c) => attackEnemy(c, item.target, dmg));
     card.specialData += up ? 8 : 5;
   },
@@ -10169,7 +10454,7 @@ const CARD_RULES: Record<string, CardRule> = {
   searing_blow: (bc, item, _up, card) => {
     const n = getUpgradeCount(card);
     const base = (n * (n + 7)) / 2 + 12;
-    const dmg = calculateCardDamage(bc, item.target, base);
+    const dmg = calculateCardDamage(bc, item.target, base, card);
     addToBot(bc, (c) => attackEnemy(c, item.target, dmg));
   },
 
@@ -10179,8 +10464,8 @@ const CARD_RULES: Record<string, CardRule> = {
   // ⚠ 卡效果本身只有伤害那一句——降费不在这里，而在 `Player::hpWasLost` 里的
   // `cards.onTookDamage()`（见 cardsOnTookDamage）。所以**被怪打一下也降费**，
   // 不限于自伤，这一点与破裂的 selfDamage 判据不同。
-  blood_for_blood: (bc, item, up) => {
-    const dmg = calculateCardDamage(bc, item.target, up ? 22 : 18);
+  blood_for_blood: (bc, item, up, card) => {
+    const dmg = calculateCardDamage(bc, item.target, up ? 22 : 18, card);
     addToBot(bc, (c) => attackEnemy(c, item.target, dmg));
   },
 
@@ -10341,7 +10626,7 @@ const CARD_RULES: Record<string, CardRule> = {
   //     按满能量打、却一点能量都不花。
   //  ④ 伤害走 `WhirlwindAction` 那条**自己的**路径（矩阵算一次、addToTop 递归 X 轮），
   //     不是 `attackAllEnemies` 排 X 条动作，见 whirlwindAction。
-  whirlwind: (bc, item, up) => {
+  whirlwind: (bc, item, up, card) => {
     if (!item.ignoreEnergyTotal && bc.player.energy < item.energyOnUse) {
       item.energyOnUse = bc.player.energy;
     }
@@ -10349,7 +10634,7 @@ const CARD_RULES: Record<string, CardRule> = {
     const energy = item.energyOnUse;
     // TODO(后续PR): `c.freeToPlayOnce`（深谋远虑 / 液态记忆），还没有产出者。
     const useEnergy = !item.freeToPlay;
-    addToBot(bc, (c) => whirlwindAction(c, baseDamage, energy, useEnergy));
+    addToBot(bc, (c) => whirlwindAction(c, baseDamage, energy, useEnergy, card));
   },
 
   // 嬗变：X 费。将 X 张随机无色牌加入手牌，**本回合**费用为 0（升级：它们是升级过的）。
@@ -10403,16 +10688,16 @@ const CARD_RULES: Record<string, CardRule> = {
   //     non purge cards are still in hand.`
   //  ③ 加成量是 `strikeCount * (up ? 3 : 2)` 加在**基础伤害**上，然后整体过一次
   //     `calculateCardDamage`——所以力量/易伤是作用在含加成的总额上的。
-  perfected_strike: (bc, item, up) => {
+  perfected_strike: (bc, item, up, card) => {
     const strikeDmg = bc.strikeCount * (up ? 3 : 2);
-    const dmg = calculateCardDamage(bc, item.target, 6 + strikeDmg);
+    const dmg = calculateCardDamage(bc, item.target, 6 + strikeDmg, card);
     addToBot(bc, (c) => attackEnemy(c, item.target, dmg));
   },
 
   // 冲撞：仅当手牌中全是攻击牌时才能打出；造成 14(升级 18) 点伤害。
   // 对齐 BattleContext.cpp:1023 CLASH（效果本身平平无奇，门槛在 cardCanUse / canUseClash）。
-  clash: (bc, item, up) => {
-    const dmg = calculateCardDamage(bc, item.target, up ? 18 : 14);
+  clash: (bc, item, up, card) => {
+    const dmg = calculateCardDamage(bc, item.target, up ? 18 : 14, card);
     addToBot(bc, (c) => attackEnemy(c, item.target, dmg));
   },
 
@@ -10449,8 +10734,8 @@ const CARD_RULES: Record<string, CardRule> = {
   //     一个都没有 MINION / REGROW，`halfDead` 整个机制也还没建模（只有僧侣/书虫那类才有），
   //     所以这里只留 `!alive` 那一项——与进食（feed）当年的处理一致。
   //     ⚠ 登记那些怪时必须把三项补回来。
-  hand_of_greed: (bc, item, up) => {
-    const dmg = calculateCardDamage(bc, item.target, up ? 25 : 20);
+  hand_of_greed: (bc, item, up, card) => {
+    const dmg = calculateCardDamage(bc, item.target, up ? 25 : 20, card);
     const gold = up ? 25 : 20;
     addToBot(bc, (c) => {
       const m = c.monsters[item.target];
@@ -10526,9 +10811,9 @@ export const REGISTERED_CARD_IDS: readonly string[] = Object.freeze(Object.keys(
  * 对全体造成伤害（对齐 Actions::AttackAllEnemy）：先**逐怪算好**伤害矩阵，
  * 再逐怪结算。两段分开很重要——先打死的怪不会影响后面怪的伤害取值。
  */
-function attackAllEnemies(bc: BattleContext, baseDamage: number): void {
+function attackAllEnemies(bc: BattleContext, baseDamage: number, card: CombatCard): void {
   addToBot(bc, (c) => {
-    const matrix = c.monsters.map((m, i) => (m.alive ? calculateCardDamage(c, i, baseDamage) : 0));
+    const matrix = c.monsters.map((m, i) => (m.alive ? calculateCardDamage(c, i, baseDamage, card) : 0));
     for (let i = 0; i < c.monsters.length; i += 1) {
       if (c.monsters[i]?.alive === true) {
         attackEnemy(c, i, matrix[i]);
@@ -10595,12 +10880,13 @@ function whirlwindAction(
   baseDamage: number,
   energy: number,
   useEnergy: boolean,
+  card: CombatCard,
 ): void {
   if (useEnergy) {
     bc.player.energy = 0; // 对齐 `player.useEnergy(player.energy)`
   }
   const matrix = bc.monsters.map((m, i) =>
-    m.alive ? Math.min(65535, calculateCardDamage(bc, i, baseDamage)) : 0,
+    m.alive ? Math.min(65535, calculateCardDamage(bc, i, baseDamage, card)) : 0,
   );
   // TODO(后续PR): 化学 X（CHEMICAL_X）遗物 +2，未登记。
   const effectAmount = energy;
@@ -10791,6 +11077,26 @@ function onUseAttackCard(bc: BattleContext, item: CardQueueItem, card: CombatCar
   if (hasRelic(bc, "shuriken") && bc.player.attacksPlayedThisTurn % 3 === 0) {
     addToBot(bc, (c) => addPower(c.player.powers, "strength", 1));
   }
+  // 二元性（DUALITY，第四十三批）：排在手里剑**之后**、笔尖之后、双截棍之前
+  // （BattleContext.cpp:1736-1738）：`addToBot(Actions::DualityAction());`
+  // 而那条动作的函数体是（Actions.cpp:1004-1009）：
+  //     bc.player.buff<PS::DEXTERITY>(1);
+  //     bc.player.debuff<PS::LOSE_DEXTERITY>(1);
+  // ⚠ 四处照抄：
+  //  ①⚠ **两句在同一条动作里**，所以「+1 敏捷」与「记一层敏捷流失」是原子的；
+  //     它与苦无那条 `BuffPlayer<DEXTERITY>(1)` 的差别只在多了后面那句还债。
+  //  ②⚠ 还债走 `debuff` ⇒ **过神器**：神器在手时 LOSE_DEXTERITY 被吃掉，这点敏捷就白赚。
+  //  ③ **每张攻击牌都触发**（没有 `% 3` 那种门），所以一个回合能叠好几层。
+  //  ④ 还债在**本回合末**结算（`applyEndOfTurnPowers` 的 LOSE_DEXTERITY=13 那一格），
+  //     所以卡面「本回合」那两个字全靠那一格。
+  if (hasRelic(bc, "duality")) {
+    addToBot(bc, (c) => {
+      addPower(c.player.powers, "dexterity", 1);
+      debuffPlayer(c, "lose_dexterity", 1);
+    });
+  }
+  // TODO(遗物PR): 笔尖（PEN_NIB，排在手里剑与二元性之间，读 `r.data`）、
+  //   双截棍（NUNCHAKU，排在二元性之后，跨战斗计数器）。
   // —— 尖锐外壳（SHARP_HIDE，守卫者的防御形态）——
   //
   // 对齐 `BattleContext::onUseAttackCard` 的**最末**那三行（BattleContext.cpp:1756-1759）。
@@ -10918,13 +11224,22 @@ function hexShuffleDazed(bc: BattleContext): void {
  * 打出一张**能力牌**之后的触发（对齐 `BattleContext::onUsePowerCard`，
  * BattleContext.cpp:1852-1914）。第二十三批新增，目前只有诅咒一条。
  *
- * 第四十二批补上墨水瓶（:1889）与橙色药丸（:1897）。参考在这条路上的书写顺序是
- * 鸟面坛（未登记）→ 墨水瓶 → 橙色药丸 → 木乃伊手（未登记）。
+ * 第四十二批补上墨水瓶（:1889）与橙色药丸（:1897），第四十三批补上**鸟面坛**（:1885）。
+ * 参考在这条路上的书写顺序是 鸟面坛 → 墨水瓶 → 橙色药丸 → 木乃伊手（未登记）。
  *
- * TODO(后续PR): 残影 / 复制 / 回响形态 / 华彩，以及鸟面坛 / 木乃伊手两个遗物。
+ * ⚠ 鸟面坛（BIRD_FACED_URN）：`if (p.hasRelic<R::BIRD_FACED_URN>()) { p.heal(2); }`
+ *  ①⚠ **同步** `heal`，不入队——所以它排在这张能力牌自己排的效果**之前**落地。
+ *  ② 走的是 `Player::heal`，因此会被**魔力之花**放大（×3/2 → 3 点）、被**绽放印记**整个挡掉，
+ *     也会触发红骷髅那道「回到半血以上就掉 3 力量」。见 `healPlayer`。
+ *  ③ 它是这一族里**唯一**的常规回血来源（血瓶只在开局回一次，而那时玩家通常满血）。
+ *
+ * TODO(后续PR): 残影 / 复制 / 回响形态 / 华彩，以及木乃伊手。
  */
 function onUsePowerCard(bc: BattleContext): void {
   hexShuffleDazed(bc);
+  if (hasRelic(bc, "bird_faced_urn")) {
+    healPlayer(bc, 2);
+  }
   inkBottleOnUseCard(bc);
   orangePelletsOnUseCard(bc, 2); // CardType::POWER = 2
 }
@@ -11041,7 +11356,27 @@ function onAfterUseCard(
   if (getCardDef(card.defId).type === "power") {
     return;
   }
-  if (exhaustOnUse) {
+  // 奇异汤匙（STRANGE_SPOON，第四十三批）：对齐 BattleContext.cpp:2015-2023：
+  //     bool spoonProc = false;
+  //     if (item.exhaustOnUse && player.hasRelic<R::STRANGE_SPOON>()) {
+  //         spoonProc = cardRandomRng.randomBoolean();
+  //     }
+  //     if (item.exhaustOnUse && !spoonProc) {
+  //         triggerAndMoveToExhaustPile(c);
+  //     } else { … moveToDiscardPile(c) … }
+  // ⚠ 五处照抄：
+  //  ①⚠⚠ **只有 `exhaustOnUse` 为真时才掷**——`cardRandomRng` 的计数器会当场抓住这一点。
+  //     写成「无条件掷、再判」会让每打一张牌都白吃一次随机数。
+  //  ②⚠ 掷中（true = 不消耗）时走的是 `else` 那一整支，也就是**进弃牌堆**（与普通牌同路）。
+  //     所以「不消耗」的牌不会触发消耗链（骨灰 / 黑暗拥抱 / 无痛之心）。
+  //  ③ 它排在**能力牌那道提前返回之后**——能力牌打出后直接离场，永远不掷这个随机数。
+  //  ④ 用的是 `cardRandomRng` 而不是 `shuffleRng` / `miscRng`。
+  //  ⑤ `randomBoolean()` 无参 = 50%（对齐 `Random::randomBoolean()`）。
+  let spoonProc = false;
+  if (exhaustOnUse && hasRelic(bc, "strange_spoon")) {
+    spoonProc = bc.rng.cardRandomRng.randomBoolean(); // ★ 消耗一次 cardRandomRng
+  }
+  if (exhaustOnUse && !spoonProc) {
     triggerAndMoveToExhaustPile(bc, card);
   } else {
     bc.discardPile.push(card);
@@ -11241,7 +11576,22 @@ const POTION_RULES: Record<string, PotionRule> = {
 };
 
 function healPlayer(bc: BattleContext, amount: number): void {
-  bc.player.hp = Math.min(bc.player.maxHp, bc.player.hp + amount);
+  // 魔力之花（MAGIC_FLOWER，第四十三批）：对齐 `Player::heal` 的第二道门
+  // （Player.cpp:161-163）：`if (hasRelic<MAGIC_FLOWER>()) amount = amount * 3 / 2;`
+  // ⚠ 三处照抄：
+  //  ①⚠ **整数运算**：`amount * 3 / 2` 先乘后除、向下取整（C++ 的 int 除法），
+  //     所以 2 点回血变 3、5 点变 7（不是 7.5）。写成 `* 1.5` 再取整在奇数上会分岔。
+  //  ② 位置在**绽放印记那道提前返回之后**、在钳制之前——所以它放大的是「打算回多少」，
+  //     真正回上多少仍受 `min(maxHp, …)` 限制。
+  //  ③ 它对**所有**回血来源生效（鸟面坛 / 血瓶 / 血腥雕像 / 血之药水 / 收割 …），
+  //     不区分来源。
+  // TODO(遗物PR): 绽放印记（MARK_OF_THE_BLOOM，函数第一句，直接 return——一点血都回不了）、
+  //   红骷髅（RED_SKULL，钳制之后：从半血以下回到半血以上就 `debuff<STRENGTH>(3)`）。
+  let healed = amount;
+  if (hasRelic(bc, "magic_flower")) {
+    healed = Math.trunc((healed * 3) / 2);
+  }
+  bc.player.hp = Math.min(bc.player.maxHp, bc.player.hp + healed);
 }
 
 /**
@@ -11255,8 +11605,19 @@ function healPlayer(bc: BattleContext, amount: number): void {
  * 它传的是 20/25 常量。
  */
 function gainGold(bc: BattleContext, amount: number): void {
-  // TODO(遗物PR): 以太（提前返回，一分钱都不给）、血腥雕像（加完回 5 血）。
+  // TODO(遗物PR): 以太（ECTOPLASM，在加钱**之前**整个提前返回——拿了它这一局再也捡不到金币）。
   bc.player.gold += amount;
+  // 血腥雕像（BLOODY_IDOL，第四十三批）：对齐 Player.cpp:92-94，紧跟在 `gold += amount` **之后**：
+  //     if (hasRelic<R::BLOODY_IDOL>()) { heal(5); }
+  // ⚠ 三处照抄：
+  //  ①⚠ **同步** `heal(5)`，且走的是 `Player::heal` —— 会被魔力之花放大成 7。
+  //  ② 触发条件是「战斗内**获得**金币」，而战斗内唯一的获得点是贪婪之手打死一只怪
+  //     （`Actions::AttackEnemy` 的 `effectTriggered` 分支，Actions.cpp:1123-1131）。
+  //     被抢劫者偷钱走的是 `stealGoldFromPlayer`，那条**不经过**这个函数。
+  //  ③ 位置在加钱之后：以太那道门在前面，所以「以太 + 血腥雕像」时一分钱不给、也不回血。
+  if (hasRelic(bc, "bloody_idol")) {
+    healPlayer(bc, 5);
+  }
 }
 
 /**
@@ -11319,13 +11680,28 @@ function playerLoseHp(bc: BattleContext, amount: number, selfDamage: boolean): v
  * ⚠ `cards.onTookDamage()`（血债血偿降费）也挂在这里，位置在遗物之后、濒死判定之前。
  * 它**不看** selfDamage——被怪打一下同样降费，与破裂那条判据不同。
  *
- * TODO(遗物PR): 百年拼图（抽 3）、情绪芯片、自成型黏土、鲁尼方块、红骷髅。
+ * ⚠ 「掉血触发」那一族在参考里是四条并列的 `if`（Player.cpp:290-315），顺序由源码定死：
+ *   百年拼图 → 情绪芯片（`// todo`，空的）→ **自成型黏土** → **如尼方块** → 红骷髅。
+ *   本批装上中间两颗，位置照抄。
+ *  ⚠⚠ **它们都在 `hpWasLost` 里**，也就是三条失血路径（`attacked` / `damage` / `loseHp`）
+ *     的共同尾巴——所以自伤（放血 / 燃烧 / 暴虐）**照样触发**，与 `selfDamage` 无关。
+ *  ⚠ 自成型黏土是**同步** `buff<NEXT_TURN_BLOCK>(3)`（不入队、不过神器，因为走的是 `buff`），
+ *     如尼方块是 **`addToTop`** 的 `DrawCards(1)`（插队首，所以排在触发它的那次攻击的
+ *     后续段数**之前**——多段攻击每段各抽一张，且抽到的牌立刻能被下一段读到）。
+ *
+ * TODO(遗物PR): 百年拼图（抽 3，排在最前，一次性）、情绪芯片、红骷髅（排在最后）。
  */
 function playerHpWasLost(bc: BattleContext, amount: number, selfDamage: boolean): void {
   bc.player.hp = Math.max(0, bc.player.hp - amount);
   const rupture = getPower(bc.player.powers, "rupture");
   if (selfDamage && rupture > 0) {
     addPower(bc.player.powers, "strength", rupture);
+  }
+  if (hasRelic(bc, "self_forming_clay")) {
+    addPower(bc.player.powers, "next_turn_block", 3);
+  }
+  if (hasRelic(bc, "runic_cube")) {
+    addToTop(bc, (c) => drawCards(c, 1), true, { kind: "draw_cards", count: 1 });
   }
   cardsOnTookDamage(bc);
   if (bc.player.hp <= 0) {
@@ -11778,10 +12154,53 @@ function callEndTurnEarlySequence(bc: BattleContext, currentCard: CombatCard): v
  * 格挡会落到怪物已经打完之后。
  */
 function callEndOfTurnActions(bc: BattleContext): void {
-  // —— 玩家遗物 OnPlayerEndTurn ——
-  // TODO(遗物PR): 斗篷夹扣（按手牌数加格挡）、冰核、尼尔的法典、山铜（无格挡时 addToTop
-  // 加 6 点）、石历（第 6 回合 52 点全体伤害）。⚠ 整组排在下面的 Power 之前，
-  // 且山铜那条是 addToTop 而非 addToBot。
+  // —— 玩家遗物 OnPlayerEndTurn（对齐 BattleContext.cpp:2064-2090，整组排在下面的 Power 之前）——
+  //
+  // 参考在这里的书写顺序是：斗篷夹扣 → 冰核 → 尼尔的法典 → 山铜 → 石历。
+  // 本批装上第一、第四、第五颗；中间两颗（冰核要充能球、尼尔的法典要 CARD_SELECT 且会从
+  // 整个牌池随机造牌）留 TODO，登记时插回各自的位置。
+  //
+  // 斗篷夹扣（CLOAK_CLASP，BattleContext.cpp:2067-2069）：`addToBot(GainBlock(cards.cardsInHand))`。
+  // ⚠ 三处照抄：① 手牌数在**入队时**取（与金属化同族），此后这一回合的弃手牌不影响它；
+  //   ② `Actions::GainBlock` 的 `clearOnCombatVictory` 是 false；③ 它是这一组的**第一句**，
+  //   所以山铜那道 `block <= 0` 的门读到的是**还没加上这些格挡**的值（夹扣的动作还在队列里）。
+  if (hasRelic(bc, "cloak_clasp")) {
+    const handSize = bc.hand.length;
+    addToBot(bc, (c) => gainBlock(c, handSize), false);
+  }
+  // TODO(遗物PR): 冰核（FROZEN_CORE，有空充能球槽时充一个冰霜——需要充能球机制）、
+  //   尼尔的法典（NILRYS_CODEX，`Actions::CodexAction` 开 CARD_SELECT 并从**整个牌池**
+  //   随机生成三张候选；随机牌可能是未登记的牌，trace 会不可重放，故本批不登记）。
+  //
+  // 山铜（ORICHALCUM，BattleContext.cpp:2081-2085）：
+  //     if (player.hasRelic<R::ORICHALCUM>()) {
+  //         if (player.block <= 0) {
+  //             addToTop(Actions::GainBlock(6));
+  //         }
+  //     }
+  // ⚠ 四处照抄：
+  //  ①⚠⚠ 是 **`addToTop`**，这一组里唯一的一个——所以它排在斗篷夹扣那条 `addToBot`
+  //     **之前**结算。两条都加格挡，顺序当前观察不到差别，但形状照抄。
+  //  ②⚠ 门是 `<= 0` 而不是 `== 0`（格挡不会是负数，同解；照抄）。
+  //  ③ 门读的是**这一刻**的格挡，不是「结算完这一组之后」的——斗篷夹扣入队的那份还没执行。
+  //  ④ `clearOnCombatVictory` 同样是 false。
+  if (hasRelic(bc, "orichalcum") && bc.player.block <= 0) {
+    addToTop(bc, (c) => gainBlock(c, 6), false);
+  }
+  // 石历（STONE_CALENDAR，BattleContext.cpp:2087-2091）：
+  //     if (player.hasRelic<R::STONE_CALENDAR>()) {
+  //         if (turn == 6) {
+  //             addToBot(Actions::DamageAllEnemy(52));
+  //         }
+  //     }
+  // ⚠ 三处照抄：① `turn == 6` 而不是 `>= 6`——**只在第 7 个玩家回合末打一次**
+  //   （`turn` 从 0 起、在 `afterMonsterTurns` 开头自增，所以 `turn == 6` 是第 7 个回合，
+  //   与卡面「第 7 回合结束时」一致）；② 52 点是**非攻击伤害**（`DamageAllEnemy` 走
+  //   `Monster::damage`，不吃力量、不吃易伤，但照样被怪物格挡吸收）；
+  //   ③ `clearOnCombatVictory` 取 `Actions::DamageAllEnemy` 的默认 true。
+  if (hasRelic(bc, "stone_calendar") && bc.turn === 6) {
+    addToBot(bc, (c) => damageAllEnemiesNonAttack(c, 52));
+  }
 
   // —— 玩家 Power AtEndOfTurnPreEndTurnCards ——
   // 金属化：层数在**入队时**取，GainBlock 的 clearOnCombatVictory=false（打完这一回合
@@ -11790,7 +12209,16 @@ function callEndOfTurnActions(bc: BattleContext): void {
   if (metallicize > 0) {
     addToBot(bc, (c) => gainBlock(c, metallicize), false);
   }
-  // TODO(后续PR): 镀甲（PLATED_ARMOR，紧接金属化之后）、如水般（需姿态）、充能球回合末触发。
+  // 镀甲（PLATED_ARMOR，**玩家侧**，第四十三批的线与针）：紧接金属化之后
+  // （BattleContext.cpp:2099-2101），写法与金属化逐字同形。
+  // ⚠ 与**怪物侧**的镀甲（带壳寄生虫，`applyMonsterEndOfTurnTriggers`）是两套代码：
+  //   那边是「回合末加 = 层数的格挡」+「挨未被格挡的攻击就 `decrementStatus` 并可能改意图」，
+  //   这边的递减在 `Player::attacked` 里、而且**没有**任何特例分支。共用一个 Power id。
+  const platedArmor = getPower(bc.player.powers, "plated_armor");
+  if (platedArmor > 0) {
+    addToBot(bc, (c) => gainBlock(c, platedArmor), false);
+  }
+  // TODO(后续PR): 如水般（需姿态）、充能球回合末触发。
 
   // —— 手中的「回合末自己结算一次」的牌 ——
   // 灼伤 / 腐朽 / 怀疑 / 羞耻 / 悔恨在手上时，回合末按 `triggerOnUse = false` 入**出牌队列**
@@ -11860,6 +12288,20 @@ function applyEndOfTurnPowers(bc: BattleContext): void {
   // 连着放两次缠绕也只是「下一个玩家回合打不出攻击牌」，不会累积成两回合。
   if (getPower(bc.player.powers, "entangled") > 0) {
     addToBot(bc, (c) => removePower(c.player.powers, "entangled"));
+  }
+
+  // 敏捷流失（LOSE_DEXTERITY=13，第四十三批的二元性）：枚举序排在 LOSE_STRENGTH=14
+  // **之前**。对齐 Player.cpp:394-397，与紧随其后的力量那一格逐字同形（只差状态名）：
+  //     case PS::LOSE_DEXTERITY:
+  //         bc.addToBot(Actions::DebuffPlayer<PS::DEXTERITY>(-pair.second));
+  //         bc.addToBot(Actions::RemoveStatus<PS::LOSE_DEXTERITY>());
+  //         break;
+  // ⚠ 与灵活那条同理：扣敏捷走 `DebuffPlayer` 而不是 `BuffPlayer(-n)`，所以**会被神器吃掉**
+  //   一层——神器在手时这点敏捷就白送了。
+  const loseDexterity = getPower(bc.player.powers, "lose_dexterity");
+  if (loseDexterity > 0) {
+    addToBot(bc, (c) => debuffPlayer(c, "dexterity", -loseDexterity));
+    addToBot(bc, (c) => removePower(c.player.powers, "lose_dexterity"));
   }
 
   // 灵活的还债：先扣力量，再摘掉标记。两条都走 addToBot。
@@ -11938,6 +12380,24 @@ function applyStartOfTurnPowers(bc: BattleContext): void {
     const target = getRandomMonsterIdx(bc); // ★ 消耗一次 cardRandomRng
     addToBot(bc, (c) => playTopCardInDrawPile(c, target, false));
   }
+  // 下回合格挡（NEXT_TURN_BLOCK=65，第四十三批的自成型黏土）：枚举序排在
+  // METALLICIZE=64 之后、MAYHEM=63 之后。对齐 Player.cpp:631-634：
+  //     case PS::NEXT_TURN_BLOCK:
+  //         bc.addToBot( Actions::GainBlock(pair.second) );
+  //         removeStatus<PS::NEXT_TURN_BLOCK>();
+  //         break;
+  // ⚠ 四处照抄：
+  //  ①⚠ **加格挡入队、摘 Power 同步**——两句的形态不同。同步摘掉意味着这一帧之后快照里
+  //     就没有它了，而格挡要等动作出队才加上。
+  //  ② 它在 `applyStartOfTurnPowers` 里，也就是**清玩家格挡之后、开局抽牌之前**
+  //     （BattleContext.cpp:2198 那一串的中段）——所以这份格挡不会被本回合的清格挡吃掉。
+  //  ③ 是 `RemoveStatus`（整条摘掉）而不是递减：攒了几层一次性全给。
+  //  ④ `Actions::GainBlock` 的 `clearOnCombatVictory` 是 false。
+  const nextTurnBlock = getPower(bc.player.powers, "next_turn_block");
+  if (nextTurnBlock > 0) {
+    addToBot(bc, (c) => gainBlock(c, nextTurnBlock), false);
+    removePower(bc.player.powers, "next_turn_block");
+  }
 }
 
 /**
@@ -11965,10 +12425,21 @@ function isEtherealCard(card: CombatCard): boolean {
  * 而它们的 addToBot 落在整条回合末序列的**末尾**（UnnamedEndOfTurnAction 之后），
  * 这个位置是队列语义自然得出的，不是特例。
  *
- * TODO(后续PR): 保留牌（自带保留 / 卢恩金字塔 / 平衡）——参考在①之前还有一段 limbo 搬运。
+ * ⚠ 如尼金字塔（RUNIC_PYRAMID，第四十三批）就是①那道门（BattleContext.cpp:2519-2521）：
+ *     if (!player.hasRelic<R::RUNIC_PYRAMID>() && !player.hasStatus<PS::EQUILIBRIUM>()) {
+ *         addToTop(Actions::DiscardAtEndOfTurnHelper());
+ *     }
+ * ⚠ 三处照抄：① 它只挡**弃手牌**那一条，以太牌的消耗（②那一组）**照旧**——带着金字塔
+ *   照样会被眩晕/幽灵护甲消耗掉；② 门是「遗物 **或** 平衡」的合取取反，平衡尚无产出者，
+ *   照抄进来是空操作；③ 手牌留下之后不清空，直接进入下一个玩家回合的抽牌
+ *   （所以手牌上限 10 张那道门会开始起作用）。
+ *
+ * TODO(后续PR): 自带保留牌 / 平衡——参考在①之前还有一段 limbo 搬运。
  */
 function discardAtEndOfTurn(bc: BattleContext): void {
-  addToTop(bc, (c) => discardAtEndOfTurnHelper(c));
+  if (!hasRelic(bc, "runic_pyramid")) {
+    addToTop(bc, (c) => discardAtEndOfTurnHelper(c));
+  }
   for (let i = 0; i < bc.hand.length; i += 1) {
     const card = bc.hand[i];
     if (isEtherealCard(card)) {
@@ -12749,11 +13220,27 @@ function takeTurn(bc: BattleContext, m: CombatMonster): string | null {
  */
 function calculateDamageToPlayer(bc: BattleContext, m: CombatMonster, baseDamage: number): number {
   let damage = Math.fround(baseDamage + getPower(m.powers, "strength"));
+  // 虚弱（对齐 Monster.cpp:574-580）。⚠ 纸鹤（PAPER_KRANE，第四十三批）在这里：
+  //     if (hasStatus<MS::WEAK>()) {
+  //         if (p.hasRelic<RelicId::PAPER_KRANE>()) { damage *= 0.6f; }
+  //         else                                    { damage *= 0.75f; }
+  //     }
+  // ⚠ 三处照抄：① **同一道门里的二选一**（与纸蛙同族），不是叠乘；
+  //   ② 数值是 `0.6f`——真实游戏的措辞是「虚弱的敌人伤害降低 40% 而不是 25%」；
+  //   ③ 判的是**这只怪身上**的虚弱、遗物在**玩家身上**。
   if (getPower(m.powers, "weak") > 0) {
-    damage = Math.fround(damage * 0.75);
+    damage = Math.fround(damage * (hasRelic(bc, "paper_krane") ? 0.6 : 0.75));
   }
+  // 易伤（对齐 Monster.cpp:582-588）。⚠ 奇特蘑菇（ODD_MUSHROOM，第四十三批）在这里：
+  //     if (p.hasStatus<PS::VULNERABLE>()) {
+  //         if (p.hasRelic<RelicId::ODD_MUSHROOM>()) { damage *= 1.25f; }
+  //         else                                     { damage *= 1.5f;  }
+  //     }
+  // ⚠ 它与纸蛙是**两处不同的代码**：纸蛙管「玩家的牌打在易伤的怪身上」
+  //   （`BattleContext::calculateCardDamage`），这条管「怪打在易伤的玩家身上」。
+  //   两处的默认倍率恰好都是 1.5f，别抄串。
   if (getPower(bc.player.powers, "vulnerable") > 0) {
-    damage = Math.fround(damage * 1.5);
+    damage = Math.fround(damage * (hasRelic(bc, "odd_mushroom") ? 1.25 : 1.5));
   }
   // 虚无缥缈：怪物攻击那条路的钳制在**这里**（Monster.cpp:594），不在 Player::attacked
   // ——参考在 attacked 里明写「assume intangible is already handled」。
@@ -12778,6 +13265,26 @@ function debuffPlayer(
   amount: number,
   isSourceMonster = true,
 ): void {
+  // ⚠⚠ 三道门的**先后**照抄 `Player::debuff`（Player.h:362-379），顺序在本批变得可观察：
+  //   `amount == 0` 提前返回 → 姜（虚弱）→ 芜菁（脆弱）→ 神器。
+  //  ① `amount == 0` 那道门参考一直有（Player.h:363-365），我们此前没写；当前没有任何
+  //     调用点传 0，两边同解，补上是为了形状对齐。
+  //  ②⚠⚠ **姜与芜菁排在神器之前**，所以它们挡掉的那次减益**一层神器都不消耗**。
+  //     把它们挪到神器下面会让「带着神器吃一次虚弱」白掉一层神器——差别当场可观察。
+  if (amount === 0) {
+    return;
+  }
+  // 姜（GINGER，第四十三批）：`if (s == PS::WEAK && hasRelic<GINGER>()) return;`
+  // ⚠ 是**整条丢弃**（免疫），不是「减层数」；也不写 statusMap，所以快照里连条目都不会出现。
+  if (power === "weak" && hasRelic(bc, "ginger")) {
+    return;
+  }
+  // 芜菁（TURNIP，第四十三批）：`if (s == PS::FRAIL && hasRelic<TURNIP>()) return;`
+  // ⚠ 与姜逐字同形、只差状态名，两条并排放着（Player.h:367-374）。别把两者抄串：
+  //   姜挡虚弱（少打伤害），芜菁挡脆弱（少拿格挡）。
+  if (power === "frail" && hasRelic(bc, "turnip")) {
+    return;
+  }
   // 神器优先抵消一层（古代药水等来源）。
   const artifact = bc.player.powers.find((p) => p.id === "artifact");
   if (artifact !== undefined && artifact.amount > 0) {
@@ -13172,6 +13679,18 @@ function resetAllMonsterStatusEffects(m: CombatMonster): void {
  * ⚠ 扣血走 `hpWasLost(…, selfDamage=false)`，所以受击**永远不触发破裂**。
  */
 function dealDamageToPlayer(bc: BattleContext, amount: number, attackerIdx = -1): void {
+  // ⚠⚠ 参考在这里的语句顺序是（Player.cpp:209-257）：
+  //   格挡吸收 → **缓冲** → 荆棘 → 火焰屏障 → **鸟居** → 钨钢棒 → `if (damage > 0) { … }`
+  // 我们此前把「荆棘/火焰屏障」写在最前（两者与伤害数值无关，位置观察不到差别），
+  // 本批把缓冲插在它们之前、鸟居插在它们之后，与参考同序。
+  //
+  // 缓冲（BUFFER，石化螺旋）：`if (damage > 0 && hasStatus<BUFFER>()) { decrement; damage = 0; }`
+  //  ①⚠⚠ **位置与 `Player::damage` 里那一份不同**：这边排在荆棘/火焰屏障**之前**，
+  //     那边（非攻击伤害）在扣格挡之后就直接判。参考在这行自注
+  //     `// buffer triggers before tungsten rod in the game's implementation`。
+  //  ②⚠ **荆棘照样反伤**：缓冲把伤害吞成 0，但荆棘那两条判的是「有没有荆棘」、
+  //     与这一击留没留下伤害无关（它们在扣血分支之外）。
+  const buffer = getPower(bc.player.powers, "buffer");
   const thorns = getPower(bc.player.powers, "thorns");
   if (thorns > 0 && attackerIdx >= 0) {
     addToTop(bc, (c) => damageEnemyNonAttack(c, attackerIdx, thorns));
@@ -13182,12 +13701,42 @@ function dealDamageToPlayer(bc: BattleContext, amount: number, attackerIdx = -1)
   }
   const blocked = Math.min(bc.player.block, amount);
   bc.player.block -= blocked;
-  const unblocked = amount - blocked;
+  let unblocked = amount - blocked;
+  if (unblocked > 0 && buffer > 0) {
+    decrementPlayerPower(bc, "buffer");
+    unblocked = 0;
+  }
+  // 鸟居（TORII，第四十三批）：对齐 Player.cpp:235-237，排在荆棘/火焰屏障**之后**、
+  // 钨钢棒之前：`if (damage > 0 && damage <= 5 && hasRelic<TORII>()) { damage = 1; }`
+  // ⚠ 四处照抄：
+  //  ①⚠ 判的是**过完格挡与缓冲之后**剩下的量，不是这一击的原始伤害——所以格挡把 20 点
+  //     削到 4 点时鸟居照样把它压成 1。
+  //  ② 上界是 `<= 5`（含 5），下界是 `> 0`；恰好 6 点不吃这条。
+  //  ③ 它**只挂在 `Player::attacked` 这条路上**——非攻击伤害（灼伤 / 束缚 / 尖锐外壳 /
+  //     怪物的 `DamagePlayer`）走 `Player::damage`，那边**没有**鸟居。这与钨钢棒
+  //     （三条路各一份）正相反。
+  //  ④ 是「置为 1」而不是「减去」。
+  if (unblocked > 0 && unblocked <= 5 && hasRelic(bc, "torii")) {
+    unblocked = 1;
+  }
+  // TODO(遗物PR): 钨钢棒（TUNGSTEN_ROD，鸟居之后 `damage -= 1`）。
   // `lastAttackUnblockedDamage` 逐位对齐 `Player::attacked` 的末段（Player.cpp:243-257）：
   // 有剩余伤害就记下它，**否则显式记 0**（那个 else 分支是参考写着的，不是省略）。
   // 唯一的读者是吸血攻击（见 `vampireAttack`）。
   if (unblocked > 0) {
     bc.player.lastAttackUnblockedDamage = unblocked;
+    // 玩家侧镀甲（PLATED_ARMOR，第四十三批的线与针）：对齐 Player.cpp:245-247，
+    //     if (hasStatus<PS::PLATED_ARMOR>()) { decrementStatus<PS::PLATED_ARMOR>(); }
+    // ⚠ 四处照抄：
+    //  ①⚠⚠ 它在 `if (damage > 0)` **里面**——被格挡（或缓冲、鸟居之前的那一步）完全吃掉的
+    //     那一击**不减层数**，而**多段攻击每段各减一层**。
+    //  ②⚠ **只在 `Player::attacked` 这条路上**：非攻击伤害（灼伤 / 束缚 / 尖锐外壳）不减。
+    //     怪物侧的镀甲相反——它挂在 `attackedUnblockedHelper` 的 else-if 链上，也只吃攻击。
+    //  ③ 位置在记 `lastAttackUnblockedDamage` **之后**、痛苦突刺之前。
+    //  ④ 走 `decrementStatus`（归零就整条摘掉，快照里当场消失），不是裸的 `setStatus`。
+    if (getPower(bc.player.powers, "plated_armor") > 0) {
+      decrementPlayerPower(bc, "plated_armor");
+    }
     // 痛苦突刺（突刺之书，第二十八批）：对齐 Player.cpp:250-252
     //   `if (bc.monsters.arr[enemyIdx].hasStatus<MS::PAINFUL_STABS>()) {`
     //   `    bc.addToBot( Actions::MakeTempCardInDiscard({CardId::WOUND}) ); }`
@@ -13294,7 +13843,13 @@ function vampireAttack(bc: BattleContext, damage: number): void {
  * @param selfDamage 同 playerLoseHp：破裂只认「因打出的牌」的失血。灼伤走
  *   `Actions::DamagePlayer(2, true)`（BattleContext.cpp:940），所以灼伤**会**触发破裂；
  *   而缠绕那类怪物来源的 `DamagePlayer(n)` 是默认的 false。写成必填参数同理。
- * TODO(遗物PR): 钨钢棒减 1、缓冲（BUFFER）。
+ *
+ * ⚠ 缓冲（BUFFER，第四十三批的石化螺旋）在**格挡之后**（Player.cpp:195-198）：
+ *     if (damage > 0 && hasStatus<PS::BUFFER>()) { decrementStatus<PS::BUFFER>(); damage = 0; }
+ *   ①⚠ 它**只挡穿透格挡的那部分**：先让格挡吃，剩下的才由缓冲整个吞掉（连 1 点都不留）。
+ *   ② 每挡一次消耗一层。③ 这一条在 `Player::attacked` 里**也有一份**，但位置不同
+ *      （那边排在荆棘/火焰屏障**之前**、鸟居之前），见 `dealDamageToPlayer`。
+ * TODO(遗物PR): 钨钢棒（TUNGSTEN_ROD，缓冲之后 `damage -= 1`，三条伤害路径上各一份）。
  */
 function damagePlayerNonAttack(bc: BattleContext, amount: number, selfDamage: boolean): void {
   let damage = amount;
@@ -13303,7 +13858,11 @@ function damagePlayerNonAttack(bc: BattleContext, amount: number, selfDamage: bo
   }
   const blocked = Math.min(bc.player.block, damage);
   bc.player.block -= blocked;
-  const unblocked = damage - blocked;
+  let unblocked = damage - blocked;
+  if (unblocked > 0 && getPower(bc.player.powers, "buffer") > 0) {
+    decrementPlayerPower(bc, "buffer");
+    unblocked = 0;
+  }
   if (unblocked <= 0) {
     return;
   }
@@ -13336,6 +13895,60 @@ function wouldDie(bc: BattleContext): void {
  * ⚠ 同 applyEndOfTurnPowers：参考遍历 statusMap，即按枚举值升序，与获得顺序无关。
  * 本批只有恶魔形态（DEMON_FORM=44）命中。
  */
+/**
+ * 回合开始（抽牌**之后**）的遗物（对齐 `Player::applyStartOfTurnPostDrawRelics`，
+ * Player.cpp:661-672）。本项目**第四个**遗物时点，第四十三批为怀表而开。
+ *
+ * 调用点在 `afterMonsterTurns` 里、`applyStartOfTurnPostDrawPowers` **之前**、
+ * 三个计数器清零**之前**（对齐 BattleContext.cpp:2236）。
+ *
+ * ⚠ 参考的函数体只有两条并列的 `if`，顺序由源码定死：怀表 → 扭曲钳。
+ * ⚠ 名字里的 "PostDraw" 指的是「回合开始那次 `DrawCards` **入队之后**」，不是「抽完之后」
+ *   ——那次抽牌是 `addToBot` 的，出队要等到 `executeActions` 再跑。所以怀表排的
+ *   `DrawCards(3)` 落在开局那 5 张**后面**，手牌是 5+3。
+ */
+function applyStartOfTurnPostDrawRelics(bc: BattleContext): void {
+  // 怀表（POCKETWATCH，Player.cpp:663-667）：
+  //     if (hasRelic<R::POCKETWATCH>()) {
+  //         if (cardsPlayedThisTurn <= 3) {
+  //             bc.addToBot(Actions::DrawCards(3));
+  //         }
+  //     }
+  // ⚠⚠ `cardsPlayedThisTurn` 在这一刻还是**上一个回合**的值（清零那三句排在本函数之后，
+  //   见 `afterMonsterTurns` 里那段注释）——卡面「若上回合打出的牌不超过 3 张」就是这么来的。
+  // ⚠ `<= 3` 而不是 `< 3`；第 1 个玩家回合拿不到（`init` 不走 `afterMonsterTurns`）。
+  if (hasRelic(bc, "pocketwatch") && bc.player.cardsPlayedThisTurn <= 3) {
+    addToBot(bc, (c) => drawCards(c, 3));
+  }
+  // TODO(遗物PR): 扭曲钳（WARPED_TONGS，排在怀表之后，`Actions::UpgradeRandomCardAction`
+  //   ——它消耗一次 `shuffleRng.randomLong()` 做 Java 式洗牌，还会就地升级一张手牌）。
+}
+
+/**
+ * 回合开始回能量（对齐 `Player::rechargeEnergy`，Player.cpp:725-733）。
+ *
+ * ```cpp
+ * if (hasRelic<R::ICE_CREAM>()) {
+ *     gainEnergy(energyPerTurn);
+ * } else {
+ *     energy = energyPerTurn;
+ * }
+ * ```
+ * ⚠ 冰淇淋（ICE_CREAM，第四十三批）就是这两支的差别：`gainEnergy` 是 `energy += n`
+ * （**累加**，上一回合没花完的留着），`else` 那支是**覆盖**。
+ * ⚠ 它没有别的读点，也不影响 `energyPerTurn`——所以「攒能量」这件事完全由这一个 if 承担。
+ * ⚠ 参考在这两句之后还有一段 onEnergyRecharge 的 Power（收集 / 提婆形态 / 充能），
+ *   一个都没登记，留 TODO。
+ */
+function rechargeEnergy(bc: BattleContext): void {
+  if (hasRelic(bc, "ice_cream")) {
+    bc.player.energy += bc.player.energyPerTurn;
+  } else {
+    bc.player.energy = bc.player.energyPerTurn;
+  }
+  // TODO(后续PR): 收集（COLLECT）/ 提婆形态 / 充能（ENERGIZED）三条 onEnergyRecharge Power。
+}
+
 function applyStartOfTurnPostDrawPowers(bc: BattleContext): void {
   // 暴虐（BRUTALITY=39）排在恶魔形态（DEMON_FORM=44）**之前**——枚举序，与获得顺序无关。
   // ⚠ 失血走 PlayerLoseHp（不过格挡、clearOnCombatVictory=false），抽牌是默认的 true；
@@ -13375,16 +13988,20 @@ function afterMonsterTurns(bc: BattleContext): void {
   // 归零，**只走第一个命中的分支**。壁垒那支是空的（格挡原样留着）。
   if (getPower(bc.player.powers, "barricade") > 0) {
     // 壁垒：格挡不清空。
+  } else if (hasRelic(bc, "calipers")) {
+    // 卡钳（CALIPERS，第四十三批）：这条 if/else-if 链的**第三格**
+    // （BattleContext.cpp:2214-2215）：`player.block = std::max(0, player.block-15);`
+    // ⚠ 三处照抄：
+    //  ①⚠⚠ **它是链上的一格，不是「归零之后补回来」**。所以壁垒或模糊在身上时**轮不到它**
+    //     ——写成独立的 if 会让「壁垒 + 卡钳」变成「先保留全部、再减 15」，正好反了。
+    //  ② `max(0, …)` 而不是「减到 0 为止」：格挡不到 15 就归零，不会变负。
+    //  ③ 位置在 `applyStartOfTurnPowers` **之后**——下回合格挡（自成型黏土）那份是在
+    //     这一句之前加上的，所以**照样会被这一句削掉 15**。两颗遗物凑在一起时这个顺序可观察。
+    bc.player.block = Math.max(0, bc.player.block - 15);
   } else {
-    // TODO(后续PR): 模糊（BLUR，递减一层并保留格挡）、卡钳遗物（只减 15 点）。
+    // TODO(后续PR): 模糊（BLUR，递减一层并保留格挡）——它排在壁垒与卡钳**之间**。
     bc.player.block = 0;
   }
-  // 三个计数器一起清零（对齐 BattleContext.cpp:2240-2242，参考在那里自注
-  // `// this has to be here because some relics check this info.`）。
-  // ⚠ 清零排在 `applyStartOfTurnRelics` **之后**——战争艺术那条读的因此是上一回合的张数。
-  bc.player.cardsPlayedThisTurn = 0;
-  bc.player.attacksPlayedThisTurn = 0;
-  bc.player.skillsPlayedThisTurn = 0;
   // ⚠ 回合开始的抽牌必须**入队**（`addToBot(Actions::DrawCards(player.cardDrawPerTurn))`，
   // BattleContext.cpp:2210），不能同步抽。这一条第六批才变得可观察：
   // 抽到状态牌时烈焰吐息会 `addToBot(DamageAllEnemy)`，而紧随其后的暴虐又 addToBot 了
@@ -13424,9 +14041,22 @@ function afterMonsterTurns(bc: BattleContext): void {
       bc.player.cardDrawPerTurn += 1;
     }
   }
-  // TODO(后续PR): applyStartOfTurnPostDrawRelics（怀表 / 扭曲钳）。
+  applyStartOfTurnPostDrawRelics(bc);
   applyStartOfTurnPostDrawPowers(bc);
-  bc.player.energy = bc.player.energyPerTurn;
+  // 三个计数器一起清零（对齐 BattleContext.cpp:2240-2243，参考在那里自注
+  // `// this has to be here because some relics check this info.`）。
+  // ⚠⚠ **位置是承重的，第四十三批把它从「清格挡之后」挪到了这里**：参考把这三句放在
+  //   `applyStartOfTurnPostDrawRelics` 与 `applyStartOfTurnPostDrawPowers` **之后**，
+  //   于是两族「读上一回合的张数」的遗物各自读到的都是**上一个回合**的值：
+  //     * 战争艺术在 `applyStartOfTurnRelics` 里读 `attacksPlayedThisTurn`（更靠前）；
+  //     * **怀表**在 `applyStartOfTurnPostDrawRelics` 里读 `cardsPlayedThisTurn`（就在这三句上面）。
+  //   在怀表登记之前这两种摆法同解（没人在中间读），登记之后就不是了——摆错会让怀表
+  //   **每回合都触发**（那时计数恒为 0，`0 <= 3` 恒真）。
+  // ⚠ 参考还有第四句 `cardsDiscardedThisTurn = 0;`，我们没有这个字段（没有读者）。
+  bc.player.cardsPlayedThisTurn = 0;
+  bc.player.attacksPlayedThisTurn = 0;
+  bc.player.skillsPlayedThisTurn = 0;
+  rechargeEnergy(bc);
   // ⚠⚠ **这里原先有一句「场上没有活怪就判胜」，第三十七批删掉了——参考的
   //   `BattleContext::afterMonsterTurns`（BattleContext.cpp:2183-2246）里没有这样一句。**
   //   参考在这个函数里唯一与胜负有关的是 `if (isBattleOver) return;`，而 `isBattleOver`
