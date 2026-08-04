@@ -164,7 +164,13 @@ export type ActionDesc =
        */
       triggerOnUse?: boolean;
     }
-  | { kind: "draw_cards"; count: number };
+  | { kind: "draw_cards"; count: number }
+  /**
+   * 橙色药丸集齐三种牌型时排的那条清减益（第四十二批）。它与抽牌那条同族：由
+   * `onUseXxxCard` 排在**卡效果之后**，所以打出军备 / 焚誓 / 头槌那类开选牌屏的牌时
+   * 它会跨越选牌屏活着。
+   */
+  | { kind: "remove_player_debuffs" };
 
 export type Action = {
   fn: ActionFn;
@@ -730,6 +736,35 @@ export type CombatPlayer = {
    * 唯一读者是拆信刀（第四十一批登记）。
    */
   skillsPlayedThisTurn: number;
+  /**
+   * 墨水瓶的「已打出牌数」计数器（对齐 `Player::inkBottleCounter`，Player.h:67）。
+   *
+   * ⚠ 它**不是**回合级的：`applyStartOfTurnRelics` 里没有它，整场战斗一直累加，
+   * 每到 10 就归零并抽一张。与 `attacksPlayedThisTurn` 那一族（回合末清零）是两回事。
+   * ⚠ 参考在 `initRelics` 里写 `p.inkBottleCounter = r.data`（BattleContext.cpp:164-165）、
+   * 在 `updateRelicsOnExit` 里写回 `r.data = player.inkBottleCounter`（:532-533），
+   * 所以它在真实 run 里**跨战斗延续**。我们的 `bc.relics` 只有 id、没有 `data`
+   * （与御守那处同一个缺口），故战斗内一律从 0 起算——harness 发的 `RelicSpec.data`
+   * 也恰好是 0，因此 trace 侧逐位一致。⚠ 接 run 层时要把这一对读写补上。
+   *
+   * 读者：`onUseAttackCard` :1694 / `onUseSkillCard` :1811 / `onUsePowerCard` :1889 /
+   * `onUseStatusOrCurseCard` :1958 —— **四处逐字相同**，见 `inkBottleOnUseCard`。
+   */
+  inkBottleCounter: number;
+  /**
+   * 橙色药丸的「本回合已打出的牌型」位掩码（对齐 `Player::orangePelletsCardTypesPlayed`，
+   * `std::bitset<3>`，Player.h:82）。
+   *
+   * ⚠ 位序**就是 `CardType` 的枚举值**（Cards.h:406-413：ATTACK=0 / SKILL=1 / POWER=2），
+   * 参考写的是 `set(static_cast<int>(CardType::X), true)`。诅咒与状态牌的枚举值是 3 / 4，
+   * 而 `bitset<3>` 只有三位——参考因此**根本没在 `onUseStatusOrCurseCard` 里放橙色药丸**
+   * （放了就是越界）。这不是我们简化的，是参考的形状。
+   *
+   * ⚠ 三个写点（:1706 / :1819 / :1897）只负责置位与「集齐就清空 + 入队清减益」，
+   * **回合开始的复位是另一处**（`Player::applyStartOfTurnRelics` 的最后一句，
+   * Player.cpp:559-561）。两件事分开记，见 `orangePelletsOnUseCard` 与 `RELIC_AT_TURN_START`。
+   */
+  orangePelletsCardTypesPlayed: number;
   /**
    * 燃烧的失血量（对齐 Player::combustHpLoss）。**不是**燃烧的层数：
    * `Player::buff<PS::COMBUST>` 每次调用都 `++combustHpLoss`，而层数按 5/7 累加，
@@ -6781,6 +6816,11 @@ export function initCombat(input: CombatInitInput): BattleContext {
       cardsPlayedThisTurn: 0,
       attacksPlayedThisTurn: 0,
       skillsPlayedThisTurn: 0,
+      // 对齐 `Player::inkBottleCounter` 的初值 0（Player.h:67）。`initRelics` 那一格
+      // （`= r.data`）见 `RELIC_IMMEDIATE.ink_bottle`。
+      inkBottleCounter: 0,
+      // 对齐 `std::bitset<3> orangePelletsCardTypesPlayed` 的默认全 0（Player.h:82）。
+      orangePelletsCardTypesPlayed: 0,
       combustHpLoss: 0,
       bomb1: 0,
       bomb2: 0,
@@ -8271,6 +8311,21 @@ const RELIC_IMMEDIATE: Record<string, (bc: BattleContext) => void> = {
       }
     }
   },
+  // 墨水瓶（INK_BOTTLE，第四十二批）：对齐 `BattleContext::initRelics` 的那一格
+  // （BattleContext.cpp:164-165）：
+  //     case R::INK_BOTTLE:
+  //         p.inkBottleCounter = r.data;
+  //         break;
+  // ⚠⚠ 它**不是效果**，是把 run 层存下来的计数器搬进战斗。配对的写回在
+  //   `BattleContext::updateRelicsOnExit`（`r.data = player.inkBottleCounter`，:532-533）
+  //   ——所以真实 run 里这个计数器**跨战斗延续**，只有刚拿到的墨水瓶才从 0 开始。
+  // ⚠ 我们的 `bc.relics` 只存 id、没有 `data`（与御守 `setHasRelic<OMAMORI>(r.data)`
+  //   那处是同一个缺口），所以这里只能写 0。harness 的 `RelicSpec.data` 对墨水瓶恰好也是
+  //   0（默认值），因此**trace 侧逐位一致**；接 run 层时这一对读写要一起补上。
+  //   TODO(后续PR): 让 `bc.relics` 带 `data`，并在 `settleCombat` 里写回。
+  ink_bottle: (bc) => {
+    bc.player.inkBottleCounter = 0;
+  },
 };
 
 /** 第二遍：入队执行，落在开局抽牌之后。 */
@@ -8303,9 +8358,13 @@ const RELIC_AT_BATTLE_START: Record<string, (bc: BattleContext) => void> = {
  * | 装饰扇 `ornamental_fan`          | `onUseAttackCard` :1714，每 3 张攻击牌 +4 格挡                  |
  * | 手里剑 `shuriken`                | `onUseAttackCard` :1718，每 3 张攻击牌 +1 力量                  |
  * | 开信刀 `letter_opener`           | `onUseSkillCard` :1828，每 3 张技能牌对全体 5 点非攻击伤害      |
+ * | 橙色药丸 `orange_pellets`        | `onUse{Attack,Skill,Power}Card` :1706 / :1819 / :1897 三处置位 |
  *
  * ⚠ 贤者之石**不在**这张表里：它两头都有（`initRelics` 那一格 + 七处召唤/分裂/复活），
- * 所以走 `RELIC_IMMEDIATE` 就已经被认出来了。硫磺同理（`initRelics` + 回合开始那处）。
+ * 所以走 `RELIC_IMMEDIATE` 就已经被认出来了。硫磺同理（`initRelics` + 回合开始那处），
+ * **墨水瓶**同理（`initRelics` :164 搬计数器 + 四个 handler）。
+ * ⚠ 橙色药丸**在**这张表里但**也在** `RELIC_AT_TURN_START` 里（回合复位那一句）——
+ * 两处都登记不会重复触发，`isRelicSupported` 取的是并集。
  */
 const RELIC_OTHER_HOOKS: ReadonlySet<string> = new Set([
   "gremlin_horn",
@@ -8316,6 +8375,7 @@ const RELIC_OTHER_HOOKS: ReadonlySet<string> = new Set([
   "ornamental_fan",
   "shuriken",
   "letter_opener",
+  "orange_pellets",
 ]);
 
 function initRelics(bc: BattleContext): void {
@@ -8350,17 +8410,31 @@ function initRelicsAtBattleStart(bc: BattleContext): void {
  * TODO(后续PR): 战争艺术 / 船长之轮 / 达摩鲁 / 情绪芯片 / 悬停风筝 …
  */
 function applyStartOfTurnRelics(bc: BattleContext): void {
-  for (const id of bc.relics) {
-    RELIC_AT_TURN_START[id]?.(bc);
+  // ⚠⚠ **按参考的书写顺序遍历这张表，而不是按玩家的遗物顺序**（第四十二批改）。
+  //   `initRelics` 与 `atBattleStart` 那两张表在参考里是
+  //   `for (auto &r : g.relics.relics) switch (r.id)`——遍历的是**遗物容器**，所以我们那两处
+  //   照着 `bc.relics` 走是对的。而 `Player::applyStartOfTurnRelics` 是一串**并列的 `if`**，
+  //   顺序由**源码**定死、与玩家什么时候捡到哪颗遗物无关。表里只有硫磺一颗时两种写法同解，
+  //   本批加进橙色药丸之后就必须写对形状（当前两者仍不互相读，所以还是观察不到——
+  //   但下一颗进这张表的遗物随时会让它可观察，见战争艺术 / 船长之轮）。
+  for (const [id, fn] of RELIC_AT_TURN_START) {
+    if (hasRelic(bc, id)) {
+      fn(bc);
+    }
   }
 }
 
 /**
- * 回合开始的遗物表（对齐 `Player::applyStartOfTurnRelics` 里那串 `if (hasRelic<X>())`）。
+ * 回合开始的遗物表（对齐 `Player::applyStartOfTurnRelics` 里那串 `if (hasRelic<X>())`，
+ * Player.cpp:489-562）。
  *
  * ⚠ 与 `RELIC_IMMEDIATE` / `RELIC_AT_BATTLE_START` 不同，这张表里的东西**每回合都跑**。
+ * ⚠⚠ 它是**有序数组**而不是 Record：参考那一串是并列的 `if`，先后由源码决定。
+ *   参考的完整书写顺序是 战争艺术 → **硫磺** → 船长之轮 → 达摩鲁 → 情绪芯片 → 快乐花 →
+ *   号角 → 熏香炉 → 插入器 → 水银沙漏 → 死藤 → **橙色药丸**（最后一句）。
+ *   已登记的两颗按这个顺序排；中间未登记的那些登记时插回各自的位置。
  */
-const RELIC_AT_TURN_START: Record<string, (bc: BattleContext) => void> = {
+const RELIC_AT_TURN_START: ReadonlyArray<readonly [string, (bc: BattleContext) => void]> = [
   // 硫磺（BRIMSTONE）：Player.cpp:497-505，与 `initRelics` 那一格**逐字相同**——
   //     if (hasRelic<R::BRIMSTONE>()) {
   //         buff<PS::STRENGTH>(2);
@@ -8371,15 +8445,171 @@ const RELIC_AT_TURN_START: Record<string, (bc: BattleContext) => void> = {
   //         }
   //     }
   // 两处都是**同步**的（一个 addToBot 都没有），过滤器同样是 `isTargetable()`。
-  brimstone: (bc) => {
-    addPower(bc.player.powers, "strength", 2);
-    for (const m of bc.monsters) {
-      if (m.alive) {
-        addPower(m.powers, "strength", 1);
+  [
+    "brimstone",
+    (bc) => {
+      addPower(bc.player.powers, "strength", 2);
+      for (const m of bc.monsters) {
+        if (m.alive) {
+          addPower(m.powers, "strength", 1);
+        }
       }
+    },
+  ],
+  // 橙色药丸（ORANGE_PELLETS，第四十二批）：对齐 `Player::applyStartOfTurnRelics` 的
+  // **最后一句**（Player.cpp:559-561）：
+  //     if (hasRelic<R::ORANGE_PELLETS>()) {
+  //         orangePelletsCardTypesPlayed.reset();
+  //     }
+  // ⚠⚠ **这一处与三个 handler 里的那三处是两件不同的事**，别合并：
+  //   handler 里那三处是**计数**（置位 + 集齐就清空并入队清减益），这一处是**回合复位**。
+  //   卡面「在同一**回合**内打出攻击、技能和能力牌各一张」的「回合」二字全靠这一句。
+  // ⚠ 位置：它在 `applyStartOfTurnRelics` 里，而那个函数排在
+  //   `BattleContext::afterMonsterTurns` 的**清格挡与三个计数器清零之前**
+  //   （BattleContext.cpp:2198 / :2240-2242）。与那三个计数器是**不同的清零点**——
+  //   `attacksPlayedThisTurn` 那三个在这个函数**之后**清（战争艺术因此读到上一回合的数），
+  //   橙色药丸这个在函数**里面**清。抄错顺序当前观察不到（没人在两者之间读它），照抄。
+  // ⚠ 是**同步**清零（一个 addToBot 都没有）。
+  [
+    "orange_pellets",
+    (bc) => {
+      bc.player.orangePelletsCardTypesPlayed = 0;
+    },
+  ],
+];
+
+/**
+ * 墨水瓶（INK_BOTTLE，第四十二批）：每打出 10 张牌抽 1 张。
+ *
+ * 参考把**逐字相同的五行**写在**四个** handler 里（BattleContext.cpp:1694 / :1811 /
+ * :1889 / :1958）：
+ * ```cpp
+ * if (p.hasRelic<R::INK_BOTTLE>()) {
+ *     p.inkBottleCounter++;
+ *     if (p.inkBottleCounter == 10) {
+ *         p.inkBottleCounter = 0;
+ *         addToBot( Actions::DrawCards(1) );
+ *     }
+ * }
+ * ```
+ * ⚠ 五处照抄：
+ *  ①⚠⚠ **四个 handler 都有**，所以**状态牌 / 诅咒牌也算一张**。这是「每打出 10 张**牌**」
+ *     那句话的全部实现：没有任何牌型过滤，`onUseStatusOrCurseCard` 里那一份就是证据。
+ *     漏抄任一份不会报错，只会让计数器从此**整体错位**——它不是回合级的，一错错到底。
+ *  ② 阈值是 **`== 10`** 而不是 `>= 10`，配合「命中就归零」。写成 `>=` 在正常路径上同解，
+ *     但那是巧合；真正被钉住的是「每 10 张」这个周期。
+ *  ③ **自增在判据之前**（与三颗计数遗物同族），所以第 10 张牌读到的是 10。
+ *  ④ 抽牌**入队**（`addToBot`），排在这张牌自己的效果之后；`clearOnCombatVictory`
+ *     取 `Actions::DrawCards` 的默认值 true。
+ *  ⑤⚠ 计数器**不随回合清零**（`applyStartOfTurnRelics` 里没有它），而且参考在
+ *     `updateRelicsOnExit` 里把它写回遗物的 `data`——真实 run 里它跨战斗延续。
+ *
+ * ⚠ 位置逐 handler 不同，**必须逐个照抄**：
+ *   * 攻击牌：在苦无**之前**（:1694 vs :1702）；
+ *   * 技能牌：在橙色药丸**之前**、拆信刀之前（:1811）；
+ *   * 能力牌：在鸟面坛**之后**、橙色药丸之前（:1889）；
+ *   * 状态/诅咒牌：**整个函数的最后一句**，在蓝色蜡烛 / 医疗包那个分支**之后**（:1958），
+ *     而且那个 handler 里**没有**橙色药丸（见 `orangePelletsOnUseCard` 的注释）。
+ */
+function inkBottleOnUseCard(bc: BattleContext): void {
+  if (hasRelic(bc, "ink_bottle")) {
+    bc.player.inkBottleCounter += 1;
+    if (bc.player.inkBottleCounter === 10) {
+      bc.player.inkBottleCounter = 0;
+      addToBot(bc, (c) => drawCards(c, 1), true, { kind: "draw_cards", count: 1 });
     }
-  },
-};
+  }
+}
+
+/**
+ * 橙色药丸（ORANGE_PELLETS，第四十二批）：一回合内三种牌型各打一张就清掉全部减益。
+ *
+ * 参考把**逐字相同的六行**写在**三个** handler 里（BattleContext.cpp:1706 / :1819 / :1897），
+ * 只有 `CardType::X` 那一个模板实参不同：
+ * ```cpp
+ * if (p.hasRelic<R::ORANGE_PELLETS>()) {
+ *     p.orangePelletsCardTypesPlayed.set(static_cast<int>(CardType::ATTACK), true);
+ *     if (p.orangePelletsCardTypesPlayed.all()) {
+ *         p.orangePelletsCardTypesPlayed.reset();
+ *         addToBot(Actions::RemovePlayerDebuffs());
+ *     }
+ * }
+ * ```
+ * ⚠ 五处照抄：
+ *  ①⚠⚠ **只有三个 handler**：`onUseStatusOrCurseCard` 里**没有**它。理由是形状而不是设计
+ *     偏好——那个字段是 `std::bitset<3>`（Player.h:82），而 `CardType::CURSE` / `STATUS`
+ *     的枚举值是 **3 / 4**（Cards.h:406-413），`set(3, true)` 就越界了。
+ *     ⚠ 这与墨水瓶正好相反（墨水瓶四个 handler 全有），两颗遗物并排放在同一段里，
+ *     **别照着邻居抄**。
+ *  ② **先置位再判 `all()`**，所以「补上第三种牌型的那一张牌」自己就触发。
+ *  ③ 命中时**先 `reset()` 再入队**——清减益是 `addToBot`，而位掩码是**同步**清空的。
+ *     于是这张牌之后再打三种牌型可以再触发一次（一回合内可以触发多次）。
+ *  ④ 清减益走 `Actions::RemovePlayerDebuffs`（Actions.cpp:940-944），
+ *     `clearOnCombatVictory` 取默认的 true。
+ *  ⑤ 回合开始的复位是**另一处**（`Player::applyStartOfTurnRelics` 的最后一句），
+ *     见 `RELIC_AT_TURN_START`。
+ *
+ * ⚠ 位置：攻击牌那份夹在**苦无与装饰扇之间**（:1702 / :1706 / :1714），技能牌那份在
+ * 墨水瓶**之后**、拆信刀之前，能力牌那份在墨水瓶之后、木乃伊手之前。
+ */
+function orangePelletsOnUseCard(bc: BattleContext, typeBit: 0 | 1 | 2): void {
+  if (hasRelic(bc, "orange_pellets")) {
+    bc.player.orangePelletsCardTypesPlayed |= 1 << typeBit;
+    if (bc.player.orangePelletsCardTypesPlayed === 0b111) {
+      bc.player.orangePelletsCardTypesPlayed = 0;
+      addToBot(bc, (c) => removePlayerDebuffs(c), true, { kind: "remove_player_debuffs" });
+    }
+  }
+}
+
+/**
+ * 清掉玩家身上的全部减益（对齐 `Player::removeDebuffs`，Player.cpp:121-149）。
+ *
+ * ⚠ 四处照抄：
+ *  ①⚠⚠ **力量与敏捷不是「摘掉」而是「负数才归零」**：
+ *     `if (getStatus<STRENGTH>() < 0) setStatusValueNoChecks<STRENGTH>(0);`
+ *     正的力量原样留着。这两句是这个函数里**唯一会与「加力量 / 加敏捷」互相干扰的东西**，
+ *     也就是苦无 / 手里剑那两条动作与这一条之间**唯一**的可观察面（第四十二批实测：
+ *     两者同时触发 3 / 1440 条，且没有一条同时满足「力量或敏捷为负」）。
+ *  ② **抽牌削减要先把 `cardDrawPerTurn` 还回去再摘 Power**，两句成对
+ *     （与 `afterMonsterTurns` 里那次归还是同一对，摘一次还一次）。
+ *  ③ 名单里**没有**中毒 / 燃烧那种「不是 Power 的东西」，也没有虚弱以外的怪物侧减益。
+ *  ④ 走的是 `removeStatus`（整条摘掉）而不是 `decrementStatus`。
+ *
+ * ⚠ 名单里当前**没有产出者**的：偏移（BIAS）、禁食（FASTING）、恶灵形态（WRAITH_FORM）
+ * ——照抄进来是纯粹的空操作，写着是为了下次有人登记它们时不用回参考重数一遍。
+ */
+function removePlayerDebuffs(bc: BattleContext): void {
+  const powers = bc.player.powers;
+  const strength = bc.player.powers.find((p) => p.id === "strength");
+  if (strength !== undefined && strength.amount < 0) {
+    strength.amount = 0;
+  }
+  const dexterity = bc.player.powers.find((p) => p.id === "dexterity");
+  if (dexterity !== undefined && dexterity.amount < 0) {
+    dexterity.amount = 0;
+  }
+  removePower(powers, "bias");
+  removePower(powers, "confused");
+  removePower(powers, "constricted");
+  // 抽牌削减：先 `++cardDrawPerTurn` 再摘，与 `Player::debuff` 里那句 `--cardDrawPerTurn`
+  // 配对（对齐 Player.cpp:133-136）。
+  if (hasPower(powers, "draw_reduction")) {
+    bc.player.cardDrawPerTurn += 1;
+    removePower(powers, "draw_reduction");
+  }
+  removePower(powers, "entangled");
+  removePower(powers, "fasting");
+  removePower(powers, "frail");
+  removePower(powers, "hex");
+  removePower(powers, "lose_dexterity");
+  removePower(powers, "lose_strength");
+  removePower(powers, "no_card_block"); // PS::NO_BLOCK
+  removePower(powers, "no_draw");
+  removePower(powers, "vulnerable");
+  removePower(powers, "weak");
+  removePower(powers, "wraith_form");
+}
 
 // ============================================================================
 // 选牌屏：开屏动作 + 选定处理
@@ -10529,19 +10759,20 @@ function onUseAttackCard(bc: BattleContext, item: CardQueueItem, card: CombatCar
   // 参考把它们写成 `onUseAttackCard` 里**三个各自独立的 `if`**，共用同一个计数器却分散在
   // 三个位置上，中间还夹着别的遗物（BattleContext.cpp:1698-1720）：
   //
-  //     if (p.hasRelic<R::INK_BOTTLE>())      { … }                       // :1698 未登记
+  //     if (p.hasRelic<R::INK_BOTTLE>())      { … }                       // :1694
   //     if (p.hasRelic<R::KUNAI>() && p.attacksPlayedThisTurn % 3 == 0)    // :1702
   //         addToBot( Actions::BuffPlayer<PS::DEXTERITY>(1) );
-  //     if (p.hasRelic<R::ORANGE_PELLETS>())  { … }                       // :1707 未登记
+  //     if (p.hasRelic<R::ORANGE_PELLETS>())  { … }                       // :1706
   //     if (p.hasRelic<R::ORNAMENTAL_FAN>() && … % 3 == 0)                 // :1714
   //         addToBot( Actions::GainBlock(4) );
   //     if (p.hasRelic<R::SHURIKEN>() && … % 3 == 0)                       // :1718
   //         addToBot( Actions::BuffPlayer<PS::STRENGTH>(1) );
   //
   // ⚠ 四处照抄：
-  //  ① **逐条独立**，不要合并成「计数到 3 就一起结算」。当前三颗的相对顺序（苦无 → 装饰扇
-  //     → 手里剑）只在「三条动作入队的先后」上可观察，但只要中间那两颗未登记的遗物哪天
-  //     登记了，合并写法就无处安放它们。
+  //  ① **逐条独立**，不要合并成「计数到 3 就一起结算」——中间那两颗（墨水瓶 / 橙色药丸，
+  //     第四十二批登记）就无处安放。⚠ 但**登记它们并没有让「三颗的相对顺序」变得可观察**，
+  //     那条盲区仍是 0 例，理由与实测例数见 TODOS（两道门：两颗遗物要在**同一张牌**上同时
+  //     触发，且那一刻玩家的力量或敏捷要为负）。
   //  ② **入队**（`addToBot`），所以排在这张攻击牌自己的伤害**之后**——手里剑加的力量
   //     不影响触发它的那一击。
   //  ③ `clearOnCombatVictory` 逐条不同：`Actions::BuffPlayer` 用的是 `Action` 的默认值
@@ -10549,9 +10780,11 @@ function onUseAttackCard(bc: BattleContext, item: CardQueueItem, card: CombatCar
   //     （Actions.cpp:161-165）。于是这一击打死最后一只怪时，装饰扇的 4 点格挡照样加上，
   //     苦无的敏捷与手里剑的力量却被 `clearPostCombatActions` 清掉。
   //  ④ 格挡走**裸** `GainBlock`（与怒火同一条），不过 `calculateCardBlock`。
+  inkBottleOnUseCard(bc); // :1694，排在苦无之前
   if (hasRelic(bc, "kunai") && bc.player.attacksPlayedThisTurn % 3 === 0) {
     addToBot(bc, (c) => addPower(c.player.powers, "dexterity", 1));
   }
+  orangePelletsOnUseCard(bc, 0); // :1706，**夹在苦无与装饰扇之间**（CardType::ATTACK = 0）
   if (hasRelic(bc, "ornamental_fan") && bc.player.attacksPlayedThisTurn % 3 === 0) {
     addToBot(bc, (c) => gainBlock(c, 4), false);
   }
@@ -10619,6 +10852,14 @@ function onUseSkillCard(bc: BattleContext): void {
   // 诅咒（HEX，选民）：位置照抄——排在残影 / 爆发 / 复制 / 回响形态**之后**、华彩与全部遗物
   // **之前**，因此也在最末那条激怒之前（BattleContext.cpp:1796-1798）。见 `hexShuffleDazed`。
   hexShuffleDazed(bc);
+  // —— 墨水瓶 / 橙色药丸（第四十二批）——
+  // 参考在技能牌这条路上的书写顺序是 墨水瓶 :1811 → 橙色药丸 :1819 → 拆信刀 :1828 →
+  // 木乃伊手（未登记）。⚠⚠ **墨水瓶与橙色药丸的先后是可观察的**（第四十二批实测）：
+  // 墨水瓶排的是 `DrawCards(1)`、橙色药丸排的是 `RemovePlayerDebuffs`，而清减益里有
+  // `removeStatus<PS::NO_DRAW>()`——玩家身上有「无法抽牌」（战斗恍惚）时，as-built
+  // 的顺序是「先抽（被 NO_DRAW 挡住、一张都没抽）、后清」，对调就变成真的抽到一张。
+  inkBottleOnUseCard(bc);
+  orangePelletsOnUseCard(bc, 1); // CardType::SKILL = 1
   // —— 拆信刀（LETTER_OPENER，第四十一批）——
   //
   // 对齐 BattleContext.cpp:1827-1831：
@@ -10677,11 +10918,15 @@ function hexShuffleDazed(bc: BattleContext): void {
  * 打出一张**能力牌**之后的触发（对齐 `BattleContext::onUsePowerCard`，
  * BattleContext.cpp:1852-1914）。第二十三批新增，目前只有诅咒一条。
  *
- * TODO(后续PR): 残影 / 复制 / 回响形态 / 华彩，以及鸟面坛 / 墨水瓶 / 橙色药丸 / 木乃伊手
- * 四个遗物（都还没有对应内容登记）。
+ * 第四十二批补上墨水瓶（:1889）与橙色药丸（:1897）。参考在这条路上的书写顺序是
+ * 鸟面坛（未登记）→ 墨水瓶 → 橙色药丸 → 木乃伊手（未登记）。
+ *
+ * TODO(后续PR): 残影 / 复制 / 回响形态 / 华彩，以及鸟面坛 / 木乃伊手两个遗物。
  */
 function onUsePowerCard(bc: BattleContext): void {
   hexShuffleDazed(bc);
+  inkBottleOnUseCard(bc);
+  orangePelletsOnUseCard(bc, 2); // CardType::POWER = 2
 }
 
 /**
@@ -10691,10 +10936,18 @@ function onUsePowerCard(bc: BattleContext): void {
  * ⚠ 能走到这里的只有**打得出去**的状态/诅咒牌。当前唯一登记的是黏液
  *（`CardInstance.cpp:329` 那个 `id != SLIMED` 的例外），恍惚 / 伤口 / 灼伤都打不出。
  *
+ * 第四十二批补上**墨水瓶**（:1958）。⚠⚠ 两处形状必须照抄：
+ *  ① 它是**整个函数的最后一句**，排在蓝色蜡烛 / 医疗包那个 `CURSE` / `STATUS` 分支
+ *     （:1946-1957，两颗都未登记）**之后**；
+ *  ② 这个 handler 里**没有橙色药丸**——`orangePelletsCardTypesPlayed` 是 `bitset<3>`，
+ *     而 `CardType::CURSE` / `STATUS` 的枚举值是 3 / 4，放进来就越界了。
+ *     **两颗遗物在另外三个 handler 里是并排的，只有这里分家，别照着邻居抄。**
+ *
  * TODO(后续PR): 残影 / 复制 / 回响形态 / 华彩，以及蓝色蜡烛（诅咒牌失 1 血并消耗）。
  */
 function onUseStatusOrCurseCard(bc: BattleContext): void {
   hexShuffleDazed(bc);
+  inkBottleOnUseCard(bc);
 }
 
 /**
@@ -10821,6 +11074,8 @@ function actionFromDesc(desc: ActionDesc): Action {
       const count = desc.count;
       return makeAction((c) => drawCards(c, count), true, { kind: "draw_cards", count });
     }
+    case "remove_player_debuffs":
+      return makeAction((c) => removePlayerDebuffs(c), true, { kind: "remove_player_debuffs" });
   }
 }
 
@@ -13713,14 +13968,17 @@ export function isPotionSupported(potionId: string): boolean {
  * `initRelics` 里**一个字都没有**，它们的钩子分别挂在 `Monster::die`、两条伤害路径、
  * 以及蠕动血块的植入上；第四十一批的四颗计数遗物同理（挂在 `onUseAttackCard` /
  * `onUseSkillCard` 上）。只看时点表会把它们报成「没登记」。
- * ⚠ `RELIC_AT_TURN_START` 里当前只有硫磺，而它同时在 `RELIC_IMMEDIATE` 里——
- * 这一项现在是冗余的，但漏写它会在下一颗「只在回合开始有效」的遗物上静默失效。
+ * ⚠ `RELIC_AT_TURN_START` 里现在有硫磺与橙色药丸，两颗都同时出现在别的表里
+ * （硫磺在 `RELIC_IMMEDIATE`、橙色药丸在 `RELIC_OTHER_HOOKS`）——这一项因此仍然是冗余的，
+ * 但漏写它会在下一颗「只在回合开始有效」的遗物上静默失效。
+ * ⚠ 第四十二批起 `RELIC_AT_TURN_START` 是**有序数组**（照抄参考那串并列 `if` 的书写顺序），
+ * 所以这里查的是 `some`，不再是下标。
  */
 export function isRelicSupported(relicId: string): boolean {
   return (
     RELIC_IMMEDIATE[relicId] !== undefined ||
     RELIC_AT_BATTLE_START[relicId] !== undefined ||
-    RELIC_AT_TURN_START[relicId] !== undefined ||
+    RELIC_AT_TURN_START.some(([id]) => id === relicId) ||
     RELIC_OTHER_HOOKS.has(relicId)
   );
 }

@@ -338,7 +338,46 @@ ENC_V0_ASC19="cultist@asc19 jaw_worm@asc19 jaw_worm_horde@asc19 two_louse@asc19 
 #   （56 条走到过）；加 4×灵巧 + 4×直觉 + 4×优雅（12 张 0 费、都不消耗）之后是 **1966** 次
 #   （479 条走到过），代价是攻击那道门从 969 掉到 722。对比表见 harness 注释与 TODOS。
 # ⚠ 牌组变了 ⇒ variant 指纹变了；`relicSet` 又是 4，撞号规则双重满足。
-ENC_V0_RELIC="large_slime@relic1 slime_boss@relic1 spheric_guardian@relic1 gremlin_leader@relic1 automaton@relic1 collector@relic1 three_darklings@relic1 reptomancer@relic1 writhing_mass@relic2 writhing_mass@relic3 gremlin_leader@relic4 automaton@relic4 collector@relic4 reptomancer@relic4"
+# 第四十二批：遗物战线第三批（`@relic5` / `@relic6`，走**新追加的两个 variant**，排在
+#   variant 4 之后；variant 40~43（relicSet 1~4）的 encounters 一个字没动，那 14 个文件
+#   逐字节不变）。本批**不加新遗物之外的任何内容**，两个 variant 各兑现一条已记的盲区。
+#
+#   @relic5 = 手钻 + 青铜鳞片，**药水钉死成格挡药水**，三个编队
+#             （spheric_guardian / sentry_and_sphere / gremlin_leader）
+#   @relic6 = 墨水瓶 + 橙色药丸 + 苦无 + 装饰扇 + 手里剑，三个编队
+#             （slime_boss / champ / lagavulin）
+#
+# ⚠⚠ **@relic5 的编队是量出来的，而且那道门是两道门**：荆棘（青铜鳞片）是「挨打时反伤」，
+#   跑在**怪物回合**，而 `MonsterGroup::applyPreTurnLogic` 在怪物回合**开头**把每只没有壁垒
+#   的怪的格挡清成 0（Monster.cpp:19-21）。所以「荆棘打在有格挡的怪身上」本身就要壁垒、
+#   或者同一个怪物回合里有更早行动的同伴给它加格挡；在那之后，3 点伤害还要**恰好**把格挡
+#   打到 0（`hadBlock && block == 0`）。十个候选编队各 120 条的实测（药水钉死，
+#   于是 `Monster::damage` 的唯一调用者就是荆棘）：
+#     spheric_guardian 荆棘命中 535 / 有格挡 426 / **破盾 27（25 条）**
+#     gremlin_leader           1373 /        94 / **破盾 27（23 条）**
+#     sentry_and_sphere         973 /       797 / **破盾 21（21 条）**
+#     donu_and_deca            1005 /       477 / 破盾 **0**（守护方阵给 16 点，3 点一次凑不齐）
+#     centurion_and_healer / automaton：有格挡 36 / 30，破盾 0
+#     champ / jaw_worm_horde / lagavulin / writhing_mass：连「有格挡」都是 0
+#   **只有三个编队同时过两道门**，就是上面那三个。
+# ⚠⚠ **药水必须钉死**：轮换里的火焰 / 爆炸药水**也**走 `Monster::damage`，而策略在第 1 回合
+#   就把三瓶喝光——沉睡的拉加维林开局自带 8 点格挡（MonsterSpecific.cpp:288-291），
+#   那一下就能点亮同一道门，与荆棘毫无关系。钉一瓶碰不到怪的药水，
+#   「这三份文件里每一次 `Monster::damage` 破盾都是荆棘」才是按构造成立的。
+#   ⚠ 顺带一个白拿的好处：遗物与药水都钉死之后这个 variant **不读 traceIdx**，
+#   所以它的 trace 与它排在乘积里的哪个位置无关，测量数字可以逐例照搬。
+# ⚠⚠ **@relic6 的牌组也是量出来的（第五次「先量再定」）**：42 张 =
+#   `BATCH_1 + SPOT_WEAKNESS` + 4×灵巧 + 4×直觉 + 4×优雅 + **4×暴怒 + 4×战斗恍惚**。
+#   后八张各有明确用途：暴怒是全项目**唯一 0 费的能力牌**，没有它橙色药丸的 `.all()`
+#   几乎凑不齐（能力侧触发 176 → 1038）；战斗恍惚是**唯一的 NO_DRAW 产出者**，
+#   而 NO_DRAW 正是「墨水瓶与橙色药丸谁先入队」唯一的可观察面（同一张牌上两颗同时触发
+#   且带着 NO_DRAW：34 张牌组 0 次，42 张牌组 81 次）。
+# ⚠ 编队选 `slime_boss` 是因为**黏液是策略唯一打得出去的状态牌**
+#   （`CardInstance.cpp:329` 那个 `id != SLIMED` 的例外），而它是语料里唯一大量产出黏液的
+#   编队——墨水瓶的**第四个** handler（`onUseStatusOrCurseCard` :1958）只有这里能被走到。
+#   ⚠ 牌组在这里是**反作用**的：0 费牌越多，史莱姆王死得越快、打出的黏液越少
+#   （34 张牌组 360 次 → 42 张牌组 96 次）。42 张仍然够（42 条 trace 打出过黏液）。
+ENC_V0_RELIC="large_slime@relic1 slime_boss@relic1 spheric_guardian@relic1 gremlin_leader@relic1 automaton@relic1 collector@relic1 three_darklings@relic1 reptomancer@relic1 writhing_mass@relic2 writhing_mass@relic3 gremlin_leader@relic4 automaton@relic4 collector@relic4 reptomancer@relic4 spheric_guardian@relic5 sentry_and_sphere@relic5 gremlin_leader@relic5 slime_boss@relic6 champ@relic6 lagavulin@relic6"
 ENC_V0="$ENC_V0_ASC0 $ENC_V0_ASC19 $ENC_V0_TGT1 $ENC_V0_ACT3 $ENC_V0_RELIC"
 
 policy_of() {

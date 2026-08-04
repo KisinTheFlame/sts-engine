@@ -85,6 +85,7 @@ export function migrateLoadedState(raw: unknown): GameState {
     migrateMonsterMiscInfo(live);
     migratePlayerLastAttack(live);
     migratePlayerTurnCounters(live);
+    migratePlayerRelicCounters(live);
   }
 
   return state as unknown as GameState;
@@ -122,6 +123,26 @@ function migratePlayerTurnCounters(combat: Record<string, unknown>): void {
   if (player) {
     backfill(player, "attacksPlayedThisTurn", 0);
     backfill(player, "skillsPlayedThisTurn", 0);
+  }
+}
+
+/**
+ * 墨水瓶的 `inkBottleCounter` 与橙色药丸的 `orangePelletsCardTypesPlayed`（第四十二批，
+ * 对齐 `Player::inkBottleCounter` / `Player::orangePelletsCardTypesPlayed`，Player.h:67 / :82）。
+ *
+ * 回填 0 是**无损**的，理由与上面两条同型：这两个字段的读者只有墨水瓶与橙色药丸两颗遗物，
+ * 而它们的战斗内行为**本批才转写**——在此之前两颗在战斗内是纯粹的摆设
+ * （`relics.ts` 的 `hooks` 是空的，`initRelics` 三张表里也没有它们）。
+ * ⚠ 老档确实可能停在「本回合已打过攻击牌与技能牌」的时点上，回填 0 会让位掩码从头算起；
+ * 那个「正确的续算值」从来就不存在。
+ * ⚠ 墨水瓶那个计数器在参考里是**跨战斗**的（`initRelics` 读 `r.data`、`updateRelicsOnExit`
+ * 写回），我们目前每场从 0 起算——那是 run 层的缺口，不是迁移的事，已记进 TODOS。
+ */
+function migratePlayerRelicCounters(combat: Record<string, unknown>): void {
+  const player = asRecord(combat["player"]);
+  if (player) {
+    backfill(player, "inkBottleCounter", 0);
+    backfill(player, "orangePelletsCardTypesPlayed", 0);
   }
 }
 
