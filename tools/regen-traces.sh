@@ -377,7 +377,38 @@ ENC_V0_ASC19="cultist@asc19 jaw_worm@asc19 jaw_worm_horde@asc19 two_louse@asc19 
 #   编队——墨水瓶的**第四个** handler（`onUseStatusOrCurseCard` :1958）只有这里能被走到。
 #   ⚠ 牌组在这里是**反作用**的：0 费牌越多，史莱姆王死得越快、打出的黏液越少
 #   （34 张牌组 360 次 → 42 张牌组 96 次）。42 张仍然够（42 条 trace 打出过黏液）。
-ENC_V0_RELIC="large_slime@relic1 slime_boss@relic1 spheric_guardian@relic1 gremlin_leader@relic1 automaton@relic1 collector@relic1 three_darklings@relic1 reptomancer@relic1 writhing_mass@relic2 writhing_mass@relic3 gremlin_leader@relic4 automaton@relic4 collector@relic4 reptomancer@relic4 spheric_guardian@relic5 sentry_and_sphere@relic5 gremlin_leader@relic5 slime_boss@relic6 champ@relic6 lagavulin@relic6"
+# 第四十三批：遗物战线第四批（`@relic7`~`@relic11`，五个新 variant，排在 variant 5 之后；
+#   relicSet 1~6 的 encounters 一个字没动，那 20 个文件逐字节不变）。**本批一次登记 38 颗遗物**
+#   ——全部是参考里「战斗内只有一个读点」的那一族（`grep -rn '\bNAME\b' src/combat include/combat`
+#   只有一行），所以每颗都是一两行的转写；多钩子的那 ~49 颗不在本批范围。
+#
+#   @relic7  = 破损王冠 + 咖啡滤压壶 + 诅咒钥匙 + 融合锤 + 如尼圆顶 + 诱变强化剂 +
+#              石化螺旋 + 数据磁盘，两个编队（the_guardian / champ）
+#   @relic8  = 战争艺术 + 船长之轮 + 号角 + 斗篷夹扣 + 卡钳 + 算盘 + 冰淇淋 + 怀表，
+#              三个编队（three_sentries / time_eater / three_darklings）
+#   @relic9  = 打击假人 + 纸蛙 + 纸鹤 + 奇特蘑菇 + 靴子 + 鸟居 + 冠军腰带 + 不休陀螺，
+#              三个编队（champ / three_byrds / collector）
+#   @relic10 = 鸟面坛 + 魔力之花 + 二元性 + 卡戎的骨灰 + 奇异汤匙 + 如尼金字塔 +
+#              血腥雕像 + 山铜，三个编队（slime_boss / three_sentries / champ），
+#              牌组 = 22 + 4×暴怒 + 2×献祭 + 2×贪婪之手
+#   @relic11 = 如尼方块 + 自成型黏土 + 芜菁 + 姜 + 线与针 + 石历，
+#              三个编队（champ / maw / slime_boss）
+#
+# ⚠⚠ **分组是量出来的，不是「凑够 8 颗」**（第六次「先量再定」）。三条分组原则：
+#   ① 效果不互相遮蔽——如尼金字塔（不弃手牌）与不休陀螺（手牌空了补一张）**必须分开**，
+#      放一起后者结构性不可达；山铜的门是「回合末格挡为 0」，与四颗加格挡的遗物分开。
+#   ② 仗长要保住——五颗 `energyPerTurn++` 让平均回合数从 ~6 掉到 **2.5**，所以把它们
+#      单独关进 @relic7（那一组的效果全部在**开局第一帧**就可见，短仗无所谓）。
+#   ③ 编队要能看见那一组的效果。实测里真的改变了决策的几格：
+#      * 奇特蘑菇要**玩家**易伤：champ 577 / collector 378，而 hexaghost 与 three_byrds 是 **0**；
+#      * 冰淇淋要「回合末还有剩能量」：time_eater 99 次 / 79 条，其余编队 1~22 次；
+#      * 血腥雕像要贪婪之手**打死**一只怪：three_sentries 85 / slime_boss 82 / champ 9 /
+#        donu_and_deca **0**；
+#      * 卡戎的骨灰与奇异汤匙要「有牌进消耗堆」，22 张那副牌组只有 three_sentries /
+#        slime_boss / donu_and_deca 有（其余编队 0）——所以 @relic10 的牌组加了 2 张献祭。
+# ⚠ 五个 variant 的遗物与药水**都钉死**，所以它们一次 `traceIdx` 都不读：测量 run 的数字
+#   可以逐例照搬到安装后的数据，重排乘积也动不了这 14 个文件。
+ENC_V0_RELIC="large_slime@relic1 slime_boss@relic1 spheric_guardian@relic1 gremlin_leader@relic1 automaton@relic1 collector@relic1 three_darklings@relic1 reptomancer@relic1 writhing_mass@relic2 writhing_mass@relic3 gremlin_leader@relic4 automaton@relic4 collector@relic4 reptomancer@relic4 spheric_guardian@relic5 sentry_and_sphere@relic5 gremlin_leader@relic5 slime_boss@relic6 champ@relic6 lagavulin@relic6 the_guardian@relic7 champ@relic7 three_sentries@relic8 time_eater@relic8 three_darklings@relic8 champ@relic9 three_byrds@relic9 collector@relic9 slime_boss@relic10 three_sentries@relic10 champ@relic10 champ@relic11 maw@relic11 slime_boss@relic11"
 ENC_V0="$ENC_V0_ASC0 $ENC_V0_ASC19 $ENC_V0_TGT1 $ENC_V0_ACT3 $ENC_V0_RELIC"
 
 policy_of() {

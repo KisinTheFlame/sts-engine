@@ -10813,7 +10813,9 @@ export const REGISTERED_CARD_IDS: readonly string[] = Object.freeze(Object.keys(
  */
 function attackAllEnemies(bc: BattleContext, baseDamage: number, card: CombatCard): void {
   addToBot(bc, (c) => {
-    const matrix = c.monsters.map((m, i) => (m.alive ? calculateCardDamage(c, i, baseDamage, card) : 0));
+    const matrix = c.monsters.map((m, i) =>
+      m.alive ? calculateCardDamage(c, i, baseDamage, card) : 0,
+    );
     for (let i = 0; i < c.monsters.length; i += 1) {
       if (c.monsters[i]?.alive === true) {
         attackEnemy(c, i, matrix[i]);
