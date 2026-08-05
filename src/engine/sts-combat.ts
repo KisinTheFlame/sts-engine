@@ -8834,6 +8834,14 @@ const RELIC_IMMEDIATE: Record<string, (bc: BattleContext, relic: CombatRelic) =>
     if (relic.data > 0) {
       for (const m of bc.monsters) {
         m.hp = 1;
+        // ⚠⚠ **`alive` 必须跟着刷新**：参考没有这个字段，`isDeadOrEscaped()` 是**算出来的**
+        //   （`isDying()` 就是 `curHp <= 0`），而我们把它缓存成了 `m.alive`。这一格是全参考
+        //   **唯一**一处「不走伤害/复活路径、直接写 `curHp`」的地方，所以也是唯一一处必须
+        //   手动刷新这个投影的地方。⚠ 后果是可观察的：从没被构造过的空格（自动机的 0/2、
+        //   收藏家的 0/1）`curHp` 本来是 0，被写成 1 之后**变成了可指向的活怪**，快照里
+        //   `"alive": true`。⚠ 但 `monstersAlive` **一动不动**（参考同样不动它）——
+        //   于是策略打死一个空格就直接判胜。
+        m.alive = !(m.hp <= 0 || m.halfDead);
       }
     }
   },
@@ -8951,14 +8959,19 @@ const RELIC_AT_BATTLE_START: Record<string, (bc: BattleContext) => void> = {
   //  ③ 它的第一半（`++energyPerTurn`）在第一遍里，见 `RELIC_IMMEDIATE.mark_of_pain`。
   mark_of_pain: (bc) => addToBot(bc, (c) => makeTempCardInDrawPile(c, "wound", 2)),
   // 红面具（RED_MASK，:415-417）：`addToBot(Actions::DebuffAllEnemy<MS::WEAK>(1));`
-  // ⚠ 与大理石袋那条**只差两处**：Power 是虚弱不是易伤，而且**没有第二个实参**
-  //   ——`DebuffAllEnemy` 的 `isSourceMonster` 默认 false，与大理石袋显式传的 false 同值。
-  //   遍历方向照抄大理石袋那条（倒序 addToTop ⇒ 最终按下标升序落地）。
+  // ⚠⚠ **它与紧邻的大理石袋差的不是 Power，而是那个省略掉的第二个实参**：
+  //   `Actions::DebuffAllEnemy<s>(int amount, bool isSourceMonster = true)`（Actions.h:42）
+  //   ——**默认是 `true`**，而大理石袋显式写了 `false`。全参考项目 10 个调用点里
+  //   **只有红面具（和玩家侧的中毒那条）走默认值**，其余 8 处统统显式传 `false`。
+  //   `isSourceMonster = true` ⇒ `justApplied` 置位 ⇒ **跳过第一个回合末的递减**，
+  //   所以这层虚弱实际管到第 2 个玩家回合末。抄成 `false` 少一回合，实测红 240 例
+  //   （= @relic14 两个文件的全部）——这是本批最容易照着邻居抄错的一处。
+  //   遍历方向仍照抄大理石袋那条（倒序 addToTop ⇒ 最终按下标升序落地）。
   red_mask: (bc) =>
     addToBot(bc, (c) => {
       for (let i = c.monsters.length - 1; i >= 0; i -= 1) {
         if (c.monsters[i]?.alive === true) {
-          addToTop(c, (c2) => debuffEnemy(c2, i, "weak", 1, false));
+          addToTop(c, (c2) => debuffEnemy(c2, i, "weak", 1, true));
         }
       }
     }),
@@ -11519,6 +11532,17 @@ function useCard(bc: BattleContext, item: CardQueueItem): void {
     throw new Error("useCard: 队列项没有牌");
   }
   const def = getCardDef(card.defId);
+  // ⚠⚠ **扣能量读的是「进这个函数那一刻」的 `costForTurn`，不是函数末尾的当前值。**
+  //   参考的 `CardQueueItem::card` 是**按值存的一份副本**，而 `cards.hand[...]` 是另一个对象；
+  //   函数末尾那句 `player.useEnergy(c.costForTurn)` 读的是**副本**。我们这边 `item.card`
+  //   故意指着手牌里那个对象（好让卡效果对它的改写跟着进弃牌堆，见 CardQueue 的注释），
+  //   于是「有人在出牌中途改了手牌里这张牌的 costForTurn」这件事在两边不同解。
+  // ⚠ 目前**唯一**的这种人是**木乃伊之手**（第四十四批）：它在 `onUsePowerCard` 里把一张
+  //   随机手牌压成 0 费，而候选表里**包含正在被打出的这张能力牌**（参考此刻还没把它移出手牌，
+  //   移出那一句排在下面）。抽中自己时，参考照样把手牌那份压成 0——但那份马上被移出手牌、
+  //   而扣能量读的是副本，所以**一点能量都不少扣**。不快照的话我们会让这张牌变免费。
+  //   实测（`@relic16`，牌组里唯一的 1 费能力牌是灵液）红 **73 例**。
+  const costForTurnAtUse = card.costForTurn;
   const rule = CARD_RULES[card.defId];
   if (rule === undefined) {
     throw new Error(`sts-combat 暂未登记卡牌行为: ${card.defId}`);
@@ -11591,11 +11615,11 @@ function useCard(bc: BattleContext, item: CardQueueItem): void {
   //     （见 upgradeCard 的尾部），那时就只剩这一项拦着——军备 + 腐化同场即可走到。
   // TODO(后续PR): `isFreeToPlay`（freeToPlayOnce / 自由攻击），两者都还没有产出者。
   if (
-    card.costForTurn > 0 &&
+    costForTurnAtUse > 0 &&
     !item.autoplay &&
     !(def.type === "skill" && getPower(bc.player.powers, "corruption") > 0)
   ) {
-    bc.player.energy -= card.costForTurn;
+    bc.player.energy -= costForTurnAtUse;
   }
 }
 

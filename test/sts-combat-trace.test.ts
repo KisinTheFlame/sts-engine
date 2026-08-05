@@ -948,6 +948,10 @@ const POWER: Record<string, string> = {
   ARTIFACT: "artifact",
   THORNS: "thorns",
   VIGOR: "vigor",
+  // 笔尖（第四十四批）：**纯 bool** Power（`Player.h:338` 那条 `setHasStatus` 名单里有它），
+  // 所以 harness 输出恒是 `PEN_NIB: 1`。它只在 `@relic12` 出现（那一组给了 `data = 9`，
+  // 于是开局第一帧就带着它进场）。
+  PEN_NIB: "pen_nib",
   // —— 回合边界 Power（第三批）——
   METALLICIZE: "metallicize",
   COMBUST: "combust",

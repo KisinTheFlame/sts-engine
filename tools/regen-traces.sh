@@ -408,7 +408,39 @@ ENC_V0_ASC19="cultist@asc19 jaw_worm@asc19 jaw_worm_horde@asc19 two_louse@asc19 
 #        slime_boss / donu_and_deca 有（其余编队 0）——所以 @relic10 的牌组加了 2 张献祭。
 # ⚠ 五个 variant 的遗物与药水**都钉死**，所以它们一次 `traceIdx` 都不读：测量 run 的数字
 #   可以逐例照搬到安装后的数据，重排乘积也动不了这 14 个文件。
-ENC_V0_RELIC="large_slime@relic1 slime_boss@relic1 spheric_guardian@relic1 gremlin_leader@relic1 automaton@relic1 collector@relic1 three_darklings@relic1 reptomancer@relic1 writhing_mass@relic2 writhing_mass@relic3 gremlin_leader@relic4 automaton@relic4 collector@relic4 reptomancer@relic4 spheric_guardian@relic5 sentry_and_sphere@relic5 gremlin_leader@relic5 slime_boss@relic6 champ@relic6 lagavulin@relic6 the_guardian@relic7 champ@relic7 three_sentries@relic8 time_eater@relic8 three_darklings@relic8 champ@relic9 three_byrds@relic9 collector@relic9 slime_boss@relic10 three_sentries@relic10 champ@relic10 champ@relic11 maw@relic11 slime_boss@relic11"
+# 第四十四批：遗物战线第五批（`@relic12`~`@relic17`，六个新 variant，排在 relicSet 11 之后；
+#   relicSet 1~11 的 encounters 一个字没动，那 34 个文件逐字节不变）。**本批登记 29 颗遗物**
+#   ——全部是「多钩子」那一族（每颗 2~9 个读点），前置是 `RelicInstance.data` 接线。
+#
+#   @relic12 = 快乐花(data 1) + 熏香炉(3) + 日晷(1) + 双节棍(5) + 笔尖(9) + 神圣树皮，
+#              两个编队（champ / three_darklings），药水钉死成 火焰 + 格挡 + 迅捷
+#   @relic13 = 蜥蜴尾(data 1) + 红骷髅 + 钨钢棒 + 百年拼图 + 鸟面坛，
+#              两个编队（champ / hexaghost），牌组 22 + 4×狂暴
+#   @relic14 = 发条纪念品 + 地精面罩 + 红面具 + 蛇之戒指 + 蛇之指环 + 史尼克之眼 +
+#              赤备 + 水银沙漏，两个编队（three_sentries / champ）
+#   @relic15 = 发条纪念品 + 姜 + 芜菁 + 冠军腰带 + 绽放印记 + 痛苦印记 + 鸟面坛，
+#              两个编队（champ / three_sentries），牌组 22 + 4×狂暴
+#   @relic16 = 以太 + 清酒壶 + 天鹅绒颈圈 + 腕刃 + 木乃伊之手 + 扭曲钳 + 死灵之书 + 化学 X，
+#              三个编队（three_sentries / champ / three_darklings），
+#              牌组 22 + 2×旋风斩 + 2×贪婪之手 + 4×狂暴，**药水钉死成熵酿**
+#   @relic17 = 尼奥的挽歌(data 1) **单独一颗**，两个编队（automaton / collector）
+#
+# ⚠⚠ **本批给 trace 头部加了一个 `relicData` 字段**（与 `relics` 等长的整型数组，
+#   **只在某颗遗物带非 0「数值」data 时输出**）。两步验证做了：先只加字段、不加 variant，
+#   跑 `--check`，**150 个文件逐字节复现**。
+#   ⚠ 它**只携带「数值」那一族**的 data。御守 / 蜥蜴尾走的是 `setHasRelic<X>(r.data)`，
+#   只读真假，harness 里加了一道检查禁止「data 0 的御守」（那等于白发一颗），于是
+#   「出现在 `relics` 清单里 ⟺ data 非 0」按构造成立，重放侧回填 1。
+#   **这个切分不是洁癖**：`writhing_mass@relic3` 从第四十批起就带着 `{OMAMORI, data 2}`，
+#   把它也算进那个数组，那 120 行的头部就会变，「150 个逐字节复现」当场不成立。
+# ⚠ 分组是量出来的（第七次「先量再定」），逐条理由见 harness 注释与 TODOS：
+#   * 尼奥的挽歌让全场怪 1 血 ⇒ **0.00 回合**（每条 trace 只有 1 步），任何需要回合的遗物
+#     与它同组都会饿死 ⇒ 单独关一个 variant；神圣树皮因此从 @relic17 挪到了 @relic12。
+#   * 以太的门是「贪婪之手打死一只怪」：three_sentries 46 次 / 41 条，champ 只有 9 / 9。
+#   * @relic16 的三颗 `energyPerTurn++` 让 three_sentries 掉到 **1.16 回合**，
+#     所以那一组必须再挂一个长仗编队（three_darklings）。
+#   * 姜与地精面罩**不能同组**：面罩的全部可观察面就是玩家身上那 1 层虚弱，而姜是虚弱免疫。
+ENC_V0_RELIC="large_slime@relic1 slime_boss@relic1 spheric_guardian@relic1 gremlin_leader@relic1 automaton@relic1 collector@relic1 three_darklings@relic1 reptomancer@relic1 writhing_mass@relic2 writhing_mass@relic3 gremlin_leader@relic4 automaton@relic4 collector@relic4 reptomancer@relic4 spheric_guardian@relic5 sentry_and_sphere@relic5 gremlin_leader@relic5 slime_boss@relic6 champ@relic6 lagavulin@relic6 the_guardian@relic7 champ@relic7 three_sentries@relic8 time_eater@relic8 three_darklings@relic8 champ@relic9 three_byrds@relic9 collector@relic9 slime_boss@relic10 three_sentries@relic10 champ@relic10 champ@relic11 maw@relic11 slime_boss@relic11 champ@relic12 three_darklings@relic12 champ@relic13 hexaghost@relic13 three_sentries@relic14 champ@relic14 champ@relic15 three_sentries@relic15 three_sentries@relic16 champ@relic16 three_darklings@relic16 automaton@relic17 collector@relic17"
 ENC_V0="$ENC_V0_ASC0 $ENC_V0_ASC19 $ENC_V0_TGT1 $ENC_V0_ACT3 $ENC_V0_RELIC"
 
 policy_of() {
