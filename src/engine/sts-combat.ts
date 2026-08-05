@@ -8965,8 +8965,9 @@ const RELIC_AT_BATTLE_START: Record<string, (bc: BattleContext) => void> = {
   //   ——**默认是 `true`**，而大理石袋显式写了 `false`。全参考项目 10 个调用点里
   //   **只有红面具（和玩家侧的中毒那条）走默认值**，其余 8 处统统显式传 `false`。
   //   `isSourceMonster = true` ⇒ `justApplied` 置位 ⇒ **跳过第一个回合末的递减**，
-  //   所以这层虚弱实际管到第 2 个玩家回合末。抄成 `false` 少一回合，实测红 240 例
-  //   （= @relic14 两个文件的全部）——这是本批最容易照着邻居抄错的一处。
+  //   所以这层虚弱实际管到第 2 个玩家回合末。抄成 `false` 少一回合，实测红 **120 例**
+  //   （champ 那份的全部；three_sentries 那份只有 3.7 回合、虚弱又常被怪的神器吃掉，所以没红）
+  //   ——这是本批最容易照着邻居抄错的一处。
   //   遍历方向仍照抄大理石袋那条（倒序 addToTop ⇒ 最终按下标升序落地）。
   red_mask: (bc) =>
     addToBot(bc, (c) => {
@@ -12545,7 +12546,6 @@ function stealGoldFromPlayer(bc: BattleContext, m: CombatMonster): void {
  * @param selfDamage 这次失血算不算「因你打出的牌而失去生命」——破裂（RUPTURE）只认这一种。
  *   写成**必填**参数是故意的：漏传会静默少一次加力量，而 TS 的默认值不会报错。
  *   各调用点传什么逐个对齐了参考的 `Actions::PlayerLoseHp(n, selfDamage)` 第二参数。
- * TODO(遗物PR): 钨钢棒减 1（在 loseHp 里、hpWasLost 之前）。
  */
 function playerLoseHp(bc: BattleContext, amount: number, selfDamage: boolean): void {
   let loss = amount;
@@ -12590,7 +12590,7 @@ function playerLoseHp(bc: BattleContext, amount: number, selfDamage: boolean): v
  *     如尼方块是 **`addToTop`** 的 `DrawCards(1)`（插队首，所以排在触发它的那次攻击的
  *     后续段数**之前**——多段攻击每段各抽一张，且抽到的牌立刻能被下一段读到）。
  *
- * TODO(遗物PR): 百年拼图（抽 3，排在最前，一次性）、情绪芯片、红骷髅（排在最后）。
+ * TODO(遗物PR): 情绪芯片（参考里两处都是空的 `// todo`，**没有预言机**，见 TODOS 排除表）。
  */
 function playerHpWasLost(bc: BattleContext, amount: number, selfDamage: boolean): void {
   // 对齐 `Player::hpWasLost` 的第二句 `bool wasBloodied = curHp <= maxHp/2;`——
@@ -14791,7 +14791,6 @@ function vampireAttack(bc: BattleContext, damage: number): void {
  *   ①⚠ 它**只挡穿透格挡的那部分**：先让格挡吃，剩下的才由缓冲整个吞掉（连 1 点都不留）。
  *   ② 每挡一次消耗一层。③ 这一条在 `Player::attacked` 里**也有一份**，但位置不同
  *      （那边排在荆棘/火焰屏障**之前**、鸟居之前），见 `dealDamageToPlayer`。
- * TODO(遗物PR): 钨钢棒（TUNGSTEN_ROD，缓冲之后 `damage -= 1`，三条伤害路径上各一份）。
  */
 function damagePlayerNonAttack(bc: BattleContext, amount: number, selfDamage: boolean): void {
   let damage = amount;
