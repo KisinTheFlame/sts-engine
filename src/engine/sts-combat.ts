@@ -8638,12 +8638,13 @@ const RELIC_IMMEDIATE: Record<string, (bc: BattleContext, relic: CombatRelic) =>
   // ⚠⚠ 它**不是效果**，是把 run 层存下来的计数器搬进战斗。配对的写回在
   //   `BattleContext::updateRelicsOnExit`（`r.data = player.inkBottleCounter`，:532-533）
   //   ——所以真实 run 里这个计数器**跨战斗延续**，只有刚拿到的墨水瓶才从 0 开始。
-  // ⚠ 我们的 `bc.relics` 只存 id、没有 `data`（与御守 `setHasRelic<OMAMORI>(r.data)`
-  //   那处是同一个缺口），所以这里只能写 0。harness 的 `RelicSpec.data` 对墨水瓶恰好也是
-  //   0（默认值），因此**trace 侧逐位一致**；接 run 层时这一对读写要一起补上。
-  //   TODO(后续PR): 让 `bc.relics` 带 `data`，并在 `settleCombat` 里写回。
-  ink_bottle: (bc) => {
-    bc.player.inkBottleCounter = 0;
+  // ✅ **第四十四批把 `data` 接上了**：`bc.relics` 带 `{id, data}`、`settleCombat` 走
+  //   `updateRelicsOnExit` 写回 run 层的 `RelicState.counter`。此前这里只能写 0
+  //   （harness 发的 `RelicSpec.data` 对墨水瓶恰好也是 0，所以 trace 侧逐位一致）。
+  //   ⚠ 至今**没有任何 variant 给墨水瓶发非 0 的 data**，所以「读 data」这一句在对拍上
+  //   仍然是 0 例；守它的是 `sts-combat-wiring.test.ts` 的往返用例。
+  ink_bottle: (bc, relic) => {
+    bc.player.inkBottleCounter = relic.data;
   },
   // —— 第四十三批：`initRelics` 第一遍里的「一两行开局效果」族 ——
   //

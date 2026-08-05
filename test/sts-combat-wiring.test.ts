@@ -691,6 +691,53 @@ describe("接线：尚未迁移的内容显式抛错", () => {
     expect(reason(state, "cultist")).toContain("尚未迁移");
   });
 
+  // ⚠⚠ 这三条守的是 `RelicInstance.data`（第四十四批）——**它没有 trace 预言机**：
+  //   一条 trace 就是一场战斗，而 `data` 的语义是「跨战斗延续」，写回去的值下一场才被读到。
+  //   对拍能守的只有 `initRelics` 那一半（`@relic12` 发了非 0 的 data）；「写回」与
+  //   「run 层 ⟺ 战斗内的搬运」只能靠这里守。
+  it("遗物的 data：run 层的 counter 搬进战斗（快乐花 `= data + 1` 那个非直觉的 +1）", () => {
+    const state = runAtMap();
+    // counter = 2 ⇒ 战斗内 happyFlowerCounter = 3 ⇒ 当场命中「== 3」并给 1 点能量后归零。
+    state.relics.push({ id: "happy_flower", counter: 2 });
+    startCombat(state, "cultist");
+    expect(state.combat!.player.happyFlowerCounter).toBe(0);
+    // 第 1 回合能量 = energyPerTurn(3) + 快乐花那 1 点。
+    expect(state.combat!.player.energy).toBe(4);
+  });
+
+  it("遗物的 data：战斗结束时写回 run 层（对齐 `updateRelicsOnExit`）", () => {
+    // 全是打击，邪教徒 48 血——几回合就能打完，中途每打一张牌墨水瓶都 +1。
+    const state = runWithDeck(new Array<string>(10).fill("strike"));
+    state.relics.push({ id: "ink_bottle", counter: 7 });
+    startCombat(state, "cultist");
+    expect(state.combat!.player.inkBottleCounter).toBe(7);
+    let guard = 0;
+    while (state.combat !== null && guard < 500) {
+      applyAction(state, nextAction(state));
+      guard += 1;
+    }
+    expect(state.combat).toBeNull();
+    // 打了 n 张牌 ⇒ 计数器从 7 走了 n 步（每到 10 归零），并写回 run 层。
+    const relic = state.relics.find((r) => r.id === "ink_bottle")!;
+    expect(relic.counter).not.toBe(7);
+    expect(relic.counter).toBeGreaterThanOrEqual(0);
+    expect(relic.counter).toBeLessThan(10);
+  });
+
+  it("遗物的 data：御守 / 蜥蜴尾读的是「真假」，counter 为 0 等于战斗内没有这颗遗物", () => {
+    const withCharge = runAtMap();
+    withCharge.relics.push({ id: "lizard_tail", counter: 1 });
+    startCombat(withCharge, "cultist");
+    expect(withCharge.combat!.player.relicBits).toContain("lizard_tail");
+
+    const depleted = runAtMap();
+    depleted.relics.push({ id: "lizard_tail", counter: 0 });
+    startCombat(depleted, "cultist");
+    // ⚠ 容器里**有**这颗遗物，但玩家那份位集合里没有——`setHasRelic<X>(r.data)` 覆盖掉了。
+    expect(depleted.combat!.relics.map((r) => r.id)).toContain("lizard_tail");
+    expect(depleted.combat!.player.relicBits).not.toContain("lizard_tail");
+  });
+
   it("遗物不参与前置检查——已登记的照常生效（金刚杵 +1 力量）", () => {
     const state = runAtMap();
     state.relics.push({ id: "vajra", counter: 0 });
