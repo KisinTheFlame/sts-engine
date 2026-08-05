@@ -84,6 +84,21 @@ type Step = {
 type Trace = {
   seed: string;
   relics: string[];
+  /**
+   * 与 `relics` 等长的 `RelicInstance::data`（第四十四批新增）。
+   *
+   * ⚠⚠ **它只携带「数值」那一族的 data**，不携带「真假」那一族的——理由与 harness 里
+   * `relicDataIsNumeric` 那段注释一致：`initRelics` 对**御守 / 蜥蜴尾**写的是
+   * `p.setHasRelic<X>(r.data)`，只读真假，而 `data == 0` 等于「这颗遗物在战斗内不存在」
+   * （= 白发一颗）。harness 有一道显式检查禁止那种配置，所以「出现在 `relics` 清单里」
+   * ⟺ 「data 非 0」按构造成立，重放侧照这条规则回填 1。
+   * ⚠ 这样切分**不是**figure of speech，而是为了让这个字段对既有语料是空操作：
+   * `writhing_mass@relic3` 从第四十批起就带着 `{OMAMORI, data 2}`，若把它也算进这个数组，
+   * 那 120 行的头部就会变，`--check` 的「150 个文件逐字节复现」当场就不成立了。
+   * 实测：加完这个字段之后 150 / 150 逐字节复现。
+   * ⚠ 与 `ascension` / `targetPolicy` / `relicSet` 同一招：**只在有非 0 值时输出**。
+   */
+  relicData?: number[];
   potionRngSeed: string;
   seedLong: string;
   floor: number;
@@ -1248,6 +1263,22 @@ function shapeExpected(s: Snapshot): Record<string, unknown> {
   };
 }
 
+/**
+ * 重放侧的 `RelicInstance::data`（第四十四批）。见 `Trace.relicData` 的注释。
+ *
+ * 两族分开：
+ *  * **数值族** —— 从 `relicData` 逐位取；字段缺席即全 0（那正是这个字段出现之前的语义）。
+ *  * **真假族**（御守 / 蜥蜴尾）—— 恒取 **1**：`setHasRelic<X>(r.data)` 只看真假，
+ *    而 harness 那道检查保证了「发出来的这两颗一定带非 0 充能」。
+ */
+const BOOLEAN_DATA_RELICS = new Set(["omamori", "lizard_tail"]);
+function relicDataOf(t: Trace, id: string, idx: number): number {
+  if (BOOLEAN_DATA_RELICS.has(id)) {
+    return 1;
+  }
+  return t.relicData?.[idx] ?? 0;
+}
+
 const start = (t: Trace): BattleContext =>
   initCombat({
     seedLong: BigInt(t.seedLong),
@@ -1265,7 +1296,7 @@ const start = (t: Trace): BattleContext =>
     // 见 HARNESS_GOLD_BASELINE：偷金按绝对值钳制，起点必须与 harness 一致。
     gold: HARNESS_GOLD_BASELINE,
     character: "ironclad",
-    relics: t.relics,
+    relics: t.relics.map((id, i) => ({ id, data: relicDataOf(t, id, i) })),
     potions: t.initial.potions.map(mapPotion),
     // harness 的快照按 `bc.potionCapacity` 输出药水槽，而 asc≥11 是 2 槽而不是 3
     // （GameContext.cpp:66）。不跟着传的话重放侧的 capacity 恒为 3，

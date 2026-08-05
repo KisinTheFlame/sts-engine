@@ -700,10 +700,15 @@ describe("接线：尚未迁移的内容显式抛错", () => {
   });
 
   it("遗物不参与前置检查——未登记的不挡路，只是暂时没有战斗内效果", () => {
-    // 赤备（战斗开局 +8 活力）的战斗内行为还没迁移：它不该让整场战斗打不起来，
-    // 只是这一场没有它的效果。等它登记进 sts-combat 时再补。
+    // ⚠⚠ **样本挑的是「永远不会被登记」的那一族，而不是「下一批就要装」的那种。**
+    //   原先用的是赤备（第四十四批把它装了），换样本这件事与「未迁移编队」那两条用例
+    //   同族——区别是这里**有**永久解：圣水 / 忍者卷轴 / 纯净水造的是 `MIRACLE` / `SHIV`，
+    //   而这两张牌在参考项目的三个 switch 里**都没有 case**（与 `seek` 完全同理），
+    //   所以它们永远不会有预言机、永远不会进 `sts-combat.ts` 的任何一张时点表。
+    //   别换成工具箱 / 什锦那种——它们不能登记的理由是「多选屏 / 被注释掉」，
+    //   哪天补上多选屏就不成立了。
     const state = runAtMap();
-    state.relics.push({ id: "akabeko", counter: 0 });
+    state.relics.push({ id: "holy_water", counter: 0 });
     expect(stsCombatCoverage(state, "cultist")).toEqual({ supported: true });
     startCombat(state, "cultist");
     expect(state.combat!.player.powers).toEqual([]);

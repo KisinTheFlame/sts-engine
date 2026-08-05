@@ -379,6 +379,14 @@ export class CardQueue {
     this.items[0] = item;
   }
 
+  /**
+   * 队列里有没有这个 uid 的牌（对齐 `CardQueue::containsCardWithId`）。
+   * 唯一的读者是木乃伊之手：它不能把「已经排着队要打」的那张压成 0 费。
+   */
+  containsCardWithUid(uid: number): boolean {
+    return this.items.some((item) => item.card?.uid === uid);
+  }
+
   /** 全部项（供 exportState；返回副本，调用方改不到内部数组）。 */
   all(): CardQueueItem[] {
     return [...this.items];
@@ -708,6 +716,26 @@ function cardsResetAttributesAtEndOfTurn(bc: BattleContext): void {
   }
 }
 
+/**
+ * 战斗内的一件遗物（对齐 `RelicInstance`，`RelicContainer.h:10`：`{RelicId id; int data;}`）。
+ *
+ * ⚠⚠ **`data` 有两种含义，别按一种抄**（第四十四批把这一族接上）：
+ *  * **数值**——`initRelics` 把它搬进 `Player` 的某个计数器、`updateRelicsOnExit` 再写回去，
+ *    所以它在真实 run 里**跨战斗延续**：快乐花（`= data + 1`，那个 +1 非直觉但照抄）/
+ *    熏香炉 / 墨水瓶 / 插入器 / 双节棍 / 笔尖（`data == 9` 走另一支）/ 日晷 /
+ *    尼奥的挽歌（`data > 0` 才生效，出战斗时递减）。
+ *  * **真假**——`p.setHasRelic<X>(r.data)`，只有御守与蜥蜴尾两颗（`BattleContext.cpp:178`
+ *    与 `:186`）。⚠ **`data == 0` 等于「这颗遗物在战斗内不存在」**：那一句**覆盖**从
+ *    run 层拷进来的位，所以带着 0 充能的御守在战斗里一点作用都没有。
+ *
+ * run 层对应的是 `RelicState.counter`（`types.ts`），`combat-bridge` 负责两头搬运。
+ */
+export type CombatRelic = {
+  id: string;
+  /** 对齐 `RelicInstance::data`；刚拿到的遗物是 0（御守 / 蜥蜴尾那种「充能」除外）。 */
+  data: number;
+};
+
 export type CombatPlayer = {
   hp: number;
   maxHp: number;
@@ -716,6 +744,21 @@ export type CombatPlayer = {
   energyPerTurn: number;
   cardDrawPerTurn: number;
   powers: PowerInstance[];
+  /**
+   * 玩家身上「有哪些遗物」的位集合（对齐 `Player::relicBits0/1`，Player.h:96-97）。
+   *
+   * ⚠⚠ **它与 `bc.relics`（遗物容器）不是同一个东西，参考也把两者分开存**：
+   * `initRelics` 的**第一句**是 `player.relicBits = gc.relics.relicBits`（拷一份），
+   * 之后有四处**只改这一份**：
+   *   * `setHasRelic<LIZARD_TAIL>(r.data)` / `setHasRelic<OMAMORI>(r.data)`
+   *     （`BattleContext.cpp:178` / `:186`）——data 0 时把位**清掉**；
+   *   * `setHasRelic<LIZARD_TAIL>(false)`（`Player.cpp:340`，复活用掉了）；
+   *   * `setHasRelic<CENTENNIAL_PUZZLE>(false)`（`Player.cpp:295`，一场只触发一次）。
+   * 所以「战斗内还有没有这颗遗物」必须读这一份，`hasRelic()` 因此走它而不是 `bc.relics`。
+   * ⚠ 反过来，`initRelics` / `atBattleStart` 那两个 `for (auto &r : g.relics.relics)`
+   * 遍历的是**容器**（要读 `r.data`），那两处仍然走 `bc.relics`。
+   */
+  relicBits: string[];
   cardsPlayedThisTurn: number;
   /**
    * 本回合已打出的**攻击牌**张数（对齐 `Player::attacksPlayedThisTurn`，Player.h:80）。
@@ -743,14 +786,49 @@ export type CombatPlayer = {
    * 每到 10 就归零并抽一张。与 `attacksPlayedThisTurn` 那一族（回合末清零）是两回事。
    * ⚠ 参考在 `initRelics` 里写 `p.inkBottleCounter = r.data`（BattleContext.cpp:164-165）、
    * 在 `updateRelicsOnExit` 里写回 `r.data = player.inkBottleCounter`（:532-533），
-   * 所以它在真实 run 里**跨战斗延续**。我们的 `bc.relics` 只有 id、没有 `data`
-   * （与御守那处同一个缺口），故战斗内一律从 0 起算——harness 发的 `RelicSpec.data`
-   * 也恰好是 0，因此 trace 侧逐位一致。⚠ 接 run 层时要把这一对读写补上。
+   * 所以它在真实 run 里**跨战斗延续**。✅ 第四十四批把这一对读写接上了
+   * （`bc.relics` 带 `data` + `updateRelicsOnExit`）。
    *
    * 读者：`onUseAttackCard` :1694 / `onUseSkillCard` :1811 / `onUsePowerCard` :1889 /
    * `onUseStatusOrCurseCard` :1958 —— **四处逐字相同**，见 `inkBottleOnUseCard`。
    */
   inkBottleCounter: number;
+  /**
+   * 快乐花的计数器（对齐 `Player::happyFlowerCounter`，Player.h:64）。
+   *
+   * ⚠⚠ **`initRelics` 写的是 `r.data + 1`**（BattleContext.cpp:149），不是 `r.data`——
+   * 那个 `+1` 是「开局这一回合也算一回合」，非直觉但照抄。紧接着的
+   * `if (counter == 3) { ++energy; counter = 0; }` 与回合开始那一处**不是同一份代码**
+   * （`Player.cpp:522-527` 那份是 `if (++counter == 3) { counter = 0; addToBot(GainEnergy(1)) }`
+   * ——先自增再判，而且能量是**入队**的）。两处的形状真的不同，别合并。
+   */
+  happyFlowerCounter: number;
+  /**
+   * 熏香炉的计数器（对齐 `Player::incenseBurnerCounter`，Player.h:65）。
+   * `initRelics` 是 `= r.data` 之后 `if (++counter == 6)`（先赋值再自增，**净效果 data+1**），
+   * 回合开始那份是同样的 `if (++counter == 6)`。⚠ 与快乐花的 `= data + 1` 写法不同、
+   * 数值同解——照抄各自的写法。
+   */
+  incenseBurnerCounter: number;
+  /** 双节棍的「已打出攻击牌数」（对齐 `Player::nunchakuCounter`，Player.h:68）。 */
+  nunchakuCounter: number;
+  /**
+   * 笔尖的「已打出攻击牌数」（对齐 `Player::penNibCounter`，Player.h:69）。
+   *
+   * ⚠⚠ **它可以是 -1**：数到 9 那一刻参考写 `penNibCounter = -1`（`BattleContext.cpp:1732`，
+   * 行尾自注 `// take note of this`），意思是「本次强化已经发出去了」。出战斗时
+   * `updateRelicsOnExit` 把 -1 又写回成 **9**（`:552-556`，参考自注 `// possible bug`），
+   * 于是下一场开局 `r.data == 9` 那一支直接带着 `PEN_NIB` 进场。照抄两处。
+   */
+  penNibCounter: number;
+  /** 日晷的「已洗牌次数」（对齐 `Player::sundialCounter`，Player.h:70）。 */
+  sundialCounter: number;
+  /**
+   * 死灵之书本回合是否已经复制过一张牌（对齐 `Player::haveUsedNecronomiconThisTurn`，
+   * Player.h:76）。回合开始在 `applyStartOfTurnRelics` 里复位（`Player.cpp:555-557`）——
+   * ⚠ 那一处是**同步**赋 false，不是 Power、不进快照。
+   */
+  haveUsedNecronomiconThisTurn: boolean;
   /**
    * 橙色药丸的「本回合已打出的牌型」位掩码（对齐 `Player::orangePelletsCardTypesPlayed`，
    * `std::bitset<3>`，Player.h:82）。
@@ -825,8 +903,13 @@ export type BattleContext = {
   encounterId: string;
   /** 角色（决定药水池前 3 项）。 */
   character: CharacterId;
-  /** 持有的遗物 id（按获得顺序）。 */
-  relics: string[];
+  /**
+   * 遗物容器（对齐 `RelicContainer::relics`，按获得顺序）。
+   *
+   * ⚠ 这是**容器**，不是「玩家身上还有没有」——后者是 `player.relicBits`，见那里的注释。
+   * `initRelics` 的两遍遍历读的是这一份（要拿 `r.data`），别的地方一律走 `hasRelic()`。
+   */
+  relics: CombatRelic[];
 
   /** 药水槽（定长 potionCapacity；null = 空）。 */
   potions: (string | null)[];
@@ -6084,11 +6167,38 @@ function moveDiscardPileIntoDrawPile(bc: BattleContext): void {
  *
  * ⚠ 什锦（MELANGE）**在参考里整条被注释掉了**（`// addToBot(Actions::SetState(InputState::SCRY, 3))`，
  *   BattleContext.cpp:2831-2833），所以它没有预言机、不登记——与 SEEK 那族卡同理。
- * TODO(遗物PR): 日晷（SUNDIAL，`sundialCounter` 是跨战斗计数器，读 `r.data`）。
  */
 function onShuffle(bc: BattleContext): void {
   if (hasRelic(bc, "the_abacus")) {
     addToBot(bc, (c) => gainBlock(c, 6), false);
+  }
+  // 日晷（SUNDIAL，第四十四批）：排在什锦那一格**之后**、也就是这个函数的最后一段
+  // （BattleContext.cpp:2835-2842）：
+  //     if (player.hasRelic<R::SUNDIAL>()) {
+  //         if (player.sundialCounter == 2) {
+  //             player.sundialCounter = 0;
+  //             addToBot( Actions::GainEnergy(2) );
+  //         } else {
+  //             ++player.sundialCounter;
+  //         }
+  //     }
+  // ⚠ 四处照抄：
+  //  ①⚠⚠ **它是「先判后增」，与快乐花 / 熏香炉 / 双节棍那一族（先增后判）相反**：
+  //     计数器停在 2 的那一次洗牌才给能量，也就是**第 3 次**洗牌。
+  //     写成先增后判会让能量早一次洗牌到手。
+  //  ② 命中那一支**不自增**（走的是 if 而不是 else），所以周期恰好是 3。
+  //  ③ 能量是**入队**的 `GainEnergy(2)`，不是同步——与算盘那条格挡同在这个函数里，
+  //     两条的 `clearOnCombatVictory` 不同（`GainEnergy` 默认 true、`GainBlock` 是 false）。
+  //  ④ 计数器跨战斗延续（`initRelics` 搬进来、`updateRelicsOnExit` 写回去）。
+  if (hasRelic(bc, "sundial")) {
+    if (bc.player.sundialCounter === 2) {
+      bc.player.sundialCounter = 0;
+      addToBot(bc, (c) => {
+        c.player.energy += 2;
+      });
+    } else {
+      bc.player.sundialCounter += 1;
+    }
   }
 }
 
@@ -6794,8 +6904,15 @@ export type CombatInitInput = {
   gold?: number;
   /** 角色（决定药水池前 3 项）；缺省铁甲。 */
   character?: CharacterId;
-  /** 入场时持有的遗物 id。 */
-  relics?: string[];
+  /**
+   * 入场时持有的遗物（按获得顺序）。
+   *
+   * ⚠ 第四十四批起每一件都带 `data`（对齐 `RelicInstance::data`）：run 层存在
+   * `RelicState.counter` 里，`combat-bridge` 负责搬进来、战斗结束再写回去。
+   * 只写 id 的老调用方可以传字符串，等价于 `{ id, data: 0 }`——
+   * ⚠ **御守 / 蜥蜴尾例外**：它们的 `data` 是「有没有」，0 等于战斗内不存在这颗遗物。
+   */
+  relics?: readonly (string | CombatRelic)[];
   /** 入场时的药水槽（null = 空）；缺省三个空槽。 */
   potions?: (string | null)[];
   /** 药水槽容量（点金石 +2 等）；缺省 3。 */
@@ -6820,7 +6937,9 @@ export function initCombat(input: CombatInitInput): BattleContext {
     ascension: input.ascension,
     encounterId: input.encounterId,
     character: input.character ?? "ironclad",
-    relics: [...(input.relics ?? [])],
+    relics: (input.relics ?? []).map((r) =>
+      typeof r === "string" ? { id: r, data: 0 } : { ...r },
+    ),
     potions: [...(input.potions ?? [null, null, null])],
     potionCount: (input.potions ?? []).filter((p) => p !== null).length,
     potionCapacity: input.potionCapacity ?? 3,
@@ -6840,12 +6959,24 @@ export function initCombat(input: CombatInitInput): BattleContext {
       energyPerTurn: 3,
       cardDrawPerTurn: 5,
       powers: [],
+      // `initRelics` 的第一句才从容器拷位（对齐 `player.relicBits0 = gc.relics.relicBits0`），
+      // 这里先留空。⚠ 别在这里预填：`BattleContext::init` 里在 initRelics **之前**读遗物的
+      // 那两处（史尼克之眼 / 蛇之指环的 `cardDrawPerTurn`）读的是 **`gc.relics`**，
+      // 也就是容器，不是玩家那份位集合。
+      relicBits: [],
       cardsPlayedThisTurn: 0,
       attacksPlayedThisTurn: 0,
       skillsPlayedThisTurn: 0,
       // 对齐 `Player::inkBottleCounter` 的初值 0（Player.h:67）。`initRelics` 那一格
       // （`= r.data`）见 `RELIC_IMMEDIATE.ink_bottle`。
       inkBottleCounter: 0,
+      // 下面五个同样对齐 Player.h 的默认 0；`initRelics` 里各自 `= r.data` 覆盖。
+      happyFlowerCounter: 0,
+      incenseBurnerCounter: 0,
+      nunchakuCounter: 0,
+      penNibCounter: 0,
+      sundialCounter: 0,
+      haveUsedNecronomiconThisTurn: false,
       // 对齐 `std::bitset<3> orangePelletsCardTypesPlayed` 的默认全 0（Player.h:82）。
       orangePelletsCardTypesPlayed: 0,
       combustHpLoss: 0,
@@ -6912,6 +7043,26 @@ export function initCombat(input: CombatInitInput): BattleContext {
     PRE_BATTLE_ACTION[m.defId]?.(bc, m);
   }
 
+  // —— 每回合抽牌数（对齐 BattleContext.cpp:61-67）——
+  //
+  // ⚠⚠ **位置在 `monsters.init` 之后、`cards.init` 之前**，不能挪：`cards.init` 末尾那句
+  //   「固有牌比起手数还多就补抽差额」读的正是 `cardDrawPerTurn`。
+  // ⚠⚠ **这两处读的是 `gc`（遗物**容器**）而不是 `player.relicBits`**——`initRelics` 还没跑，
+  //   那份位集合此刻还是空的。参考一处写 `gc.hasRelic(...)`、一处写 `gc.relics.has(...)`，
+  //   两个访问器同解（`RelicContainer::has`），照抄各自的写法没有意义，语义都是「容器里有没有」。
+  const hasInContainer = (id: string): boolean => bc.relics.some((r) => r.id === id);
+  // 史尼克之眼（SNECKO_EYE，第四十四批）：+2 抽牌。它的第二个读点是 `initRelics` 里的
+  // `p.debuff<PS::CONFUSED>(1)`，见 `RELIC_IMMEDIATE.snecko_eye`。
+  if (hasInContainer("snecko_eye")) {
+    bc.player.cardDrawPerTurn += 2;
+  }
+  // 蛇之指环（RING_OF_THE_SERPENT，第四十四批）：+1 抽牌。⚠ 它在 `initRelics` 里**也有**
+  // 一格（BattleContext.cpp:325-329），但那一格的函数体被注释掉了、只剩一句
+  // `// now handled in battlecontext init`——真正生效的是这里。别两处都加。
+  if (hasInContainer("ring_of_the_serpent")) {
+    bc.player.cardDrawPerTurn += 1;
+  }
+
   // —— cards.init（对齐 CardManager::init，CardManager.cpp:15）——
   //
   // ① 建实例：uid 就是它在 master deck 里的下标（对齐 `c.setUniqueId(deckIdx)` 与
@@ -6947,7 +7098,9 @@ export function initCombat(input: CombatInitInput): BattleContext {
   // —— initRelics + 抽起手 ——（顺序对齐 BattleContext::init）
   initRelics(bc); // 第一遍：立即属性
   addToBot(bc, (c) => drawCards(c, c.player.cardDrawPerTurn));
-  initRelicsAtBattleStart(bc); // 第二遍：排在抽牌之后
+  // 第二遍：排在抽牌之后。⚠ 传的是**入场血量**（`gc.curHp`）而不是 `bc.player.hp`：
+  // 红骷髅那道门读的是 GameContext 的值，而血瓶的 `heal(2)` 已经在第一遍里改过 `player.hp`。
+  initRelicsAtBattleStart(bc, input.playerHp);
   bc.player.energy += bc.player.energyPerTurn;
   executeActions(bc);
 
@@ -7147,6 +7300,20 @@ function cardCanUse(
   inAutoplay: boolean,
 ): string | null {
   const def = getCardDef(card.defId);
+  // 天鹅绒颈圈（VELVET_CHOKER，第四十四批）：对齐 `BattleContext::isCardPlayAllowed`
+  // （BattleContext.cpp:725-727）：
+  //     if (player.hasRelic<R::VELVET_CHOKER>() && player.cardsPlayedThisTurn >= 6) return false;
+  // ⚠ 四处照抄：
+  //  ①⚠⚠ **参考把它放在 `isCardPlayAllowed()` 里，而那个函数 `BattleContext` 自己一次都不调**
+  //     ——三个调用点全在 `src/sim/`（`Action::isValidCardAction` 等），也就是**出牌的合法性
+  //     检查**这一层。我们的 `canPlayCard` 就是那一层，所以放在这里与参考同解。
+  //  ② 门是 `>= 6`，而 `cardsPlayedThisTurn` 在出牌时自增 ⇒ **第 7 张打不出来**。
+  //  ③ 它与那个函数里的第二条（困惑度 / `handNormalityCount`）是并列的 `if`；
+  //     后者的产出者（正常性 Power）全参考没有，故未登记。
+  //  ④ 它的另一半是 `initRelics` 里的 `energyPerTurn++`。
+  if (hasRelic(bc, "velvet_choker") && bc.player.cardsPlayedThisTurn >= 6) {
+    return `「${def.name}」打不出来：天鹅绒颈圈限制每回合 6 张`;
+  }
   // 顶部那道目标门：需要目标而目标已死（或全场怪已死）就打不出。
   if (targetedOf(def, card.upgraded)) {
     const t = bc.monsters[target];
@@ -7430,7 +7597,17 @@ export function calculateCardDamage(
   if (hasRelic(bc, "strike_dummy") && isStrikeCard(card.defId)) {
     damage = Math.fround(damage + 3);
   }
-  // TODO(遗物PR): 腕刃（WRIST_BLADE，`card.costForTurn == 0` 时 +4，排在打击假人之后）。
+  // 腕刃（WRIST_BLADE，第四十四批）：排在打击假人**之后**（BattleContext.cpp:2712-2714）：
+  //     if (player.hasRelic<R::WRIST_BLADE>() && card.costForTurn == 0) { damage += 4; }
+  // ⚠ 四处照抄：
+  //  ①⚠⚠ 判的是 `costForTurn`（**实例级本回合费用**）而不是数据表里的 `cost`——所以
+  //     被腐化压成 0 费的技能、被木乃伊手压成 0 的牌、以及升级后降到 0 费的牌都吃这 4 点。
+  //  ② 它与打击假人一样按**每一次结算**加，多段攻击每段各 +4。
+  //  ③ 位置在力量之前 ⇒ 这 4 点吃虚弱的 ×0.75、吃易伤的 ×1.5。
+  //  ④ 与打击假人是同一段里的两条并列 `if`，两者可以同时命中（0 费的打击牌 +7）。
+  if (hasRelic(bc, "wrist_blade") && card.costForTurn === 0) {
+    damage = Math.fround(damage + 4);
+  }
 
   // 玩家 Power AtDamageGive
   damage = Math.fround(damage + getPower(bc.player.powers, "strength"));
@@ -7438,10 +7615,21 @@ export function calculateCardDamage(
   if (vigor > 0) {
     damage = Math.fround(damage + vigor);
   }
+  // 笔尖（PEN_NIB，第四十四批）：排在**虚弱之前**（BattleContext.cpp:2729-2731）：
+  //     if (player.hasStatus<PS::PEN_NIB>()) { damage *= 2; }
+  // ⚠ 三处照抄：
+  //  ①⚠⚠ **位置在虚弱之前**——两者都是乘法，`×2` 再 `×0.75` 与反过来在 float 域上
+  //     不保证同解（先 ×2 会把中间值抬到另一个尾数区间）。
+  //  ② 门是 `hasStatus`（纯 bool Power，`Player.h:338` 那条名单里有它），不是层数。
+  //  ③ 摘除在 `onUseAttackCard` 里（`addToBot(RemoveStatus<PEN_NIB>())`，:1686-1691），
+  //     而伤害在**打牌那一刻**就算好了 ⇒ **这一张牌自己也翻倍**，一张多段攻击牌的每一段都翻。
+  if (hasPower(bc.player.powers, "pen_nib")) {
+    damage = Math.fround(damage * 2);
+  }
   if (getPower(bc.player.powers, "weak") > 0) {
     damage = Math.fround(damage * 0.75);
   }
-  // TODO(后续PR): 双倍伤害/笔尖/姿态（愤怒×2、神性×3）。
+  // TODO(后续PR): 双倍伤害 / 姿态（愤怒×2、神性×3）。
 
   // 敌人 Power AtDamageReceive
   const target = bc.monsters[targetIdx];
@@ -8344,12 +8532,36 @@ function decrementDebuff(m: CombatMonster, id: string): void {
 // 顺序错了（比如先上易伤再抽牌）在多数场景下看不出来，但会错。
 // ============================================================================
 
+/**
+ * 「玩家身上还有没有这颗遗物」（对齐 `Player::hasRelic<X>()`，Player.h:462）。
+ *
+ * ⚠⚠ 读的是 `player.relicBits`，**不是**遗物容器 `bc.relics`。两者在 `initRelics` 的第一句
+ * 同步一次，此后有四处只改前者：御守 / 蜥蜴尾的 `setHasRelic<X>(r.data)`（data 0 = 清位）、
+ * 蜥蜴尾复活用掉、百年拼图触发过一次。用容器判会让这四处**静默失效**。
+ */
 export function hasRelic(bc: BattleContext, id: string): boolean {
-  return bc.relics.includes(id);
+  return bc.player.relicBits.includes(id);
 }
 
-/** 第一遍：立即生效的属性类。 */
-const RELIC_IMMEDIATE: Record<string, (bc: BattleContext) => void> = {
+/** 对齐 `Player::setHasRelic<X>(value)`（Player.h:445）——只写玩家那份位集合，不动容器。 */
+function setHasRelic(bc: BattleContext, id: string, value: boolean): void {
+  const idx = bc.player.relicBits.indexOf(id);
+  if (value) {
+    if (idx < 0) {
+      bc.player.relicBits.push(id);
+    }
+  } else if (idx >= 0) {
+    bc.player.relicBits.splice(idx, 1);
+  }
+}
+
+/**
+ * 第一遍：立即生效的属性类。
+ *
+ * ⚠ 第二个参数是**这一件遗物的容器条目**（对齐参考 `for (const auto &r : gc.relics.relics)`
+ * 里的那个 `r`），只有读 `r.data` 的那一族用得上，见 `CombatRelic` 的注释。
+ */
+const RELIC_IMMEDIATE: Record<string, (bc: BattleContext, relic: CombatRelic) => void> = {
   vajra: (bc) => addPower(bc.player.powers, "strength", 1),
   anchor: (bc) => {
     bc.player.block += 10;
@@ -8497,6 +8709,204 @@ const RELIC_IMMEDIATE: Record<string, (bc: BattleContext) => void> = {
   //     **只有攻击伤害且真的破了格挡**才减——非攻击伤害（燃烧 / 荆棘 / 束缚）不减。
   //     这与怪物侧那条「在 else-if 链上、且带 `SHELLED_PARASITE` 特例」的形状完全不同。
   thread_and_needle: (bc) => addPower(bc.player.powers, "plated_armor", 4),
+
+  // ==========================================================================
+  // 第四十四批 · 甲：读 `r.data` 的那一族（`initRelics` 那一半）
+  // ==========================================================================
+  //
+  // ⚠⚠ 这一族的共同形状是「把 run 层的计数器搬进 `Player` 的某个字段」，配对的写回在
+  //   `updateRelicsOnExit`。**六颗的写法两两都不同**，别照着邻居抄：
+  //     快乐花   `= r.data + 1` 之后 `if (counter == 3)`      —— 先加 1，再判
+  //     熏香炉   `= r.data`     之后 `if (++counter == 6)`     —— 先赋值，再自增判
+  //     墨水瓶   `= r.data`                                    —— 光搬，不判（第四十二批）
+  //     双节棍   `= r.data`                                    —— 光搬，不判
+  //     日晷     `= r.data`                                    —— 光搬，不判
+  //     笔尖     `if (r.data == 9) {上一层 Power; = -1} else = r.data`
+  //   快乐花与熏香炉的**数值终态相同**（都等于「data + 1」），写法却不同——照抄各自的。
+
+  // 快乐花（HAPPY_FLOWER，BattleContext.cpp:148-154）：
+  //     case R::HAPPY_FLOWER:
+  //         player.happyFlowerCounter = r.data + 1;
+  //         if (player.happyFlowerCounter == 3) {
+  //             ++player.energy;
+  //             player.happyFlowerCounter = 0;
+  //         }
+  //         break;
+  // ⚠ 四处照抄：
+  //  ①⚠⚠ **那个 `+1` 非直觉但必须照抄**：卡面是「每 3 个回合获得 1 点能量」，而开局这一下
+  //     算「第 1 个回合」。写成 `= r.data` 会让整场的能量全部晚一个回合。
+  //  ②⚠ **这里是 `++player.energy`（同步、直接加 energy）**，而回合开始那一处是
+  //     `addToBot(Actions::GainEnergy(1))`（**入队**）。同一颗遗物两处两种写法，照抄。
+  //  ③⚠ **是 `energy` 而不是 `energyPerTurn`**：只加这一回合，与灯笼同族。
+  //  ④ `== 3` 配合「命中就归零」，所以 data 只可能是 0/1/2；`>= 3` 在正常路径上同解，
+  //     但那是巧合。
+  happy_flower: (bc, relic) => {
+    bc.player.happyFlowerCounter = relic.data + 1;
+    if (bc.player.happyFlowerCounter === 3) {
+      bc.player.energy += 1;
+      bc.player.happyFlowerCounter = 0;
+    }
+  },
+  // 熏香炉（INCENSE_BURNER，BattleContext.cpp:156-162）：
+  //     case R::INCENSE_BURNER:
+  //         p.incenseBurnerCounter = r.data;
+  //         if (++p.incenseBurnerCounter == 6) {
+  //             p.incenseBurnerCounter = 0;
+  //             p.buff<PS::INTANGIBLE>(1);
+  //         }
+  //         break;
+  // ⚠ 三处照抄：
+  //  ① **先赋值再自增**（净效果 = data + 1），与快乐花的 `= data + 1` 数值同解、写法不同。
+  //  ②⚠ **这里是同步 `buff<INTANGIBLE>(1)`**，回合开始那一处是
+  //     `addToBot(Actions::BuffPlayer<PS::INTANGIBLE>(1))`（入队）。又一对「两处两种写法」。
+  //  ③ 玩家侧的虚无缥缈（INTANGIBLE）：两条伤害入口各把伤害压成 1，回合末递减
+  //     （与怪物侧那份共用同一个 Power id，第三十六批已铺好）。
+  incense_burner: (bc, relic) => {
+    bc.player.incenseBurnerCounter = relic.data;
+    bc.player.incenseBurnerCounter += 1;
+    if (bc.player.incenseBurnerCounter === 6) {
+      bc.player.incenseBurnerCounter = 0;
+      addPower(bc.player.powers, "intangible", 1);
+    }
+  },
+  // 双节棍（NUNCHAKU，BattleContext.cpp:181-183）：`p.nunchakuCounter = r.data;`
+  // ⚠ 光搬计数器，一个判断都没有。第二处在 `onUseAttackCard`（:1740-1745），见那里。
+  nunchaku: (bc, relic) => {
+    bc.player.nunchakuCounter = relic.data;
+  },
+  // 日晷（SUNDIAL，BattleContext.cpp:218-220）：`p.sundialCounter = r.data;`
+  // ⚠ 第二处在 `BattleContext::onShuffle`（:2835-2842），见那里。
+  sundial: (bc, relic) => {
+    bc.player.sundialCounter = relic.data;
+  },
+  // 笔尖（PEN_NIB，BattleContext.cpp:189-196）：
+  //     case R::PEN_NIB:
+  //         if (r.data == 9) {
+  //             p.buff<PS::PEN_NIB>(1);
+  //             p.penNibCounter = -1;
+  //         } else {
+  //             p.penNibCounter = r.data;
+  //         }
+  //         break;
+  // ⚠ 三处照抄：
+  //  ①⚠⚠ **`== 9` 这一支是「上一场战斗把它攒满了」**：`updateRelicsOnExit` 把 -1 写回成 9
+  //     （参考自注 `// possible bug`），于是下一场开局直接带一层笔尖 Power 进场。
+  //     那条路只有非 0 的 `data` 才走得到——@relic12 就是为它发的 `data = 9`。
+  //  ② `PEN_NIB` 是**纯 bool** Power（`Player.h:338` 那条 `setHasStatus` 名单里有它），
+  //     所以 harness 输出恒是 `PEN_NIB: 1`。
+  //  ③ `penNibCounter = -1` 不是「归零」：它表示「这一层已经发出去了」，
+  //     之后 `onUseAttackCard` 里的 `++counter` 会把它带回 0。
+  pen_nib: (bc, relic) => {
+    if (relic.data === 9) {
+      addPower(bc.player.powers, "pen_nib", 1);
+      bc.player.penNibCounter = -1;
+    } else {
+      bc.player.penNibCounter = relic.data;
+    }
+  },
+  // 蜥蜴尾（LIZARD_TAIL，BattleContext.cpp:177-179）：`p.setHasRelic<R::LIZARD_TAIL>(r.data);`
+  // ⚠⚠ **这一格改的是玩家那份位集合、不是容器**，而且是**覆盖**：`data == 0`（充能用光了）
+  //   的蜥蜴尾在整场战斗里等于不存在。第二处在 `Player::wouldDie`（:339-343）。
+  lizard_tail: (bc, relic) => {
+    setHasRelic(bc, "lizard_tail", relic.data !== 0);
+  },
+  // 御守（OMAMORI，BattleContext.cpp:185-187）：`p.setHasRelic<R::OMAMORI>(r.data);`
+  // ⚠ 第四十批就登记了它的读点（蠕动血块的植入），但当时 `bc.relics` 还没有 `data`，
+  //   那道门只能靠「id 在清单里」表达。第四十四批接上 `data` 之后语义才与参考逐位一致。
+  omamori: (bc, relic) => {
+    setHasRelic(bc, "omamori", relic.data !== 0);
+  },
+  // 尼奥的挽歌（NEOWS_LAMENT，BattleContext.cpp:293-300）：
+  //     case R::NEOWS_LAMENT: // remember to decrement somewhere else
+  //         if (r.data > 0) {
+  //             for (int i = 0; i < monsters.monsterCount; ++i) {
+  //                 Monster &m = monsters.arr[i];
+  //                 m.curHp = 1;
+  //             }
+  //         }
+  //         break;
+  // ⚠ 三处照抄：
+  //  ①⚠⚠ **循环没有过滤**（裸的 `i < monsterCount`，与贤者之石同族、与硫磺相反），
+  //     所以**预留但从没构造过的空格也会被写成 1 点血**。那些格子在快照里带 `"hp":1`。
+  //  ② **只改 `curHp`，不动 `maxHp`**——所以怪一开局就是 `1/maxHp`。
+  //  ③ 递减在别处（`updateRelicsOnExit`），参考自己在行尾写了那句提醒。
+  neows_lament: (bc, relic) => {
+    if (relic.data > 0) {
+      for (const m of bc.monsters) {
+        m.hp = 1;
+      }
+    }
+  },
+
+  // ==========================================================================
+  // 第四十四批 · 丙：`initRelics` 第一遍里的多钩子遗物（不读 data）
+  // ==========================================================================
+
+  // 赤芥子（AKABEKO，BattleContext.cpp:122-124）：`p.buff<PS::VIGOR>(8)`。
+  // ⚠ 干劲（VIGOR）在 `calculateCardDamage` 里加进伤害、并在**下一张牌用掉时**摘除
+  //   （`onAfterUseCard` 里那句 `if (hasStatus<VIGOR>()) removeStatus<VIGOR>()`），
+  //   两处都是第九批就铺好的（干劲之刃）。所以这一颗只有这一行。
+  akabeko: (bc) => addPower(bc.player.powers, "vigor", 8),
+  // 史尼克之眼（SNECKO_EYE，BattleContext.cpp:210-212）：`p.debuff<PS::CONFUSED>(1)`。
+  // ⚠ 三处照抄：
+  //  ①⚠⚠ **它的第一个读点不在这里**：`+2 抽牌` 写在 `BattleContext::init`（:62-64），
+  //     排在 `cards.init` **之前**（见 `initCombat` 里那一段）。两处缺一不可。
+  //  ② 走 `debuff` ⇒ **过神器**（`Player::debuff` 的神器门在姜 / 芜菁之后）。
+  //     所以「神器 + 史尼克之眼」时困惑会被吃掉一层，这是可观察的。
+  //  ③ 困惑本身第二十五批就铺好了（`CardManager::draw` 的第一段，抽到的牌随机改费用、
+  //     ★ 消耗 `cardRandomRng`）。史尼克之眼是它的第二个来源。
+  snecko_eye: (bc) => debuffPlayer(bc, "confused", 1),
+  // 蛇之指环（RING_OF_THE_SERPENT，BattleContext.cpp:325-329）：**整格是空的**——
+  //     case R::RING_OF_THE_SERPENT:
+  //         // now handled in battlecontext init
+  //         // p.cardDrawPerTurn++;
+  //         break;
+  // ⚠ 唯一生效的地方是 `BattleContext::init` 的 `gc.relics.has(...)` 那一句，见 `initCombat`。
+  //   这里留一个空函数是**故意的**：它让 `isRelicSupported("ring_of_the_serpent")` 为真，
+  //   同时如实反映参考的形状（这一格真的什么都不做）。
+  ring_of_the_serpent: () => {
+    /* 空格：真正的 +1 抽牌在 BattleContext::init，见 initCombat */
+  },
+  // —— 三颗 `energyPerTurn++` + 一处代价 ——
+  //
+  // ⚠ 与第四十三批那五颗（破损王冠 / 咖啡滤压壶 / 诅咒钥匙 / 融合锤 / 如尼圆顶）不同：
+  //   那五颗的代价全在战斗外、参考一行都没实现；这三颗的代价**在战斗内**，各有第二个读点。
+  // 以太（ECTOPLASM，:136-138）：第二个读点在 `Player::gainGold` 的**第一句**（提前返回）。
+  ectoplasm: (bc) => {
+    bc.player.energyPerTurn += 1;
+  },
+  // 清酒壶（SOZU，:214-216）：第二个读点在 `BattleContext::obtainPotion`（拿不到药水）。
+  sozu: (bc) => {
+    bc.player.energyPerTurn += 1;
+  },
+  // 天鹅绒颈圈（VELVET_CHOKER，:222-224）：第二个读点在 `BattleContext::isCardPlayAllowed`
+  // （本回合已打 6 张就不许再打）。
+  velvet_choker: (bc) => {
+    bc.player.energyPerTurn += 1;
+  },
+  // 痛苦印记（MARK_OF_PAIN，:112-115）：
+  //     case R::MARK_OF_PAIN:
+  //         ++p.energyPerTurn;
+  //         atBattleStart.push_back(r.id);
+  //         break;
+  // ⚠⚠ 它是全参考**唯一**一颗「第一遍改属性、同时还进 atBattleStart 队列」的遗物
+  //   （别的要么只在第一遍、要么只 push）。两半都要，见 `RELIC_AT_BATTLE_START.mark_of_pain`。
+  mark_of_pain: (bc) => {
+    bc.player.energyPerTurn += 1;
+  },
+  // —— 四颗只做「进 atBattleStart 队列」的（BattleContext.cpp:102-110）——
+  //
+  // ⚠ 参考把它们与两个 bag_of_* 写在**同一串贯穿的 case 标签**里：
+  //     case R::BAG_OF_MARBLES: case R::BAG_OF_PREPARATION: case R::CLOCKWORK_SOUVENIR:
+  //     case R::GREMLIN_VISAGE: case R::RED_MASK: case R::RING_OF_THE_SNAKE:
+  //     case R::TWISTED_FUNNEL:
+  //         atBattleStart.push_back(r.id);
+  //         break;
+  //   我们这边用「在 `RELIC_AT_BATTLE_START` 里有条目」表达「进了那个队列」，所以第一遍
+  //   不需要为它们写任何东西——**扭曲漏斗（TWISTED_FUNNEL）除外，它一处都没登记**，
+  //   因为它排的是 `DebuffAllEnemy<MS::POISON>(4)` 而中毒这套机制还没有（毒的结算在
+  //   `Monster::applyEndOfRoundPowers`，是绿色角色的整套东西）。发条纪念品 / 地精面罩 /
+  //   红面具 / 蛇之戒指四颗见 `RELIC_AT_BATTLE_START`。
 };
 
 /** 第二遍：入队执行，落在开局抽牌之后。 */
@@ -8511,6 +8921,52 @@ const RELIC_AT_BATTLE_START: Record<string, (bc: BattleContext) => void> = {
       }
     }),
   bag_of_preparation: (bc) => addToBot(bc, (c) => drawCards(c, 2)),
+
+  // —— 第四十四批：atBattleStart 那一串里剩下的四颗（BattleContext.cpp:403-425）——
+  //
+  // ⚠⚠ **这个循环跑在开局抽牌之后**，所以它们的效果落在起手牌已经在手里之后。
+  //   蛇之戒指的「额外抽 2」因此是 5 + 2 而不是「起手抽 7」——两者在洗牌顺序上同解，
+  //   但在「抽牌堆空了要洗」的边界上不同，照抄参考的形状。
+
+  // 发条纪念品（CLOCKWORK_SOUVENIR，:403-405）：`addToBot(Actions::BuffPlayer<PS::ARTIFACT>(1))`。
+  // ⚠⚠ **它是第四十三批那三条盲区（姜 / 芜菁 / 冠军腰带与神器的相对顺序）的关门条件**：
+  //   在它之前，玩家侧的神器只可能来自古代药水，而那几个 variant 把药水钉死了。
+  // ⚠ 是**入队**的 `BuffPlayer`，不是同步 buff——与隔壁地精面罩正好相反，照抄。
+  clockwork_souvenir: (bc) => addToBot(bc, (c) => addPower(c.player.powers, "artifact", 1)),
+  // 地精面罩（GREMLIN_VISAGE，:407-409）：`p.debuff<PS::WEAK>(1);`
+  // ⚠ 三处照抄：
+  //  ①⚠⚠ **同步**（这一格里一个 addToBot 都没有），而它上下两格（发条纪念品、痛苦印记）
+  //     都是入队的。**同一个 switch 里三种形状并存**，别统一。
+  //  ② 走 `debuff` ⇒ 过神器，也过**姜**（虚弱免疫）。三颗一起带时姜赢。
+  //  ③ `isSourceMonster` 取默认的 false ⇒ **不跳过首次递减**，所以这一层虚弱在第 1 个
+  //     玩家回合末就掉掉了。
+  gremlin_visage: (bc) => debuffPlayer(bc, "weak", 1),
+  // 痛苦印记（MARK_OF_PAIN，:411-413）：
+  //     addToBot( Actions::MakeTempCardInDrawPile( {CardId::WOUND}, 2, true) );
+  // ⚠ 三处照抄：
+  //  ① 两张**伤口**，塞进**抽牌堆**（不是弃牌堆），第三个实参 `shuffleIntoDrawPile = true`
+  //     ⇒ ★ 每张消耗一次 `cardRandomRng`（随机插入位置）。
+  //  ② 伤口打不出（状态牌、没有医疗包），只躺在牌堆快照里——覆盖表看不见它，
+  //     但对拍逐帧比对牌堆内容，抄错位置当场红。
+  //  ③ 它的第一半（`++energyPerTurn`）在第一遍里，见 `RELIC_IMMEDIATE.mark_of_pain`。
+  mark_of_pain: (bc) => addToBot(bc, (c) => makeTempCardInDrawPile(c, "wound", 2)),
+  // 红面具（RED_MASK，:415-417）：`addToBot(Actions::DebuffAllEnemy<MS::WEAK>(1));`
+  // ⚠ 与大理石袋那条**只差两处**：Power 是虚弱不是易伤，而且**没有第二个实参**
+  //   ——`DebuffAllEnemy` 的 `isSourceMonster` 默认 false，与大理石袋显式传的 false 同值。
+  //   遍历方向照抄大理石袋那条（倒序 addToTop ⇒ 最终按下标升序落地）。
+  red_mask: (bc) =>
+    addToBot(bc, (c) => {
+      for (let i = c.monsters.length - 1; i >= 0; i -= 1) {
+        if (c.monsters[i]?.alive === true) {
+          addToTop(c, (c2) => debuffEnemy(c2, i, "weak", 1, false));
+        }
+      }
+    }),
+  // 蛇之戒指（RING_OF_THE_SNAKE，:419-421）：`addToBot(Actions::DrawCards(2));`
+  // ⚠ 与准备袋（BAG_OF_PREPARATION）**逐字相同**，参考也是两个独立的 case。
+  //   ⚠ 别与**蛇之指环**（RING_OF_THE_SERPENT，+1 每回合抽牌）搞混：两颗中文名只差一字、
+  //   参考枚举名只差 SNAKE / SERPENT，效果完全不同。
+  ring_of_the_snake: (bc) => addToBot(bc, (c) => drawCards(c, 2)),
 };
 
 /**
@@ -8602,20 +9058,91 @@ const RELIC_OTHER_HOOKS: ReadonlySet<string> = new Set([
   "runic_pyramid",
   "pocketwatch",
   "ice_cream",
+  // —— 第四十四批 ——
+  // | 遗物                         | 钩子位置                                                              |
+  // | ---------------------------- | --------------------------------------------------------------------- |
+  // | 钨钢棒 `tungsten_rod`        | `Player::damage` :201 / `attacked` :239 / `loseHp` :266，**三份**      |
+  // | 红骷髅 `red_skull`           | `initRelics` :436 / `Player::heal` :169 / `hpWasLost` :311，**三处**   |
+  // | 腕刃 `wrist_blade`           | `calculateCardDamage` :2712，0 费牌 +4                                |
+  // | 百年拼图 `centennial_puzzle` | `Player::hpWasLost` :294，一次性 addToTop 抽 3                         |
+  // | 绽放印记 `mark_of_the_bloom` | `Player::heal` :156 / `wouldDie` :331                                 |
+  // | 神圣树皮 `sacred_bark`       | `drinkPotion` :2271（33 条 case 各一个三元式）/ `wouldDie` :332        |
+  // | 以太 `ectoplasm`             | `initRelics` :136 / `Player::gainGold` :87                            |
+  // | 清酒壶 `sozu`                | `initRelics` :214 / `obtainPotion` :2249                              |
+  // | 天鹅绒颈圈 `velvet_choker`   | `initRelics` :222 / `isCardPlayAllowed` :726                          |
+  // | 化学 X `chemical_x`          | `WhirlwindAction` :1267 / `TransmutationAction` :593                  |
+  // | 木乃伊之手 `mummified_hand`  | `onUsePowerCard` :1905（技能牌那一格是空的 `// todo`）                |
+  // | 死灵之书 `necronomicon`      | `onUseAttackCard` :1722 / `applyStartOfTurnRelics` :555               |
+  "tungsten_rod",
+  "red_skull",
+  "wrist_blade",
+  "centennial_puzzle",
+  "mark_of_the_bloom",
+  "sacred_bark",
+  "ectoplasm",
+  "sozu",
+  "velvet_choker",
+  "chemical_x",
+  "mummified_hand",
+  "necronomicon",
 ]);
 
 function initRelics(bc: BattleContext): void {
-  for (const id of bc.relics) {
-    RELIC_IMMEDIATE[id]?.(bc);
+  // ⚠⚠ **第一句是把容器的位拷进玩家**（对齐 `player.relicBits0 = gc.relics.relicBits0;`
+  //   `BattleContext.cpp:78-79`）。它必须排在 switch **之前**：御守 / 蜥蜴尾那两格写的是
+  //   `setHasRelic<X>(r.data)`，是在这份拷贝上**覆盖**——拷贝晚一步就把覆盖抹掉了。
+  bc.player.relicBits = bc.relics.map((r) => r.id);
+  for (const relic of bc.relics) {
+    RELIC_IMMEDIATE[relic.id]?.(bc, relic);
   }
   // 开局抽牌（由调用方在此之后入队），再挂 atBattleStart。
 }
 
-function initRelicsAtBattleStart(bc: BattleContext): void {
-  for (const id of bc.relics) {
-    RELIC_AT_BATTLE_START[id]?.(bc);
+function initRelicsAtBattleStart(bc: BattleContext, entryHp: number): void {
+  for (const relic of bc.relics) {
+    RELIC_AT_BATTLE_START[relic.id]?.(bc);
+  }
+  // ⚠ 参考在两个 `for (auto r : atBattleStart…)` 循环**之间**还夹着两条裸的 `if`
+  //   （`BattleContext.cpp:432-438`），它们读的是 `gc.hasRelic(...)`（容器）而不是
+  //   那两张 `fixed_list`——所以它们的**位置是写死的**：排在全部 atBattleStart 之后、
+  //   atTurnStartPostDraw 之前，与玩家的遗物顺序无关。
+  // 水银沙漏（MERCURY_HOURGLASS，第四十四批）：`addToBot(DamageAllEnemy(3))`。
+  // ⚠ 它的第二个读点是 `Player::applyStartOfTurnRelics`（Player.cpp:551-553，函数体逐字相同）
+  //   ——`init` 不走那条路，所以这一处覆盖第 1 回合、那一处覆盖第 2 回合起。与硫磺同族。
+  if (hasRelic(bc, "mercury_hourglass")) {
+    addToBot(bc, (c) => damageAllEnemiesNonAttack(c, 3));
+  }
+  // 红骷髅（RED_SKULL，第四十四批）的**第一个**读点（BattleContext.cpp:436-438）：
+  //     if (gc.hasRelic(R::RED_SKULL) && gc.curHp <= gc.maxHp / 2) { p.buff<PS::STRENGTH>(3); }
+  // ⚠ 三处照抄：
+  //  ①⚠⚠ **判据读的是 `gc.curHp / gc.maxHp`（进战斗**之前**的血量），不是 `p.curHp`**。
+  //     两者在这一刻几乎总是相同，唯一的分岔是**血瓶**（`initRelics` 第一遍里 `p.heal(2)`）
+  //     恰好把玩家从半血以下抬到半血以上——那时参考照样给这 3 点力量。
+  //     我们这边 `initCombat` 的入参 `playerHp` 就是「进战斗之前」的值，所以这里用它。
+  //  ② **同步** buff，不是入队。
+  //  ③ 另外两个读点在 `Player::heal`（回到半血以上就 `debuff<STRENGTH>(3)` 还债）与
+  //     `Player::hpWasLost`（掉到半血及以下再 `buff<STRENGTH>(3)`），见那两个函数。
+  if (hasRelic(bc, "red_skull") && entryHp <= Math.trunc(bc.player.maxHp / 2)) {
+    addPower(bc.player.powers, "strength", 3);
+  }
+  // 第三个循环：atTurnStartPostDraw（`BattleContext.cpp:440-453`）。参考只有两颗，
+  // 而且它们在**每个回合开始（抽牌之后）**还有第二份，见 `applyStartOfTurnPostDrawRelics`。
+  for (const relic of bc.relics) {
+    RELIC_AT_TURN_START_POST_DRAW_INIT[relic.id]?.(bc);
   }
 }
+
+/**
+ * `initRelics` 的**第三个**循环（`atTurnStartPostDraw`，`BattleContext.cpp:440-453`）。
+ *
+ * ⚠ 它与 `applyStartOfTurnPostDrawRelics`（每回合那一份）是**两段独立的代码**，
+ * 参考没有把它们合并：`init` 不走 `afterMonsterTurns`，所以这一份覆盖第 1 回合。
+ * ⚠ 赌博芯片（`Actions::GambleAction`）**没有登记**：它开的是 `CardSelectTask::GAMBLE`
+ * 多选屏，trace 格式表达不了，harness 在 `pickCardSelectAction` 里也没有它的分支。
+ */
+const RELIC_AT_TURN_START_POST_DRAW_INIT: Record<string, (bc: BattleContext) => void> = {
+  warped_tongs: (bc) => addToBot(bc, (c) => upgradeRandomCardInHand(c)),
+};
 
 /**
  * 每个玩家回合开始的遗物（对齐 `Player::applyStartOfTurnRelics`，Player.cpp:490-560）。
@@ -8733,12 +9260,73 @@ const RELIC_AT_TURN_START: ReadonlyArray<readonly [string, (bc: BattleContext) =
   //     }
   // ⚠ 与船长之轮**同族但差一格**：`turn == 1` = 玩家的第 2 个回合（卡面写「第 2 回合」）。
   //   两条并排放着正好互为对照，别把常数（14 / 18）与回合数（1 / 2）抄串。
+  // —— 第四十四批：这张表里剩下的四颗，各自插回参考的书写位置 ——
+  //
+  // ⚠⚠ 参考的完整顺序是 战争艺术 → 硫磺 → 船长之轮 → 达摩鲁 → 情绪芯片 → **快乐花** →
+  //   号角 → **熏香炉** → 插入器 → **水银沙漏** → **死灵之书** → 橙色药丸。
+  //   本批把加粗那四颗插回各自的位置——**快乐花排在号角之前**，所以它在这张数组里也必须
+  //   排在 `horn_cleat` 上面。这张表是有序数组正是为了这件事。
+  //   （达摩鲁 = 姿态、情绪芯片 = 参考里是空的 `// todo`、插入器 = `increaseOrbSlots` 是
+  //   空函数，三颗都没有预言机，见 TODOS 的排除表。）
+
+  // 快乐花（HAPPY_FLOWER，Player.cpp:521-527）：
+  //     if (hasRelic<R::HAPPY_FLOWER>()) {
+  //         if (++happyFlowerCounter == 3) {
+  //             happyFlowerCounter = 0;
+  //             bc.addToBot( Actions::GainEnergy(1) );
+  //         }
+  //     }
+  // ⚠⚠ **与 `initRelics` 那一半形状不同**：那边是「先算 `data + 1` 再判、能量**同步**加」，
+  //   这边是「先自增再判、能量**入队**」。两处的顺序（判断在自增之后）相同，
+  //   但一个读 `r.data`、一个读上一回合留下的计数器。照抄两份。
+  [
+    "happy_flower",
+    (bc) => {
+      bc.player.happyFlowerCounter += 1;
+      if (bc.player.happyFlowerCounter === 3) {
+        bc.player.happyFlowerCounter = 0;
+        addToBot(bc, (c) => {
+          c.player.energy += 1;
+        });
+      }
+    },
+  ],
   [
     "horn_cleat",
     (bc) => {
       if (bc.turn === 1) {
         addToBot(bc, (c) => gainBlock(c, 14), false);
       }
+    },
+  ],
+  // 熏香炉（INCENSE_BURNER，Player.cpp:535-540）：与 `initRelics` 那一半除了「入队」之外
+  // 逐字相同（`if (++counter == 6) { counter = 0; addToBot(BuffPlayer<INTANGIBLE>(1)) }`）。
+  [
+    "incense_burner",
+    (bc) => {
+      bc.player.incenseBurnerCounter += 1;
+      if (bc.player.incenseBurnerCounter === 6) {
+        bc.player.incenseBurnerCounter = 0;
+        addToBot(bc, (c) => addPower(c.player.powers, "intangible", 1));
+      }
+    },
+  ],
+  // 水银沙漏（MERCURY_HOURGLASS，Player.cpp:551-553）：`addToBot(Actions::DamageAllEnemy(3))`。
+  // ⚠ 与 `initRelics` 里那一句**逐字相同**（BattleContext.cpp:432-434），与硫磺同族：
+  //   一处覆盖第 1 回合、一处覆盖第 2 回合起。⚠ 但两处的**写法不同**——`init` 那处的门是
+  //   `gc.hasRelic(...)`（容器）、这处是 `hasRelic<>()`（玩家位集合），当前同解。
+  [
+    "mercury_hourglass",
+    (bc) => {
+      addToBot(bc, (c) => damageAllEnemiesNonAttack(c, 3));
+    },
+  ],
+  // 死灵之书（NECRONOMICON，Player.cpp:555-557）：`haveUsedNecronomiconThisTurn = false;`
+  // ⚠ **同步**赋值，不入队；它不是 Power、不进快照。真正的效果在 `onUseAttackCard`（:1722）。
+  [
+    "necronomicon",
+    (bc) => {
+      bc.player.haveUsedNecronomiconThisTurn = false;
     },
   ],
   // 橙色药丸（ORANGE_PELLETS，第四十二批）：对齐 `Player::applyStartOfTurnRelics` 的
@@ -9448,8 +10036,12 @@ function transmutationAction(
   energy: number,
   useEnergy: boolean,
 ): void {
-  // TODO(后续PR): 化学 X（CHEMICAL_X）遗物 +2，未登记。
-  const effectAmount = energy;
+  // 化学 X（CHEMICAL_X，第四十四批）：对齐 `Actions::TransmutationAction`（Actions.cpp:593）
+  //     const auto effectAmount = energy + (bc.player.hasRelic<R::CHEMICAL_X>() ? 2 : 0);
+  // ——与旋风斩那一句**逐字相同**。⚠ 但**这一半没有预言机**：嬗变造的是整池随机无色牌，
+  // 而 harness 的 `isReplayableCard` 把嬗变与化学 X 放不到同一副牌组里（造出未登记的牌
+  // 就不可重放）。照抄，如实记成盲区。⚠ 门是 `== 0` 而不是 `> 0`，与旋风斩那条相反，照抄。
+  const effectAmount = energy + (hasRelic(bc, "chemical_x") ? 2 : 0);
   if (effectAmount === 0) {
     return;
   }
@@ -10890,8 +11482,15 @@ function whirlwindAction(
   const matrix = bc.monsters.map((m, i) =>
     m.alive ? Math.min(65535, calculateCardDamage(bc, i, baseDamage, card)) : 0,
   );
-  // TODO(后续PR): 化学 X（CHEMICAL_X）遗物 +2，未登记。
-  const effectAmount = energy;
+  // 化学 X（CHEMICAL_X，第四十四批）：对齐 `Actions::WhirlwindAction` 的倒数第二句
+  // （Actions.cpp:1267）：`const auto effectAmount = energy + (hasRelic<R::CHEMICAL_X>() ? 2 : 0);`
+  // ⚠ 四处照抄：
+  //  ①⚠⚠ **它加在「打几次」上、不加在伤害上**，而且加在 `useEnergy` 把能量清零**之后**
+  //     ——所以 0 能量时旋风斩照样打 2 下。这是它在本项目里唯一有预言机的可观察面。
+  //  ② 伤害矩阵在这一句**之前**就算好了（每只怪一份），追加的 2 次用的是同一份矩阵。
+  //  ③ `if (effectAmount > 0)` 那道门排在这一句之后，照抄。
+  //  ④ 它的第二个读点在 `Actions::TransmutationAction`（:593），见那里。
+  const effectAmount = energy + (hasRelic(bc, "chemical_x") ? 2 : 0);
   if (effectAmount > 0) {
     attackAllMonsterRecursive(bc, matrix, effectAmount);
   }
@@ -11042,6 +11641,35 @@ function onUseAttackCard(bc: BattleContext, item: CardQueueItem, card: CombatCar
   if (rage > 0) {
     addToBot(bc, (c) => gainBlock(c, rage), false);
   }
+  // 干劲（VIGOR）的摘除（对齐 BattleContext.cpp:1678-1680，排在怒火**之后**、笔尖之前）：
+  //     if (p.hasStatus<PS::VIGOR>()) { p.removeStatus<PS::VIGOR>(); }
+  // ⚠⚠ **第四十四批才补上，因为在赤芥子之前干劲没有任何来源**——`getPower(…, "vigor")`
+  //   恒是 0，摘不摘都一样。赤芥子（开局 8 层干劲）一登记它就承重了：少了这一句，
+  //   那 8 点会加在**整场每一张**攻击牌上。
+  // ⚠ 走 `removeStatus`（整条摘掉），不是递减；而且是**同步**的。
+  // ⚠ 顺带解释一处看着像重复计数的地方：群伤牌（顺劈斩 / 旋风斩 / 剑刃回旋 …）在
+  //   `CARD_RULES` 里把干劲**手动加进 baseDamage**，而 `calculateCardDamage` 里也加一次。
+  //   两者不冲突——参考同样这么写（BattleContext.cpp:1028 等），理由是那些牌把伤害
+  //   **入队**结算，而这一句在入队之前就把干劲摘了，出队时 `calculateCardDamage` 读到的是 0。
+  //   参考在剑刃回旋那行自注 `// vigor is removed afterwards so this is a necessary hack`。
+  if (hasPower(bc.player.powers, "vigor")) {
+    removePower(bc.player.powers, "vigor");
+  }
+  // 笔尖那一层 Power 的**摘除**（对齐 BattleContext.cpp:1686-1691，排在干劲之后、
+  // 自由攻击之后、墨水瓶之前）：
+  //     if (p.hasStatus<PS::PEN_NIB>()) {
+  //         // todo does this need to be added to bot?
+  //         addToBot( Actions::RemoveStatus<PS::PEN_NIB>() );
+  //     }
+  // ⚠⚠ **是 `addToBot`（入队）而不是同步**，而干劲那一句是同步的——两条挨在一起、形状不同。
+  //   差别可观察：伤害在打牌时就算好了，所以这一张照样翻倍；但**入队**意味着它排在这张牌
+  //   自己的效果**之后**，于是同一张牌排的连锁伤害（例如二连击的复制项）还能吃到翻倍。
+  // ⚠ 参考在这里自注 `// todo does this need to be added to bot?`——作者自己也不确定，
+  //   但预言机就是参考，照抄 as-built。
+  // ⚠ 自由攻击（FREE_ATTACK_POWER）那一格没有登记：全参考没有产出者（那是守望者的）。
+  if (hasPower(bc.player.powers, "pen_nib")) {
+    addToBot(bc, (c) => removePower(c.player.powers, "pen_nib"));
+  }
   // —— 回合内攻击计数遗物（第四十一批）——
   //
   // 参考把它们写成 `onUseAttackCard` 里**三个各自独立的 `if`**，共用同一个计数器却分散在
@@ -11091,14 +11719,94 @@ function onUseAttackCard(bc: BattleContext, item: CardQueueItem, card: CombatCar
   //  ③ **每张攻击牌都触发**（没有 `% 3` 那种门），所以一个回合能叠好几层。
   //  ④ 还债在**本回合末**结算（`applyEndOfTurnPowers` 的 LOSE_DEXTERITY=13 那一格），
   //     所以卡面「本回合」那两个字全靠那一格。
+  // 死灵之书（NECRONOMICON，第四十四批）：排在手里剑**之后**、笔尖之前
+  // （BattleContext.cpp:1722-1726）：
+  //     if (p.hasRelic<R::NECRONOMICON>() && !p.haveUsedNecronomiconThisTurn && !item.freeToPlay &&
+  //         !item.purgeOnUse && (c.costForTurn >= 2 || c.isXCost() && item.energyOnUse >= 2)) {
+  //         queuePurgeCard(c, item.target);
+  //         p.haveUsedNecronomiconThisTurn = true;
+  //     }
+  // ⚠ 五处照抄：
+  //  ①⚠⚠ **`!item.purgeOnUse`**：复制出来的那一张自己不会再复制（否则无限递归）。
+  //     与二连击 / 复制那条 Power 用的是同一个 `queuePurgeCard`（第九批铺好的）。
+  //  ② 门是 `costForTurn >= 2`，读的是**实例级本回合费用**——腐化改过费的牌照新值判。
+  //     X 费牌走另一支：`CardInstance::isXCost()` 就是 `cost == -1`（CardInstance.h:60），
+  //     而 `cost` 是**基础**费用（`initialCardCost` 给 X 费牌播的哨兵就是 -1），
+  //     所以这里读 `card.cost === -1` 而不是 `costForTurn`——旋风斩打出时
+  //     `costForTurn` 已经被夹成实际花掉的能量了。
+  //  ③ `haveUsedNecronomiconThisTurn` 在**回合开始**复位（`applyStartOfTurnRelics`），
+  //     不是回合末——所以「每回合第一张」是靠那一处实现的。
+  //  ④ 位置：在手里剑之后、笔尖之前。复制项进的是**出牌队列队首**，所以它在这张牌自己的
+  //     效果结算完之后**紧接着**被打出。
+  //  ⑤ 它**不**看这张牌打没打中、也不看有没有目标——`queuePurgeCard` 原样带走 `item.target`。
+  if (
+    hasRelic(bc, "necronomicon") &&
+    !bc.player.haveUsedNecronomiconThisTurn &&
+    !item.freeToPlay &&
+    !item.purgeOnUse &&
+    (card.costForTurn >= 2 || (card.cost === -1 && item.energyOnUse >= 2))
+  ) {
+    // ⚠ `queuePurgeCard` 的第四个实参在参考里是 `item.energyOnUse`
+    //   （`BattleContext::queuePurgeCard` 的函数体里 `item.energyOnUse = curCardQueueItem.energyOnUse`），
+    //   与二连击那条同源。
+    queuePurgeCard(bc, card, item.target, item.energyOnUse);
+    bc.player.haveUsedNecronomiconThisTurn = true;
+  }
+  // 笔尖（PEN_NIB，第四十四批）：排在死灵之书**之后**、二元性之前
+  // （BattleContext.cpp:1728-1734）：
+  //     if (p.hasRelic<R::PEN_NIB>()) {
+  //         ++p.penNibCounter;
+  //         if (p.penNibCounter == 9) {
+  //             addToBot( Actions::BuffPlayer<PS::PEN_NIB>(1) );
+  //             p.penNibCounter = -1; // take note of this
+  //         }
+  //     }
+  // ⚠ 四处照抄：
+  //  ①⚠⚠ **命中时写 -1 而不是 0**（参考在行尾自注 `// take note of this`）：这一张牌
+  //     自己**不**被翻倍——`PEN_NIB` 是 `addToBot` 上的，而伤害早就算完了。-1 让下一张牌
+  //     把计数器带回 0，于是「每 10 张攻击牌翻倍一次」而不是每 9 张。写成 0 会让周期变成 9。
+  //  ② `== 9` 而不是 `>= 9`，配合那个 -1。
+  //  ③ `PEN_NIB` 这个 Power 的两个读点：`calculateCardDamage` 里 `damage *= 2`
+  //     （排在双重伤害之后、虚弱之前，BattleContext.cpp:2729-2731），
+  //     以及**同一个函数上方**的 `addToBot(RemoveStatus<PEN_NIB>())`（:1686-1691，
+  //     参考自注 `// todo does this need to be added to bot?`）——**打一张攻击牌就摘**。
+  //  ④ 出战斗时 -1 被写回成 **9**（见 `updateRelicsOnExit`）。
+  if (hasRelic(bc, "pen_nib")) {
+    bc.player.penNibCounter += 1;
+    if (bc.player.penNibCounter === 9) {
+      addToBot(bc, (c) => addPower(c.player.powers, "pen_nib", 1));
+      bc.player.penNibCounter = -1;
+    }
+  }
   if (hasRelic(bc, "duality")) {
     addToBot(bc, (c) => {
       addPower(c.player.powers, "dexterity", 1);
       debuffPlayer(c, "lose_dexterity", 1);
     });
   }
-  // TODO(遗物PR): 笔尖（PEN_NIB，排在手里剑与二元性之间，读 `r.data`）、
-  //   双截棍（NUNCHAKU，排在二元性之后，跨战斗计数器）。
+  // 双节棍（NUNCHAKU，第四十四批）：排在二元性**之后**（BattleContext.cpp:1740-1745）：
+  //     if (p.hasRelic<R::NUNCHAKU>()) {
+  //         if (++p.nunchakuCounter >= 10) {
+  //             addToBot(Actions::GainEnergy(1));
+  //             p.nunchakuCounter = 0;
+  //         }
+  //     }
+  // ⚠ 三处照抄：
+  //  ①⚠ **门是 `>= 10` 而不是 `== 10`**，与墨水瓶 / 笔尖那两颗正好相反——三颗计数遗物
+  //     并排放在同一段里，写法却是 `== 10` / `== 9` / `>= 10` 三种。当前三者同解
+  //     （每次只 +1，不可能跳过），但照抄，别统一。
+  //  ② **归零排在入队之后**（先 addToBot 再 `= 0`），与笔尖那条的 `= -1` 位置相同。
+  //  ③ 计数器跨战斗延续（`initRelics` 搬进来、`updateRelicsOnExit` 写回去）。
+  if (hasRelic(bc, "nunchaku")) {
+    bc.player.nunchakuCounter += 1;
+    if (bc.player.nunchakuCounter >= 10) {
+      addToBot(bc, (c) => {
+        c.player.energy += 1;
+      });
+      bc.player.nunchakuCounter = 0;
+    }
+  }
+
   // —— 尖锐外壳（SHARP_HIDE，守卫者的防御形态）——
   //
   // 对齐 `BattleContext::onUseAttackCard` 的**最末**那三行（BattleContext.cpp:1756-1759）。
@@ -11244,6 +11952,92 @@ function onUsePowerCard(bc: BattleContext): void {
   }
   inkBottleOnUseCard(bc);
   orangePelletsOnUseCard(bc, 2); // CardType::POWER = 2
+  // 木乃伊之手（MUMMIFIED_HAND，第四十四批）：整个函数的最后一句
+  // （BattleContext.cpp:1905-1907）：`if (p.hasRelic<R::MUMMIFIED_HAND>()) mummifiedHandOnUsePower();`
+  // ⚠⚠ **它在 `onUseSkillCard` 里也有一格（:1833-1835），但那一格的函数体是空的 `// todo`**
+  //   ——参考只实现了能力牌这一条。照抄：技能牌那半不写。
+  if (hasRelic(bc, "mummified_hand")) {
+    mummifiedHandOnUsePower(bc);
+  }
+}
+
+/**
+ * 木乃伊之手的效果（对齐 `BattleContext::mummifiedHandOnUsePower`，BattleContext.cpp:2878-2907）。
+ *
+ * ```cpp
+ * fixed_list<int,10> matchingIdxList;
+ * for (int i = 0; i < cards.cardsInHand; ++i) {
+ *     const auto &c = cards.hand[i];
+ *     bool canPick = c.cost > 0 && c.costForTurn > 0 && !c.freeToPlayOnce;
+ *     if (canPick) matchingIdxList.push_back(i);
+ * }
+ * if (matchingIdxList.empty()) return;
+ * for (int i = matchingIdxList.size()-1; i >= 0; --i) {
+ *     const auto uniqueId = cards.hand[matchingIdxList[i]].getUniqueId();
+ *     if (cardQueue.containsCardWithId(uniqueId)) matchingIdxList.remove(i);
+ * }
+ * if (matchingIdxList.empty()) return;
+ * const int selectedListIdx = cardRandomRng.random(0, matchingIdxList.size()-1);
+ * cards.hand[matchingIdxList[selectedListIdx]].setCostForTurn(0);
+ * ```
+ * ⚠ 五处照抄：
+ *  ①⚠⚠ **两道筛选之间有一次「空了就提前返回」，而且它排在掷骰之前**——所以「手里全是
+ *     0 费牌」时**一次 `cardRandomRng` 都不掷**。漏掉任一道提前返回都会让 RNG 计数器错位。
+ *  ② 第一道筛的是 `cost > 0 && costForTurn > 0`：**基础费用与本回合费用都要 > 0**。
+ *     X 费牌的 `cost` 是 -1 ⇒ 选不中；被腐化压成 0 费的技能 `costForTurn` 是 0 ⇒ 也选不中。
+ *  ③ 第二道**倒序**从候选里剔掉「已经在出牌队列里的那张」（二连击 / 混乱排着的那张）。
+ *     倒序是因为 `remove(i)` 会改变后面的下标——照抄方向。
+ *  ④ 掷的是 `random(0, n-1)`（★ 一次 `cardRandomRng`），不是 `random(n)`。
+ *  ⑤ `setCostForTurn(0)` 只改**本回合**费用，不动 `cost`。
+ */
+function mummifiedHandOnUsePower(bc: BattleContext): void {
+  let matching = bc.hand.flatMap((c, i) => (c.cost > 0 && c.costForTurn > 0 ? [i] : []));
+  if (matching.length === 0) {
+    return;
+  }
+  matching = matching.filter((i) => {
+    const uid = bc.hand[i]?.uid;
+    return uid === undefined || !bc.cardQueue.containsCardWithUid(uid);
+  });
+  if (matching.length === 0) {
+    return;
+  }
+  const pick = bc.rng.cardRandomRng.random(0, matching.length - 1); // ★ 消耗一次 cardRandomRng
+  const target = bc.hand[matching[pick]];
+  if (target !== undefined) {
+    setCostForTurn(target, 0);
+  }
+}
+
+/**
+ * 随机升级一张手牌（对齐 `Actions::UpgradeRandomCardAction`，Actions.cpp:946-968）。扭曲钳专用。
+ *
+ * ```cpp
+ * fixed_list<int,10> upgradeableHandIdxs;
+ * for (i…) if (bc.cards.hand[i].canUpgrade()) upgradeableHandIdxs.push_back(i);
+ * if (upgradeableHandIdxs.empty()) return;
+ * java::Collections::shuffle(begin, end, java::Random(bc.shuffleRng.randomLong()));
+ * bc.cards.hand[upgradeableHandIdxs[0]].upgrade();
+ * ```
+ * ⚠ 四处照抄：
+ *  ①⚠⚠ **它洗的是「可升级手牌的下标表」，然后取第 0 个**，不是掷一次 `random(n)`。
+ *     两者消耗的 RNG **流不同**（这里是 `shuffleRng`，不是 `cardRandomRng`）也**不同源**，
+ *     结果分布也不同（Java 的 `Collections.shuffle` 是 Fisher-Yates，取第 0 个 ≠ 掷一次）。
+ *  ②⚠ **候选为空时一次 `shuffleRng` 都不掷**（提前返回排在洗牌之前）。
+ *  ③ `canUpgrade()` = 「有升级形态且还没升级」；灼热之刃**永远可升级**（可反复升）。
+ *  ④ 升级是**就地**改这张手牌实例，只影响本场战斗。
+ */
+function upgradeRandomCardInHand(bc: BattleContext): void {
+  const idxs = bc.hand.flatMap((c, i) => (canUpgradeCard(c) ? [i] : []));
+  if (idxs.length === 0) {
+    return;
+  }
+  const lcg = new JavaRandom(bc.rng.shuffleRng.randomLong()); // ★ 消耗一次 shuffleRng
+  javaShuffle(idxs, lcg);
+  const card = bc.hand[idxs[0]];
+  if (card !== undefined) {
+    upgradeCard(card);
+  }
 }
 
 /**
@@ -11511,6 +12305,16 @@ export function returnRandomPotion(bc: BattleContext, limited = false): string {
 
 /** 对齐 obtainPotion：满槽则丢弃，否则填入第一个空位。 */
 export function obtainPotion(bc: BattleContext, potionId: string): void {
+  // 清酒壶（SOZU，第四十四批）：对齐 `BattleContext::obtainPotion` 的第一道门
+  // （BattleContext.cpp:2249-2251）：`if (potionCount == potionCapacity || hasRelic<R::SOZU>()) return;`
+  // ⚠ 三处照抄：
+  //  ①⚠ **它与「满槽」写在同一个 `if` 的析取里**——所以带着清酒壶时，药水直接消失，
+  //     不是「先拿到再丢掉」。
+  //  ② 战斗内唯一的调用点是熵酿（把空槽填满），所以两者一起带时熵酿一瓶都补不上。
+  //  ③ 它的另一半是 `initRelics` 里的 `energyPerTurn++`。
+  if (hasRelic(bc, "sozu")) {
+    return;
+  }
   if (bc.potionCount >= bc.potionCapacity) {
     return;
   }
@@ -11535,40 +12339,66 @@ export function discardPotion(bc: BattleContext, idx: number): void {
  * 药水效果（逐个转写自 drinkPotion 的 switch 分支）。
  * 未登记的药水显式抛错，绝不静默跳过——静默会让 potionRng/战斗状态悄悄错位。
  */
-type PotionRule = (bc: BattleContext, target: number) => void;
+type PotionRule = (bc: BattleContext, target: number, bark: boolean) => void;
 
+/**
+ * ⚠⚠ **第三个参数 `bark` 是神圣树皮（SACRED_BARK，第四十四批）**，对齐
+ * `BattleContext::drinkPotion` 的第一句 `const bool hasBark = player.hasRelic<R::SACRED_BARK>();`
+ * （BattleContext.cpp:2271）。参考把它写成**每一条 case 里的一个三元式**，33 条里
+ * **32 条都是「翻倍」**（`hasBark ? 2n : n`）——所以它不是一条「统一 ×2」的规则，
+ * 而是 33 个各写各的字面量。照抄每一条自己的两个数。
+ */
 const POTION_RULES: Record<string, PotionRule> = {
-  block_potion: (bc) => addToBot(bc, (c) => gainBlock(c, 12), false),
+  block_potion: (bc, _target, bark) => addToBot(bc, (c) => gainBlock(c, bark ? 24 : 12), false),
   // 火焰/爆炸药水走 DamageEnemy（非攻击伤害），**不**触发蜷缩等 onAttacked 链。
-  fire_potion: (bc, target) => addToBot(bc, (c) => damageEnemyNonAttack(c, target, 20)),
-  explosive_potion: (bc) =>
+  fire_potion: (bc, target, bark) =>
+    addToBot(bc, (c) => damageEnemyNonAttack(c, target, bark ? 40 : 20)),
+  explosive_potion: (bc, _target, bark) => {
+    // ⚠ 参考把伤害算在**动作之外**（`const auto damage = hasBark ? 20 : 10;` 再入队），
+    //   与别的 case 把三元式写在实参位上不同。当前同解，照抄形状。
+    const damage = bark ? 20 : 10;
     addToBot(bc, (c) => {
       for (let i = 0; i < c.monsters.length; i += 1) {
-        damageEnemyNonAttack(c, i, 10);
+        damageEnemyNonAttack(c, i, damage);
       }
-    }),
-  strength_potion: (bc) => addToBot(bc, (c) => addPower(c.player.powers, "strength", 2)),
-  dexterity_potion: (bc) => addToBot(bc, (c) => addPower(c.player.powers, "dexterity", 2)),
-  energy_potion: (bc) =>
+    });
+  },
+  strength_potion: (bc, _target, bark) =>
+    addToBot(bc, (c) => addPower(c.player.powers, "strength", bark ? 4 : 2)),
+  dexterity_potion: (bc, _target, bark) =>
+    addToBot(bc, (c) => addPower(c.player.powers, "dexterity", bark ? 4 : 2)),
+  energy_potion: (bc, _target, bark) =>
     addToBot(bc, (c) => {
-      c.player.energy += 2;
+      c.player.energy += bark ? 4 : 2;
     }),
-  swift_potion: (bc) => addToBot(bc, (c) => drawCards(c, 3)),
+  swift_potion: (bc, _target, bark) => addToBot(bc, (c) => drawCards(c, bark ? 6 : 3)),
   // 药水施加的减益同样是 isSourceMonster=false，不跳过首次递减。
-  weak_potion: (bc, target) => addToBot(bc, (c) => debuffEnemy(c, target, "weak", 3, false)),
-  fear_potion: (bc, target) => addToBot(bc, (c) => debuffEnemy(c, target, "vulnerable", 3, false)),
-  blood_potion: (bc) => {
-    // 对齐 (float)(maxHp * 40) / 100.0f 后截断。
-    const heal = Math.trunc(Math.fround((bc.player.maxHp * 40) / 100));
+  weak_potion: (bc, target, bark) =>
+    addToBot(bc, (c) => debuffEnemy(c, target, "weak", bark ? 6 : 3, false)),
+  fear_potion: (bc, target, bark) =>
+    addToBot(bc, (c) => debuffEnemy(c, target, "vulnerable", bark ? 6 : 3, false)),
+  blood_potion: (bc, _target, bark) => {
+    // 对齐 `(int)((float)(player.maxHp * (hasBark ? 20 : 40)) / 100.0f)`（BattleContext.cpp:2300）。
+    // ⚠⚠⚠ **那两个常数看着是反的，而且它是全表唯一的例外**：另外 32 条 `hasBark ? A : B`
+    //   全部满足 A = 2B（翻倍），只有这一条是 A = B / 2（**带着神圣树皮反而回得更少**）。
+    //   真实游戏里血之药水回 20% 上限、树皮翻成 40%，所以参考的两个数**都**对不上
+    //   （基数多一倍、方向还反了）。
+    //   ⚠ **本批照抄 as-built，不打补丁**：三条判据里第 ③ 条不过——「补上」有两种互不相同的
+    //   写法（`hasBark ? 80 : 40` 保住既有 33946 例背书的基数、`hasBark ? 40 : 20` 对齐真实
+    //   游戏），参考自己答不了是哪一种，而改基数会推翻全部已冻结数据。记进 TODOS「待裁定」。
+    const heal = Math.trunc(Math.fround((bc.player.maxHp * (bark ? 20 : 40)) / 100));
     addToBot(bc, (c) => healPlayer(c, heal));
   },
-  fruit_juice: (bc) => {
+  fruit_juice: (bc, _target, bark) => {
     // 立即生效，不入队（对齐 player.increaseMaxHp）。
-    bc.player.maxHp += 5;
-    bc.player.hp += 5;
+    const amount = bark ? 10 : 5;
+    bc.player.maxHp += amount;
+    bc.player.hp += amount;
   },
-  ancient_potion: (bc) => addToBot(bc, (c) => addPower(c.player.powers, "artifact", 1)),
+  ancient_potion: (bc, _target, bark) =>
+    addToBot(bc, (c) => addPower(c.player.powers, "artifact", bark ? 2 : 1)),
   // 熵酿：把空槽填满随机药水——战斗内唯一消耗 potionRng 的地方。
+  // ⚠ **它不吃神圣树皮**（参考那条 case 里没有 `hasBark`）：填满槽位这件事没法翻倍。
   entropic_brew: (bc) =>
     addToBot(bc, (c) => {
       for (let i = 0; i < c.potionCapacity; i += 1) {
@@ -11587,13 +12417,36 @@ function healPlayer(bc: BattleContext, amount: number): void {
   //     真正回上多少仍受 `min(maxHp, …)` 限制。
   //  ③ 它对**所有**回血来源生效（鸟面坛 / 血瓶 / 血腥雕像 / 血之药水 / 收割 …），
   //     不区分来源。
-  // TODO(遗物PR): 绽放印记（MARK_OF_THE_BLOOM，函数第一句，直接 return——一点血都回不了）、
-  //   红骷髅（RED_SKULL，钳制之后：从半血以下回到半血以上就 `debuff<STRENGTH>(3)`）。
+  // 绽放印记（MARK_OF_THE_BLOOM，第四十四批）：**函数的第一句**（Player.cpp:156-158）：
+  //     if (hasRelic<RelicId::MARK_OF_THE_BLOOM>()) { return; }
+  // ⚠ 两处照抄：
+  //  ①⚠ **排在魔力之花之前**：两颗一起带时一点血都回不了（不是「回 0×3/2」，是整条不跑）。
+  //  ② 它的第二个读点在 `Player::wouldDie` 的第一道门（连仙女瓶与蜥蜴尾一起挡掉）。
+  if (hasRelic(bc, "mark_of_the_bloom")) {
+    return;
+  }
   let healed = amount;
   if (hasRelic(bc, "magic_flower")) {
     healed = Math.trunc((healed * 3) / 2);
   }
+  // 红骷髅（RED_SKULL，第四十四批）的**第二个**读点（Player.cpp:165-170）：
+  //     bool wasBloodied = curHp <= maxHp/2;
+  //     curHp = std::min(maxHp, curHp + amount);
+  //     if (wasBloodied && curHp > maxHp/2 && hasRelic<RED_SKULL>()) { debuff<PS::STRENGTH>(3); }
+  // ⚠ 四处照抄：
+  //  ①⚠⚠ **`wasBloodied` 在回血之前取**，判据是「回血前在半血及以下 **且** 回血后在半血
+  //     以上」——两侧都要，只判一侧会让每次回血都还债 / 永远不还债。
+  //  ② **还债走 `debuff`** ⇒ 过神器：有神器时这 3 点力量白赚（与诱变强化剂同族）。
+  //  ③ `maxHp/2` 是**整数除**，而且两次比较用的是同一个表达式（`<=` 与 `>`），
+  //     所以奇数上限时「恰好半血」算 bloodied。
+  //  ④ 另外两个读点：`initRelics` 的第二遍（入场血 ≤ 半血就 +3 力量）与
+  //     `Player::hpWasLost`（掉到半血及以下再 +3）。三处合起来才是卡面那句
+  //     「生命值低于一半时 +3 力量、回到一半以上时失去」。
+  const wasBloodied = bc.player.hp <= Math.trunc(bc.player.maxHp / 2);
   bc.player.hp = Math.min(bc.player.maxHp, bc.player.hp + healed);
+  if (wasBloodied && bc.player.hp > Math.trunc(bc.player.maxHp / 2) && hasRelic(bc, "red_skull")) {
+    debuffPlayer(bc, "strength", 3);
+  }
 }
 
 /**
@@ -11607,7 +12460,15 @@ function healPlayer(bc: BattleContext, amount: number): void {
  * 它传的是 20/25 常量。
  */
 function gainGold(bc: BattleContext, amount: number): void {
-  // TODO(遗物PR): 以太（ECTOPLASM，在加钱**之前**整个提前返回——拿了它这一局再也捡不到金币）。
+  // 以太（ECTOPLASM，第四十四批）：**函数的第一句**（Player.cpp:87-89）：
+  //     if (hasRelic<R::ECTOPLASM>()) { return; }
+  // ⚠ 两处照抄：
+  //  ①⚠ 它排在血腥雕像**之前**，所以「以太 + 血腥雕像」时一分钱不给、**也不回血**。
+  //  ② 战斗内唯一的调用点是贪婪之手打死一只怪，所以它的可观察面就是 trace 头部的
+  //     `goldGained`（以及血腥雕像那 5 点血）。
+  if (hasRelic(bc, "ectoplasm")) {
+    return;
+  }
   bc.player.gold += amount;
   // 血腥雕像（BLOODY_IDOL，第四十三批）：对齐 Player.cpp:92-94，紧跟在 `gold += amount` **之后**：
   //     if (hasRelic<R::BLOODY_IDOL>()) { heal(5); }
@@ -11666,6 +12527,19 @@ function playerLoseHp(bc: BattleContext, amount: number, selfDamage: boolean): v
   if (getPower(bc.player.powers, "intangible") > 0) {
     loss = 1;
   }
+  // 钨钢棒（TUNGSTEN_ROD，第四十四批）的第三份（Player.cpp:266-271）：
+  //     if (amount > 0 && hasRelic<RelicId::TUNGSTEN_ROD>()) {
+  //         amount -= 1;
+  //         if (amount == 0) { return; }
+  //     }
+  // ⚠⚠ **只有这一份带那个提前返回**，另外两份靠函数末尾的 `if (damage > 0)` 兜住。
+  //   三份的形状不同但当前同解（都是「减完不剩就不掉血」）——照抄，别统一。
+  if (loss > 0 && hasRelic(bc, "tungsten_rod")) {
+    loss -= 1;
+    if (loss === 0) {
+      return;
+    }
+  }
   if (loss <= 0) {
     return;
   }
@@ -11694,16 +12568,50 @@ function playerLoseHp(bc: BattleContext, amount: number, selfDamage: boolean): v
  * TODO(遗物PR): 百年拼图（抽 3，排在最前，一次性）、情绪芯片、红骷髅（排在最后）。
  */
 function playerHpWasLost(bc: BattleContext, amount: number, selfDamage: boolean): void {
+  // 对齐 `Player::hpWasLost` 的第二句 `bool wasBloodied = curHp <= maxHp/2;`——
+  // 它取在扣血**之前**，唯一的读者是红骷髅那一格（见下方）。
+  const wasBloodiedBeforeLoss = bc.player.hp <= Math.trunc(bc.player.maxHp / 2);
   bc.player.hp = Math.max(0, bc.player.hp - amount);
   const rupture = getPower(bc.player.powers, "rupture");
   if (selfDamage && rupture > 0) {
     addPower(bc.player.powers, "strength", rupture);
+  }
+  // 百年拼图（CENTENNIAL_PUZZLE，第四十四批）：排在破裂**之后**、自成型黏土之前
+  // （Player.cpp:294-297）：
+  //     if (hasRelic<RelicId::CENTENNIAL_PUZZLE>()) {
+  //         setHasRelic<RelicId::CENTENNIAL_PUZZLE>(false);
+  //         bc.addToTop( Actions::DrawCards(3) );
+  //     }
+  // ⚠ 三处照抄：
+  //  ①⚠⚠ **它是全参考项目里除蜥蜴尾之外唯一一处「战斗中途把自己从玩家身上摘掉」**
+  //     （`setHasRelic(false)`）——一场战斗只触发一次，而这件事**只写玩家那份位集合**、
+  //     不动容器，所以 `updateRelicsOnExit` 也不管它（下一场照样触发）。
+  //     ⚠ 用容器判「有没有这颗遗物」的写法在这里会静默变成「每次掉血都抽 3 张」。
+  //  ② **先摘再入队**：摘掉那一句排在 addToTop 之前，所以这一次掉血只抽一轮。
+  //  ③ `addToTop` 而不是 addToBot，与如尼方块同族——抽到的牌在同一条伤害链里就能被读到。
+  if (hasRelic(bc, "centennial_puzzle")) {
+    setHasRelic(bc, "centennial_puzzle", false);
+    addToTop(bc, (c) => drawCards(c, 3), true, { kind: "draw_cards", count: 3 });
   }
   if (hasRelic(bc, "self_forming_clay")) {
     addPower(bc.player.powers, "next_turn_block", 3);
   }
   if (hasRelic(bc, "runic_cube")) {
     addToTop(bc, (c) => drawCards(c, 1), true, { kind: "draw_cards", count: 1 });
+  }
+  // 红骷髅（RED_SKULL，第四十四批）的**第三个**读点（Player.cpp:311-313）：
+  //     if (hasRelic<RED_SKULL>() && !wasBloodied && curHp <= maxHp/2) { buff<PS::STRENGTH>(3); }
+  // ⚠ 三处照抄：
+  //  ①⚠ `wasBloodied` 在**扣血之前**取（函数第二句），与 `Player::heal` 里那半镜像。
+  //  ② **加力量走 `buff`**（不过神器），还债走 `debuff`（过神器）——两个方向的函数不同，
+  //     与诱变强化剂同族。
+  //  ③ 位置在如尼方块**之后**、`cards.onTookDamage()` 之前。
+  if (
+    hasRelic(bc, "red_skull") &&
+    !wasBloodiedBeforeLoss &&
+    bc.player.hp <= Math.trunc(bc.player.maxHp / 2)
+  ) {
+    addPower(bc.player.powers, "strength", 3);
   }
   cardsOnTookDamage(bc);
   if (bc.player.hp <= 0) {
@@ -11815,8 +12723,10 @@ export function drinkPotion(bc: BattleContext, idx: number, target = 0): DrinkPo
     }
   }
 
+  // 神圣树皮在**清槽之前**读（参考是 `drinkPotion` 的第一句），当前同解——清槽不碰遗物。
+  const bark = hasRelic(bc, "sacred_bark");
   discardPotion(bc, idx); // 先清槽，再结算
-  rule(bc, target);
+  rule(bc, target, bark);
   bc.inputState = "executing";
   executeActions(bc);
   return { ok: true };
@@ -13721,7 +14631,12 @@ function dealDamageToPlayer(bc: BattleContext, amount: number, attackerIdx = -1)
   if (unblocked > 0 && unblocked <= 5 && hasRelic(bc, "torii")) {
     unblocked = 1;
   }
-  // TODO(遗物PR): 钨钢棒（TUNGSTEN_ROD，鸟居之后 `damage -= 1`）。
+  // 钨钢棒（TUNGSTEN_ROD，第四十四批）：排在鸟居**之后**（Player.cpp:239-241）。
+  // ⚠ 顺序可观察：鸟居先把 1~5 点压成 1，钨钢棒再减 1 ⇒ **归零**；反过来（先 -1 再压成 1）
+  //   会留下 1 点。两颗都带的时候这一格决定挨不挨这一下。
+  if (unblocked > 0 && hasRelic(bc, "tungsten_rod")) {
+    unblocked -= 1;
+  }
   // `lastAttackUnblockedDamage` 逐位对齐 `Player::attacked` 的末段（Player.cpp:243-257）：
   // 有剩余伤害就记下它，**否则显式记 0**（那个 else 分支是参考写着的，不是省略）。
   // 唯一的读者是吸血攻击（见 `vampireAttack`）。
@@ -13865,6 +14780,14 @@ function damagePlayerNonAttack(bc: BattleContext, amount: number, selfDamage: bo
     decrementPlayerPower(bc, "buffer");
     unblocked = 0;
   }
+  // 钨钢棒（TUNGSTEN_ROD，第四十四批）：三条伤害路径**各有一份，函数体逐字相同**
+  //     if (damage > 0 && hasRelic<RelicId::TUNGSTEN_ROD>()) { damage -= 1; }
+  //   `Player::damage` :201-203 / `Player::attacked` :239-241 / `Player::loseHp` :266-271。
+  // ⚠⚠ **`loseHp` 那一份多两行**（`if (amount == 0) return;`），另外两份**没有**——
+  //   见 `playerLoseHp`。三份缺一不可：漏掉哪一条，那条路上的每一点伤害都多 1。
+  if (unblocked > 0 && hasRelic(bc, "tungsten_rod")) {
+    unblocked -= 1;
+  }
   if (unblocked <= 0) {
     return;
   }
@@ -13878,15 +14801,47 @@ function damagePlayerNonAttack(bc: BattleContext, amount: number, selfDamage: bo
  */
 function wouldDie(bc: BattleContext): void {
   bc.player.hp = 0;
-  for (let i = 0; i < bc.potionCapacity; i += 1) {
-    if (bc.potions[i] === "fairy_in_a_bottle") {
-      discardPotion(bc, i);
-      const healAmount = Math.max(1, Math.trunc(Math.fround(bc.player.maxHp) * 0.3));
-      healPlayer(bc, healAmount);
+  // 绽放印记（MARK_OF_THE_BLOOM，第四十四批）：对齐 `Player::wouldDie` 的那道外层门
+  // （Player.cpp:331）——`if (!hasRelic<MARK_OF_THE_BLOOM>()) { …仙女瓶… …蜥蜴尾… }`。
+  // ⚠ 它把**仙女瓶与蜥蜴尾一起**关在外面，不是只挡回血：带着它就是没有第二条命。
+  if (!hasRelic(bc, "mark_of_the_bloom")) {
+    for (let i = 0; i < bc.potionCapacity; i += 1) {
+      if (bc.potions[i] === "fairy_in_a_bottle") {
+        discardPotion(bc, i);
+        // 神圣树皮（SACRED_BARK，第四十四批）的**第二个**读点（Player.cpp:330-334）：
+        //     std::max(1, (int)((float)maxHp * (hasRelic<R::SACRED_BARK>() ? 0.6f : 0.3f)))
+        // ⚠ 它与 `drinkPotion` 里那一整族「效果翻倍」是**两处不同的写法**：这里是把
+        //   0.3f 换成 0.6f（一个浮点常量），那边是把整数量 ×2。照抄各自的。
+        const ratio = hasRelic(bc, "sacred_bark") ? 0.6 : 0.3;
+        const healAmount = Math.max(
+          1,
+          Math.trunc(Math.fround(Math.fround(bc.player.maxHp) * Math.fround(ratio))),
+        );
+        healPlayer(bc, healAmount);
+        return;
+      }
+    }
+    // 蜥蜴尾（LIZARD_TAIL，第四十四批）：对齐 Player.cpp:339-343：
+    //     if (hasRelic<RelicId::LIZARD_TAIL>()) {
+    //         setHasRelic<RelicId::LIZARD_TAIL>(false);
+    //         heal(maxHp/2);
+    //         return;
+    //     }
+    // ⚠ 五处照抄：
+    //  ①⚠⚠ 门读的是**玩家那份位集合**，而它是 `initRelics` 里 `setHasRelic<X>(r.data)`
+    //     置的——**充能为 0 的蜥蜴尾在战斗内根本不存在**，救不了人。
+    //  ②⚠ **先摘再回血**：摘掉那一句排在 `heal` 之前，所以同一场仗只能救一次。
+    //     摘掉之后 `updateRelicsOnExit` 会把 `r.data` 写成 0（永久失效）。
+    //  ③ 回的是 `maxHp/2`（整数除），而且走的是 `Player::heal` ⇒ **过魔力之花与绽放印记**
+    //     ——不过绽放印记那道外层门已经把整段挡在外面了，所以魔力之花才是真的会叠上来的那个。
+    //  ④ `curHp` 在函数第一句就被写成 0 了，所以回血是从 0 起算。
+    //  ⑤ **排在仙女瓶之后**：两者都有时先喝药水。
+    if (hasRelic(bc, "lizard_tail")) {
+      setHasRelic(bc, "lizard_tail", false);
+      healPlayer(bc, Math.trunc(bc.player.maxHp / 2));
       return;
     }
   }
-  // TODO(遗物PR): 蜥蜴尾巴（回半血）、绽放印记（禁用复活）。
   bc.outcome = "player_loss";
 }
 
@@ -13922,8 +14877,17 @@ function applyStartOfTurnPostDrawRelics(bc: BattleContext): void {
   if (hasRelic(bc, "pocketwatch") && bc.player.cardsPlayedThisTurn <= 3) {
     addToBot(bc, (c) => drawCards(c, 3));
   }
-  // TODO(遗物PR): 扭曲钳（WARPED_TONGS，排在怀表之后，`Actions::UpgradeRandomCardAction`
-  //   ——它消耗一次 `shuffleRng.randomLong()` 做 Java 式洗牌，还会就地升级一张手牌）。
+  // 扭曲钳（WARPED_TONGS，第四十四批）：排在怀表**之后**（Player.cpp:669-671）：
+  //     if (hasRelic<R::WARPED_TONGS>()) { bc.addToBot(Actions::UpgradeRandomCardAction()); }
+  // ⚠ 三处照抄：
+  //  ①⚠⚠ **它有第二份，在 `initRelics` 的第三个循环里**（`atTurnStartPostDraw`，
+  //     BattleContext.cpp:450-452）——那一份覆盖第 1 回合，这一份覆盖第 2 回合起。
+  //     与硫磺 / 水银沙漏同族，缺一处就每场少升一张。
+  //  ②⚠ **入队**，而且排在怀表那条 `DrawCards(3)` 之后 ⇒ 抽到的那 3 张也在候选里。
+  //  ③ 效果本身 ★ 消耗一次 `shuffleRng`（候选非空时），见 `upgradeRandomCardInHand`。
+  if (hasRelic(bc, "warped_tongs")) {
+    addToBot(bc, (c) => upgradeRandomCardInHand(c));
+  }
 }
 
 /**
@@ -14098,7 +15062,11 @@ export type StsCombatState = {
   ascension: number;
   encounterId: string;
   character: CharacterId;
-  relics: string[];
+  /**
+   * 遗物容器（对齐 `RelicContainer::relics`）。第四十四批从 `string[]` 改成带 `data` 的
+   * 条目——老档由 `migrate.ts` 无损回填 `{ id, data: 0 }`（在此之前没有任何遗物读过 data）。
+   */
+  relics: CombatRelic[];
   potions: (string | null)[];
   potionCount: number;
   potionCapacity: number;
@@ -14186,7 +15154,7 @@ export function exportState(bc: BattleContext): StsCombatState {
     ascension: bc.ascension,
     encounterId: bc.encounterId,
     character: bc.character,
-    relics: [...bc.relics],
+    relics: bc.relics.map((r) => ({ ...r })),
     potions: [...bc.potions],
     potionCount: bc.potionCount,
     potionCapacity: bc.potionCapacity,
@@ -14196,7 +15164,11 @@ export function exportState(bc: BattleContext): StsCombatState {
     pendingActions,
     pendingCardQueue: copyCardQueueItems(bc.cardQueue.all()),
     turn: bc.turn,
-    player: { ...bc.player, powers: copyPowers(bc.player.powers) },
+    player: {
+      ...bc.player,
+      powers: copyPowers(bc.player.powers),
+      relicBits: [...bc.player.relicBits],
+    },
     monsters: bc.monsters.map((m) => ({
       ...m,
       moveHistory: [...m.moveHistory],
@@ -14243,7 +15215,7 @@ export function importState(s: StsCombatState): BattleContext {
     ascension: s.ascension,
     encounterId: s.encounterId,
     character: s.character,
-    relics: [...s.relics],
+    relics: s.relics.map((r) => ({ ...r })),
     potions: [...s.potions],
     potionCount: s.potionCount,
     potionCapacity: s.potionCapacity,
@@ -14254,7 +15226,11 @@ export function importState(s: StsCombatState): BattleContext {
     turn: s.turn,
     actionQueue,
     cardQueue,
-    player: { ...s.player, powers: copyPowers(s.player.powers) },
+    player: {
+      ...s.player,
+      powers: copyPowers(s.player.powers),
+      relicBits: [...s.player.relicBits],
+    },
     monsters: s.monsters.map((m) => ({
       ...m,
       moveHistory: [...m.moveHistory],
@@ -14610,9 +15586,102 @@ export function isRelicSupported(relicId: string): boolean {
   return (
     RELIC_IMMEDIATE[relicId] !== undefined ||
     RELIC_AT_BATTLE_START[relicId] !== undefined ||
+    RELIC_AT_TURN_START_POST_DRAW_INIT[relicId] !== undefined ||
     RELIC_AT_TURN_START.some(([id]) => id === relicId) ||
     RELIC_OTHER_HOOKS.has(relicId)
   );
+}
+
+/**
+ * 战斗内行为已转写的全部遗物 id（`isRelicSupported` 的枚举版）。
+ *
+ * ⚠ 存在的理由是 `test/data-tables.test.ts` 那条**永久**用例：凡是这里出现的 id，
+ * 都必须在 `relics.ts` 的数据表里。第四十三批的 `bloody_idol` 就是反例——战斗内登记了、
+ * 对拍有 136 例背书，`relics.ts` 里却没有这个条目，于是真实引擎里玩家永远拿不到它
+ * （「预言机侧可达、产品侧不可达」）。谓词形式的 `isRelicSupported` 挡不住这种事，
+ * 因为它需要先知道要问哪个 id。
+ */
+export const SUPPORTED_RELIC_IDS: readonly string[] = [
+  ...new Set([
+    ...Object.keys(RELIC_IMMEDIATE),
+    ...Object.keys(RELIC_AT_BATTLE_START),
+    ...Object.keys(RELIC_AT_TURN_START_POST_DRAW_INIT),
+    ...RELIC_AT_TURN_START.map(([id]) => id),
+    ...RELIC_OTHER_HOOKS,
+  ]),
+];
+
+/**
+ * 战斗结束时把战斗内的计数器写回遗物的 `data`（对齐
+ * `BattleContext::updateRelicsOnExit`，BattleContext.cpp:521-570）。
+ *
+ * 参考那个函数是 `for (auto &r : g.relics.relics) switch (r.id)`，八格：
+ * ```cpp
+ * HAPPY_FLOWER   : r.data = player.happyFlowerCounter;
+ * INCENSE_BURNER : r.data = player.incenseBurnerCounter;
+ * INK_BOTTLE     : r.data = player.inkBottleCounter;
+ * INSERTER       : r.data = player.inserterCounter;
+ * NEOWS_LAMENT   : if (r.data > 0) { --r.data; }
+ * NUNCHAKU       : r.data = player.nunchakuCounter;
+ * PEN_NIB        : r.data = (player.penNibCounter == -1) ? 9 : player.penNibCounter;
+ * SUNDIAL        : r.data = player.sundialCounter;
+ * LIZARD_TAIL    : if (!player.hasRelic<LIZARD_TAIL>()) { r.data = 0; }
+ * ```
+ * ⚠ 四处照抄：
+ *  ①⚠⚠ **尼奥的挽歌那一格与别人不同**：它不读任何计数器，而是把自己的 `data` 减 1
+ *     （参考在 `initRelics` 那一格的行尾自注 `// remember to decrement somewhere else`）。
+ *     所以「接下来 3 场战斗」是靠这一句实现的，与战斗内发生了什么无关。
+ *  ②⚠⚠ **笔尖那一格把 -1 写回成 9**（参考自注 `// possible bug`）：战斗内数到 9 时
+ *     `penNibCounter = -1` 表示「强化已发出」，写回 9 意味着**下一场开局又直接带一层笔尖**。
+ *     看着像 bug，但它就是参考的行为，而且真实游戏里笔尖确实是「跨战斗计数、第 10 张翻倍」。
+ *  ③ **蜥蜴尾**那一格读的是玩家那份位集合：复活用掉之后 `setHasRelic(false)`，
+ *     于是 `data` 归零 = 这颗遗物此后永久失效（真实游戏里它变成灰色）。
+ *  ④ 御守的递减**不在这个函数里**：它在 `exitBattle` 的**第一句**、且只在蠕动血块植入过
+ *     寄生虫时才跑（BattleContext.cpp:461-468），见 `combat-bridge.settleCombat`。
+ *
+ * ⚠⚠ **这个函数没有 trace 预言机**：一条 trace 就是一场战斗，写回去的值下一场才被读到。
+ *   它的正确性由 `initRelics` 那一半（有预言机：`relicData` 非 0 的 variant）与
+ *   `test/sts-combat-relic-data.test.ts` 的往返用例一起守。
+ */
+export function updateRelicsOnExit(bc: BattleContext): void {
+  for (const r of bc.relics) {
+    switch (r.id) {
+      case "happy_flower":
+        r.data = bc.player.happyFlowerCounter;
+        break;
+      case "incense_burner":
+        r.data = bc.player.incenseBurnerCounter;
+        break;
+      case "ink_bottle":
+        r.data = bc.player.inkBottleCounter;
+        break;
+      case "neows_lament":
+        if (r.data > 0) {
+          r.data -= 1;
+        }
+        break;
+      case "nunchaku":
+        r.data = bc.player.nunchakuCounter;
+        break;
+      case "pen_nib":
+        r.data = bc.player.penNibCounter === -1 ? 9 : bc.player.penNibCounter;
+        break;
+      case "sundial":
+        r.data = bc.player.sundialCounter;
+        break;
+      case "lizard_tail":
+        if (!hasRelic(bc, "lizard_tail")) {
+          r.data = 0;
+        }
+        break;
+      default:
+        break;
+    }
+  }
+  // ⚠ **插入器（INSERTER）那一格故意没写**：它的 `inserterCounter` 在战斗内的唯一用途是
+  //   每 2 回合 `player.increaseOrbSlots(1)`，而参考的 `Player::increaseOrbSlots` 的函数体
+  //   就是一句 `// todo`（Player.cpp:109-111）——整条是空操作，没有任何可观察面。
+  //   与「什锦的 SCRY 被注释掉了」同族：**没有预言机，就不登记**。
 }
 
 // ============================================================================

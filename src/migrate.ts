@@ -86,6 +86,7 @@ export function migrateLoadedState(raw: unknown): GameState {
     migratePlayerLastAttack(live);
     migratePlayerTurnCounters(live);
     migratePlayerRelicCounters(live);
+    migrateCombatRelicData(live);
   }
 
   return state as unknown as GameState;
@@ -143,6 +144,52 @@ function migratePlayerRelicCounters(combat: Record<string, unknown>): void {
   if (player) {
     backfill(player, "inkBottleCounter", 0);
     backfill(player, "orangePelletsCardTypesPlayed", 0);
+  }
+}
+
+/**
+ * 战斗内的遗物容器从 `string[]` 变成 `{ id, data }[]`，玩家多出 `relicBits` 与五个计数器
+ * （第四十四批，对齐 `RelicInstance`（RelicContainer.h:10）与 `Player::relicBits0/1`）。
+ *
+ * 三条回填**都是无损**的：
+ *  * `relics` 里的每个字符串变成 `{ id, data: 0 }`——在此之前 `bc.relics` 只有 id，
+ *    没有任何东西读过 `data`，所以 0 就是当时的实际语义。
+ *  * `player.relicBits` 回填成**容器里的全部 id**：清位的四处（御守 / 蜥蜴尾的
+ *    `setHasRelic<X>(r.data)`、蜥蜴尾复活用掉、百年拼图触发过）本批才登记，
+ *    在此之前「容器里有」与「玩家身上有」严格同解。
+ *  * 五个计数器与 `haveUsedNecronomiconThisTurn` 回填 0 / false，理由与
+ *    `migratePlayerRelicCounters` 那条同型：读者是本批才登记的遗物。
+ */
+function migrateCombatRelicData(combat: Record<string, unknown>): void {
+  const relics: unknown = combat["relics"];
+  if (Array.isArray(relics)) {
+    const upgraded: unknown[] = [];
+    for (const relic of relics as unknown[]) {
+      upgraded.push(typeof relic === "string" ? { id: relic, data: 0 } : relic);
+    }
+    combat["relics"] = upgraded;
+  }
+  const player = asRecord(combat["player"]);
+  if (player) {
+    if (player["relicBits"] === undefined) {
+      const list: unknown = combat["relics"];
+      const ids: string[] = [];
+      if (Array.isArray(list)) {
+        for (const relic of list) {
+          const id = asRecord(relic)?.["id"];
+          if (typeof id === "string") {
+            ids.push(id);
+          }
+        }
+      }
+      player["relicBits"] = ids;
+    }
+    backfill(player, "happyFlowerCounter", 0);
+    backfill(player, "incenseBurnerCounter", 0);
+    backfill(player, "nunchakuCounter", 0);
+    backfill(player, "penNibCounter", 0);
+    backfill(player, "sundialCounter", 0);
+    backfill(player, "haveUsedNecronomiconThisTurn", false);
   }
 }
 

@@ -17,6 +17,7 @@ import {
   playCard as stsPlayCard,
   selectCard as stsSelectCard,
   selectCards as stsSelectCards,
+  updateRelicsOnExit,
   type BattleContext,
   type CardSelectOptions,
   type EndTurnResult,
@@ -120,7 +121,11 @@ export function startCombat(state: GameState, encounterId: string): void {
     // （盗贼/劫掠者偷钱时读它，虽然那两只怪还没登记）。
     gold: state.gold,
     character: state.character,
-    relics: state.relics.map((relic) => relic.id),
+    // ⚠ 带 `data`（第四十四批）：run 层的 `RelicState.counter` 就是参考的
+    // `RelicInstance::data`。快乐花 / 熏香炉 / 墨水瓶 / 双节棍 / 笔尖 / 日晷把它当
+    // **跨战斗的计数器**读，御守 / 蜥蜴尾把它当**有没有充能**读（0 = 战斗内不存在）。
+    // 战斗结束时由 `settleCombat` 走 `updateRelicsOnExit` 写回去。
+    relics: state.relics.map((relic) => ({ id: relic.id, data: relic.counter })),
     potions: [...state.potions],
     // 药水槽容量就是槽位数组长度（药水腰带 onEquip 直接 push 了两格）。
     potionCapacity: state.potions.length,
@@ -151,6 +156,7 @@ function settleCombat(state: GameState, bc: BattleContext): void {
   if (bc.outcome === "player_victory") {
     state.combat = null;
     state.log.push("战斗胜利！");
+    writeBackRelicData(state, bc);
     fireCombatEndRelics(state);
     if (getEncounterDef(bc.encounterId).isBoss) {
       grantBossVictory(state);
@@ -159,11 +165,43 @@ function settleCombat(state: GameState, bc: BattleContext): void {
   }
   if (bc.outcome === "player_loss") {
     state.combat = null;
+    // 参考的 `exitBattle` 不分胜负，两条路都跑 `updateRelicsOnExit`
+    // （BattleContext.cpp:490，判胜负那个 if 在它**之后**的 :511）。照抄。
+    writeBackRelicData(state, bc);
     state.screen = "gameover";
     state.log.push("你倒下了。");
     return;
   }
   state.combat = exportState(bc);
+}
+
+/**
+ * 把战斗内的遗物计数器写回 run 层（对齐 `BattleContext::exitBattle` 的两段：
+ * 开头那条御守/暗石护符的特例 :461-468，与 `updateRelicsOnExit()` :490）。
+ *
+ * ⚠ 顺序照抄参考：御守那条**排在最前**，参考在那里自注
+ * `// do this first so that darkstone periapt is overridden by curHp and maxHp are set afterwards`。
+ * 它的条件是「0 号位是蠕动血块**且**它植入过寄生虫」（`m.miscInfo` 非 0），
+ * 有御守就扣一层充能、没有就往牌组里塞一张寄生虫。
+ * ⚠ 我们这边「塞寄生虫」还没有对应的产品数据（`parasite` 不在 `cards.ts` 里），
+ * 所以只做递减那一支，另一支留 TODO——两者都没有 trace 预言机（trace 只覆盖战斗内）。
+ */
+function writeBackRelicData(state: GameState, bc: BattleContext): void {
+  const first = bc.monsters[0];
+  if (first?.defId === "writhing_mass" && first.miscInfo !== 0) {
+    const omamori = state.relics.find((relic) => relic.id === "omamori");
+    if (omamori !== undefined && omamori.counter > 0) {
+      omamori.counter -= 1;
+    }
+    // TODO(后续PR): 没有御守时 `g.deck.obtain(g, CardId::PARASITE)`——`parasite` 还不在 cards.ts。
+  }
+  updateRelicsOnExit(bc);
+  for (const relic of state.relics) {
+    const inCombat = bc.relics.find((r) => r.id === relic.id);
+    if (inCombat !== undefined) {
+      relic.counter = inCombat.data;
+    }
+  }
 }
 
 /**

@@ -21,7 +21,11 @@ import {
   potionPoolOfRarity,
   shopPotionPool,
 } from "../src/engine/potions/potions.js";
-import { REGISTERED_CARD_IDS } from "../src/engine/sts-combat.js";
+import {
+  isRelicSupported,
+  REGISTERED_CARD_IDS,
+  SUPPORTED_RELIC_IDS,
+} from "../src/engine/sts-combat.js";
 import { ALL_EVENTS, getEventDef } from "../src/engine/events/events.js";
 import { ALL_ENEMIES, getEnemyDef, getEncounterDef } from "../src/engine/enemies/enemies.js";
 import type { CardDef, CharacterId } from "../src/engine/types.js";
@@ -415,6 +419,22 @@ describe("遗物表", () => {
       expect(getRelicDef(relic.id)).toBe(relic);
       expect(relic.name.length).toBeGreaterThan(0);
       expect(relic.description.length).toBeGreaterThan(0);
+    }
+  });
+
+  // 第四十四批新增的**永久**用例。起因见 TODOS：`bloody_idol` 在 `sts-combat.ts` 里登记了
+  // 战斗行为、对拍有 136 例背书，`relics.ts` 里却根本没有这个条目——于是「预言机侧可达、
+  // 产品侧不可达」，真实引擎里玩家永远拿不到它。这是本项目第一次出现这个形状，
+  // 而它之所以能藏这么久，是因为 `isRelicSupported` 是个**谓词**：要问它，你得先知道
+  // 要问哪个 id。这条用例把方向反过来——**枚举**战斗内登记的全部 id，逐条要求数据表里有。
+  it("战斗内已登记的遗物必须在数据表里（防止「预言机可达、产品不可达」）", () => {
+    const known = new Set(ALL_RELICS.map((relic) => relic.id));
+    for (const id of SUPPORTED_RELIC_IDS) {
+      expect(known.has(id), `${id} 在 sts-combat.ts 里登记了战斗行为，却不在 relics.ts 里`).toBe(
+        true,
+      );
+      // 谓词与枚举必须同解，否则这条用例会随着某张时点表被漏掉而静默失效。
+      expect(isRelicSupported(id), `${id} 在枚举里却不被 isRelicSupported 认可`).toBe(true);
     }
   });
 
