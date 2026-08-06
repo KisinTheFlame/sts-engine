@@ -441,7 +441,45 @@ ENC_V0_ASC19="cultist@asc19 jaw_worm@asc19 jaw_worm_horde@asc19 two_louse@asc19 
 #     所以那一组必须再挂一个长仗编队（three_darklings）。
 #   * 姜与地精面罩**不能同组**：面罩的全部可观察面就是玩家身上那 1 层虚弱，而姜是虚弱免疫。
 ENC_V0_RELIC="large_slime@relic1 slime_boss@relic1 spheric_guardian@relic1 gremlin_leader@relic1 automaton@relic1 collector@relic1 three_darklings@relic1 reptomancer@relic1 writhing_mass@relic2 writhing_mass@relic3 gremlin_leader@relic4 automaton@relic4 collector@relic4 reptomancer@relic4 spheric_guardian@relic5 sentry_and_sphere@relic5 gremlin_leader@relic5 slime_boss@relic6 champ@relic6 lagavulin@relic6 the_guardian@relic7 champ@relic7 three_sentries@relic8 time_eater@relic8 three_darklings@relic8 champ@relic9 three_byrds@relic9 collector@relic9 slime_boss@relic10 three_sentries@relic10 champ@relic10 champ@relic11 maw@relic11 slime_boss@relic11 champ@relic12 three_darklings@relic12 champ@relic13 hexaghost@relic13 three_sentries@relic14 champ@relic14 champ@relic15 three_sentries@relic15 three_sentries@relic16 champ@relic16 three_darklings@relic16 automaton@relic17 collector@relic17"
-ENC_V0="$ENC_V0_ASC0 $ENC_V0_ASC19 $ENC_V0_TGT1 $ENC_V0_ACT3 $ENC_V0_RELIC"
+# 第四十五批：**药水**这条战线的第一批（第六个乘积）。文件名后缀是 `@potN`——harness 只在
+# `DeckVariant.potionSet` / `.potionPolicy` 非 0 时输出那两个字段，所以既有 163 个文件的
+# 名字与内容一个字节都不动（管线改造那一步单独跑过一次 `--check` 证明了这一点）。
+#
+# ⚠⚠ **本批同时开了两样东西，别把它们混成一件事**：
+#   * `potionSet` = 身份（文件名后缀 + variant 指纹 + **放宽可重放药水白名单的开关**）；
+#   * `potionPolicy` = 喝药时机，0 = 历来的「开局第一步就把三瓶喝光」，1 = 只在
+#     `curHp * 2 <= maxHp`（半血及以下）时才喝。
+#   白名单**不能全局放宽**：熵酿会从整个药水池补槽，放宽之后策略会开始喝以前跳过的药水，
+#   163 个已提交文件里相当一部分会被改写。所以它挂在 `potionSet != 0` 上。
+#
+# ⚠⚠ **这个乘积里的每个 variant 都被 harness 强制「遗物与药水都钉死」**。理由是遗物那条
+#   战线**还在往 `relicVariants` 追加**，而 `relicVariants` 排在这个乘积**之前**：
+#   `traceIdx` 只驱动遗物轮换与药水轮换，两者都钉死的 variant 一次 traceIdx 都不读，
+#   于是遗物那条战线继续追加对这 19 个文件是空操作。这条不变量在 harness 里是硬检查。
+#
+#   @pot1  / @pot2  = 血之药水 + 液态记忆 + 罐中幽灵，**potionPolicy 1**，
+#                     champ / three_darklings；@pot2 只多一颗神圣树皮（逐行 A/B）
+#   @pot3  / @pot4  = 灵活 + 速度 + 钢铁精华
+#   @pot5  / @pot6  = 铁心 + 液态青铜 + 集中
+#   @pot7  / @pot8  = 再生 + 邪教徒 + 复制（slime_boss 是复制那条**状态牌** handler 的
+#                     唯一宿主——黏液是策略唯一打得出去的状态牌）
+#   @pot9  / @pot10 = 熔炉祝福 + 灵液 + 蛇形油
+#   @pot11 / @pot12 = 混沌精华（单独一组：三瓶在第 0 回合白打 9 张牌，平均回合数从
+#                     ~7.2 掉到 4.38，与第四十三批「五颗 energyPerTurn++」同族）
+#
+# ⚠⚠ **第一组的两瓶在 potionPolicy 0 下是结构性死的，这是量出来的**（840 条 × 7 个编队）：
+#   * 血之药水：`Player::heal` 末尾 `min(maxHp, …)`，policy 0 恒在 80/80 时喝
+#     ⇒ **实际回复量 0，360 / 360 次**。policy 1 下恒是 32（= 40% × 80，因为门保证
+#     `curHp <= 40`，不会被夹），带树皮那一份恒是 16。TODOS 里「血之药水 × 神圣树皮」
+#     那条待裁定等的就是这一对。
+#   * 液态记忆：`BetterDiscardPileToHandAction` 对空弃牌堆直接 return，而第 0 回合
+#     一张牌都还没打 ⇒ 弃牌堆恒空，**360 / 360 次什么都没发生**。policy 1 下弃牌堆
+#     平均 8.4 张、选牌屏点亮 1361 次。
+# ⚠ 编队也是量出来的：policy 1 要求玩家真的被打到半血，而 7 个候选里有 3 个基本做不到
+#   （three_sentries 120 条里 **112 条一口药都没喝**、gremlin_nob 95、lagavulin 66）。
+#   champ 与 three_darklings 是 0。
+ENC_V0_POT="champ@pot1 three_darklings@pot1 champ@pot2 three_darklings@pot2 champ@pot3 three_darklings@pot3 champ@pot4 champ@pot5 hexaghost@pot5 champ@pot6 hexaghost@pot7 slime_boss@pot7 slime_boss@pot8 three_sentries@pot9 slime_boss@pot9 slime_boss@pot10 hexaghost@pot11 slime_boss@pot11 hexaghost@pot12"
+ENC_V0="$ENC_V0_ASC0 $ENC_V0_ASC19 $ENC_V0_TGT1 $ENC_V0_ACT3 $ENC_V0_RELIC $ENC_V0_POT"
 
 policy_of() {
   case " $ENC_ALL " in *" $1 "*) echo all; return;; esac
