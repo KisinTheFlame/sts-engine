@@ -47,13 +47,24 @@ describe("sts-combat 非法动作的拒绝路径", () => {
 
   it("未登记的药水被明确拒绝，而不是静默跳过", () => {
     // 静默跳过会让 potionRng 与战斗状态悄悄错位，比直接失败危险得多。
-    const bc = battle([null, "snecko_oil", null]);
+    //
+    // ⚠⚠ **样本从 `snecko_oil` 换成 `essence_of_darkness`（第四十五批登记了蛇形油）**，
+    //   而这一次换的是**永久样本**，与卡牌那条 `seek` 同族：
+    //   ① 参考的 `Actions::EssenceOfDarkness` 直接 `return sts::Action();`
+    //      （Actions.cpp:915-917）——那是一个 `actFunc` 为空的 `std::function`，
+    //      `executeActions` 里那句 `a(*this)` 会抛 `std::bad_function_call`、
+    //      整个 harness 当场终止。**它永远拿不到预言机。**
+    //   ② 它还需要充能球模型（机器人专属），本项目没有。
+    //   两条理由各自独立、都是结构性的。同族的还有 `potion_of_capacity`
+    //   （`Actions::IncreaseOrbSlots` 同样是空 Action）与 `poison_potion`
+    //   （`Actions::PoisonLoseHpAction` 同样是空 Action，只是延迟到怪物回合才炸）。
+    const bc = battle([null, "essence_of_darkness", null]);
     const r = drinkPotion(bc, 1);
     expect(r.ok).toBe(false);
     if (!r.ok) {
       expect(r.reason).toContain("暂未登记药水");
     }
-    expect(probe(bc).potions).toEqual([null, "snecko_oil", null]);
+    expect(probe(bc).potions).toEqual([null, "essence_of_darkness", null]);
   });
 
   it("战斗结束后拒绝一切动作", () => {

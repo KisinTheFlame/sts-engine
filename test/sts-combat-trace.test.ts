@@ -923,6 +923,11 @@ const MOVE: Record<string, string> = {
 // 药水在 trace 里是显示名。含熵酿填回来的未登记药水——它们只占槽位、不会被喝。
 const POTION: Record<string, string | null> = {
   EMPTY: null,
+  // ⚠ 第四十五批补全了**其余角色专属**的九瓶（集中 / 罐中幽灵 / 毒药 / 诡计 / 神仙玉露 /
+  //   姿态 / 容量 / 暗影精华 / 瓶中奇迹）。铁甲的熵酿池里摇不出它们（`CLASS_POTIONS`），
+  //   但 variant 的显式清单能发——`@potN` 里就发了集中与罐中幽灵两瓶。
+  //   缺映射不会静默：`mapPotion` 会退回显示名，与我们的 id 比对当场红。
+  Ambrosia: "ambrosia",
   "Ancient Potion": "ancient_potion",
   "Attack Potion": "attack_potion",
   "Blessing Of The Forge": "blessing_of_the_forge",
@@ -938,21 +943,29 @@ const POTION: Record<string, string | null> = {
   "Entropic Brew": "entropic_brew",
   "Essence Of Steel": "essence_of_steel",
   "Explosive Potion": "explosive_potion",
+  "Bottled Miracle": "bottled_miracle",
+  "Cunning Potion": "cunning_potion",
+  "Essence Of Darkness": "essence_of_darkness",
   "Fairy Potion": "fairy_in_a_bottle",
   "Fear Potion": "fear_potion",
   "Fire Potion": "fire_potion",
   "Flex Potion": "flex_potion",
+  "Focus Potion": "focus_potion",
   "Fruit Juice": "fruit_juice",
   "Gamblers Brew": "gamblers_brew",
+  "Ghost In A Jar": "ghost_in_a_jar",
   "Heart Of Iron": "heart_of_iron_potion",
   "Liquid Bronze": "liquid_bronze",
   "Liquid Memories": "liquid_memories",
+  "Poison Potion": "poison_potion",
+  "Potion Of Capacity": "potion_of_capacity",
   "Power Potion": "power_potion",
   "Regen Potion": "regen_potion",
   "Skill Potion": "skill_potion",
   "Smoke Bomb": "smoke_bomb",
   "Snecko Oil": "snecko_oil",
   "Speed Potion": "speed_potion",
+  "Stance Potion": "stance_potion",
   "Strength Potion": "strength_potion",
   "Swift Potion": "swift_potion",
   "Weak Potion": "weak_potion",
@@ -1175,6 +1188,16 @@ const POWER: Record<string, string> = {
   // 下回合格挡：**玩家身上**，自成型黏土每次掉血 +3 层。下个玩家回合开始
   // （`applyStartOfTurnPowers`，清格挡**之后**）一次性变成等量格挡并整条摘掉。
   NEXT_TURN_BLOCK: "next_turn_block",
+  // —— 第四十五批（药水战线第一批）——
+  // 复制：**玩家身上**，复制药水给的层数 = 「接下来几张打出的牌各额外结算一次」。
+  // ⚠ 它有**两个**递减点：每打出一张牌（四个 `onUseXxxCard` 各一句）与回合末无条件 -1。
+  //   所以喝完不打牌，层数照样在回合末掉光。
+  DUPLICATION: "duplication",
+  // ⚠ FOCUS / REGEN / RITUAL / METALLICIZE / THORNS / PLATED_ARMOR / INTANGIBLE /
+  //   LOSE_DEXTERITY / LOSE_STRENGTH 早就在表里，本批只是给它们添了「药水」这个新来源。
+  //   ⚠⚠ REGEN 与 RITUAL 是**两边共用一个映射、结算是两套代码**的典型：
+  //   玩家侧的再生每回合末回血再 -1 层，怪物侧（觉醒者）一层都不掉；
+  //   玩家侧的仪式**没有** skipFirst，怪物侧（邪教徒）有。
   // ⚠ PLATED_ARMOR / STRENGTH / LOSE_STRENGTH 早就在表里，本批是 PLATED_ARMOR 第一次出现在
   //   **玩家**身上（线与针开局 4 层）。同一个映射直接复用，但两侧是两套代码：
   //   玩家侧的递减在 `Player::attacked` 里、加格挡在 `callEndOfTurnActions` 里。

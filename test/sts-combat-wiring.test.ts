@@ -680,10 +680,14 @@ describe("接线：尚未迁移的内容显式抛错", () => {
     expect(() => startCombat(state, "cultist")).toThrow();
   });
 
+  // 样本药水选 `essence_of_darkness` 暗影精华，理由与上面那张 `seek` 同族、而且**是永久的**：
+  // 参考的 `Actions::EssenceOfDarkness` 是 `return sts::Action();`——一个 `actFunc` 为空的
+  // `std::function`，`executeActions` 那句 `a(*this)` 会抛 `std::bad_function_call`，
+  // harness 当场终止 ⇒ 它永远不可能有预言机。（第四十五批把原样本 `snecko_oil` 登记了。）
   it("未迁移的药水 → 抛错", () => {
     const state = runAtMap();
-    state.potions = ["snecko_oil", null, null];
-    expect(reason(state, "cultist")).toContain("snecko_oil");
+    state.potions = ["essence_of_darkness", null, null];
+    expect(reason(state, "cultist")).toContain("essence_of_darkness");
   });
 
   it("非铁甲角色：起始牌组就有未迁移的牌，因此照样挡住", () => {

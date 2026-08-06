@@ -64,6 +64,9 @@ export type CardSelectTask =
   | "exhaust_many"
   | "exhume"
   | "headbutt"
+  // 液态记忆（第四十五批）：从**弃牌堆**里挑 1 张进手牌并压成本回合 0 费。
+  // ⚠ 参考的枚举名就叫 `LIQUID_MEMORIES_POTION`（CardSelectInfo.h），照抄。
+  | "liquid_memories_potion"
   | "secret_technique"
   | "secret_weapon"
   | "warcry";
@@ -115,6 +118,7 @@ export function cardSelectSource(
     case "warcry":
       return "hand";
     case "headbutt":
+    case "liquid_memories_potion":
       return "discard_pile";
     case "exhume":
       return "exhaust_pile";
@@ -11569,11 +11573,11 @@ function useCard(bc: BattleContext, item: CardQueueItem): void {
   } else if (def.type === "power") {
     // 第二十三批新增（此前能力牌这条 case 是空的）：诅咒挂在这三个函数上，
     // **攻击牌那个里没有**——分派本身就是「非攻击牌才触发」的实现。
-    onUsePowerCard(bc);
+    onUsePowerCard(bc, item, card);
   } else if (def.type === "status" || def.type === "curse") {
-    onUseStatusOrCurseCard(bc);
+    onUseStatusOrCurseCard(bc, item, card);
   } else if (def.type === "skill") {
-    onUseSkillCard(bc);
+    onUseSkillCard(bc, item, card);
     if (getPower(bc.player.powers, "corruption") > 0) {
       // 腐化：技能牌打出后被消耗。位置照抄——在 useSkillCard() / onUseSkillCard() **之后**，
       // 所以卡效果自己读到的 exhaustOnUse 还是原值（当前没有卡效果读它，记着以防将来有）。
@@ -11653,6 +11657,33 @@ function useCard(bc: BattleContext, item: CardQueueItem): void {
  *
  * ⚠ `++p.attacksPlayedThisTurn`（:1643）第四十一批补上了，见下方注释。
  */
+/**
+ * 复制（DUPLICATION，第四十五批的复制药水）：四个 `onUseXxxCard` 里**逐字相同**的一格。
+ *
+ * 对齐 `BattleContext::onUseAttackCard` :1656 / `onUseSkillCard` :1782 /
+ * `onUsePowerCard` :1861 / `onUseStatusOrCurseCard` :1924：
+ *     if (!item.purgeOnUse && p.hasStatus<PS::DUPLICATION>()) {
+ *         queuePurgeCard(c, item.target);
+ *         p.decrementStatus<PS::DUPLICATION>();
+ *     }
+ *
+ * ⚠ 五处照抄：
+ *  ①⚠⚠ **四个 handler 都有**，与墨水瓶（三个）/ 橙色药丸（三个）/ 二连击（只有攻击牌那个）
+ *     都不同——复制药水复制的是**任何**牌型，包括状态牌与诅咒牌。
+ *  ② `!item.purgeOnUse` 那道门：复制出来的那一份自己不再复制，否则一层复制会无限增殖。
+ *  ③ 复制走 `queuePurgeCard`，与二连击**同一个函数**（`ignoreEnergyTotal` / `purgeOnUse`
+ *     都为真），所以复制出来的那份不花能量、结算完直接丢掉、不进弃牌堆。
+ *  ④ 递减是**同步**的裸 `decrementStatus`（不入队），所以同一回合的下一张牌立刻读到新层数。
+ *  ⑤ 位置：在残影（未登记）之后、回响成型（未登记）与诅咒之前。攻击牌那个 handler 里
+ *     它排在**二连击之后**——两者都带时同一张牌会被复制两次。
+ */
+function duplicationOnUseCard(bc: BattleContext, item: CardQueueItem, card: CombatCard): void {
+  if (!item.purgeOnUse && getPower(bc.player.powers, "duplication") > 0) {
+    queuePurgeCard(bc, card, item.target, item.energyOnUse);
+    decrementPlayerPower(bc, "duplication");
+  }
+}
+
 function onUseAttackCard(bc: BattleContext, item: CardQueueItem, card: CombatCard): void {
   // ⚠⚠ **自增排在整个函数的第一句**（对齐 BattleContext.cpp:1643，紧跟在取 `item` / `c` /
   //   `p` 三个引用之后、所有 Power 与遗物之前）。三颗计数遗物的判据都是 `% 3 == 0`，
@@ -11663,6 +11694,8 @@ function onUseAttackCard(bc: BattleContext, item: CardQueueItem, card: CombatCar
     queuePurgeCard(bc, card, item.target, item.energyOnUse);
     decrementPlayerPower(bc, "double_tap");
   }
+  // 复制药水：紧跟在二连击之后（BattleContext.cpp:1656），见 duplicationOnUseCard。
+  duplicationOnUseCard(bc, item, card);
   const rage = getPower(bc.player.powers, "rage");
   if (rage > 0) {
     addToBot(bc, (c) => gainBlock(c, rage), false);
@@ -11888,9 +11921,11 @@ function onUseAttackCard(bc: BattleContext, item: CardQueueItem, card: CombatCar
  * TODO(后续PR): 爆发（`onUseSkillCard` 里的 queuePurgeCard）、复制药水、回响形态、残影、
  *   六芒星的眩晕、华彩，以及墨水瓶 / 橙色药丸两个遗物。
  */
-function onUseSkillCard(bc: BattleContext): void {
+function onUseSkillCard(bc: BattleContext, item: CardQueueItem, card: CombatCard): void {
   // ⚠ 自增排在整个函数的第一句（对齐 BattleContext.cpp:1769），与攻击那条同形、同理由。
   bc.player.skillsPlayedThisTurn += 1;
+  // 复制药水：排在爆发（未登记）之后、回响成型（未登记）与诅咒之前（:1782）。
+  duplicationOnUseCard(bc, item, card);
   // 诅咒（HEX，选民）：位置照抄——排在残影 / 爆发 / 复制 / 回响形态**之后**、华彩与全部遗物
   // **之前**，因此也在最末那条激怒之前（BattleContext.cpp:1796-1798）。见 `hexShuffleDazed`。
   hexShuffleDazed(bc);
@@ -11971,7 +12006,9 @@ function hexShuffleDazed(bc: BattleContext): void {
  *
  * TODO(后续PR): 残影 / 复制 / 回响形态 / 华彩，以及木乃伊手。
  */
-function onUsePowerCard(bc: BattleContext): void {
+function onUsePowerCard(bc: BattleContext, item: CardQueueItem, card: CombatCard): void {
+  // 复制药水：排在残影（未登记）之后、回响成型（未登记）与诅咒之前（:1861）。
+  duplicationOnUseCard(bc, item, card);
   hexShuffleDazed(bc);
   if (hasRelic(bc, "bird_faced_urn")) {
     healPlayer(bc, 2);
@@ -12082,7 +12119,11 @@ function upgradeRandomCardInHand(bc: BattleContext): void {
  *
  * TODO(后续PR): 残影 / 复制 / 回响形态 / 华彩，以及蓝色蜡烛（诅咒牌失 1 血并消耗）。
  */
-function onUseStatusOrCurseCard(bc: BattleContext): void {
+function onUseStatusOrCurseCard(bc: BattleContext, item: CardQueueItem, card: CombatCard): void {
+  // 复制药水：排在残影（未登记）之后、回响成型（未登记）与诅咒之前（:1924）。
+  // ⚠⚠ **状态牌 / 诅咒牌这一格是真的会被走到的**：黏液是策略唯一打得出去的状态牌，
+  //   而复制药水对牌型没有任何过滤。
+  duplicationOnUseCard(bc, item, card);
   hexShuffleDazed(bc);
   inkBottleOnUseCard(bc);
 }
@@ -12431,7 +12472,178 @@ const POTION_RULES: Record<string, PotionRule> = {
         obtainPotion(c, returnRandomPotion(c, true));
       }
     }),
+
+  // ==========================================================================
+  // 第四十五批（药水战线第一批）：15 瓶
+  //
+  // 分三族，逐族一条注释；每一条自己的两个字面量仍然照抄参考那条 case。
+  // ==========================================================================
+
+  // —— 甲族：一句 `BuffPlayer<PS::X>`，而那个 Power 引擎已经有了 ——
+  //
+  // 这一族的转写成本是一行，但**不是没有可观察面**：层数直接进快照，翻倍常数抄错当场红。
+  // ⚠ 逐条都要回参考数那两个字面量：同一个 switch 里 33 条 `hasBark ? A : B`，
+  //   32 条是 A = 2B，值本身却各不相同（1/2、2/4、3/6、4/8、5/10、6/12）。
+
+  // 灵活药水（BattleContext.cpp:2372-2375）：**两条动作**，与灵活那张牌逐字同形。
+  // ⚠ 加力量走 `BuffPlayer`、还债走 `DebuffPlayer<LOSE_STRENGTH>`——后者过神器，
+  //   于是「神器在手时喝灵活药水，力量白拿不用还」。参考与真实游戏都是这个表现。
+  // ⚠ `Actions::DebuffPlayer` 的第二参数 `isSourceMonster` 这里取**默认的 true**
+  //   （参考没写），但 LOSE_STRENGTH 不在 `Player::debuff` 那条 skipFirst 名单里
+  //   （只有 WEAK / FRAIL / VULNERABLE / DRAW_REDUCTION），所以当前不可观察。
+  flex_potion: (bc, _target, bark) => {
+    addToBot(bc, (c) => addPower(c.player.powers, "strength", bark ? 10 : 5));
+    addToBot(bc, (c) => debuffPlayer(c, "lose_strength", bark ? 10 : 5));
+  },
+  // 速度药水（:2384-2387）：与灵活药水逐字同形，只把 STRENGTH 换成 DEXTERITY。
+  // ⚠ 两条 case 在参考里隔着几十行，常数却都是 10/5——照着邻居抄不会错，但要各写各的。
+  speed_potion: (bc, _target, bark) => {
+    addToBot(bc, (c) => addPower(c.player.powers, "dexterity", bark ? 10 : 5));
+    addToBot(bc, (c) => debuffPlayer(c, "lose_dexterity", bark ? 10 : 5));
+  },
+  // 铁心药水（:2359-2360）：`BuffPlayer<PS::METALLICIZE>(hasBark ? 12 : 6)`。
+  // 回合末加格挡那一半早就有了（金属化那张能力牌），这里只是第二个来源。
+  heart_of_iron_potion: (bc, _target, bark) =>
+    addToBot(bc, (c) => addPower(c.player.powers, "metallicize", bark ? 12 : 6)),
+  // 液态青铜（:2362-2363）：`BuffPlayer<PS::THORNS>(hasBark ? 6 : 3)`。
+  // 玩家侧荆棘的反伤早就有了（青铜鳞片），这里只是第二个来源。
+  liquid_bronze: (bc, _target, bark) =>
+    addToBot(bc, (c) => addPower(c.player.powers, "thorns", bark ? 6 : 3)),
+  // 钢铁精华（:2356-2357）：`BuffPlayer<PS::PLATED_ARMOR>(hasBark ? 8 : 4)`。
+  // 玩家侧镀甲的两半（挨打 -1、回合末加格挡）早就有了（线与针），这里只是第二个来源。
+  essence_of_steel: (bc, _target, bark) =>
+    addToBot(bc, (c) => addPower(c.player.powers, "plated_armor", bark ? 8 : 4)),
+  // 罐中幽灵（:2392-2393）：`BuffPlayer<PS::INTANGIBLE>(hasBark ? 2 : 1)`。
+  // ⚠ 玩家侧的虚无缥缈**没有 skipFirst**（`Player::buff` 里那句 `setJustApplied` 是死代码，
+  //   因为回合末走的是裸 `decrementStatus`，参考自注 `// todo this is definitely wrong`）。
+  //   所以 1 层只护住紧随其后的那个怪物回合。
+  // ⚠ 这瓶是**潜行者**的角色专属药水，铁甲的熵酿池里摇不出来（`CLASS_POTIONS`），
+  //   只能靠 variant 的显式清单发。见 TODOS 里那条注记。
+  ghost_in_a_jar: (bc, _target, bark) =>
+    addToBot(bc, (c) => addPower(c.player.powers, "intangible", bark ? 2 : 1)),
+  // 集中药水（:2378-2379）：`BuffPlayer<PS::FOCUS>(hasBark ? 4 : 2)`。
+  // ⚠ 参考**战斗内一次都不读** FOCUS（唯一的读者是充能球的偏移，而它没有产出者），
+  //   所以它的全部可观察面就是快照里那一条——与数据磁盘那颗遗物同族。
+  // ⚠ 这瓶是**机器人**的角色专属药水，同罐中幽灵。
+  focus_potion: (bc, _target, bark) =>
+    addToBot(bc, (c) => addPower(c.player.powers, "focus", bark ? 4 : 2)),
+  // 再生药水（:2421-2422）：`BuffPlayer<PS::REGEN>(hasBark ? 10 : 5)`。
+  // ⚠ 玩家侧的再生**每回合末回血再掉一层**，与怪物侧那条（一层都不掉）是两回事，
+  //   见 `applyEndOfTurnPowers` 里新加的那一格。
+  regen_potion: (bc, _target, bark) =>
+    addToBot(bc, (c) => addPower(c.player.powers, "regen", bark ? 10 : 5)),
+  // 邪教徒药水（:2313-2314）：`BuffPlayer<PS::RITUAL>(hasBark ? 2 : 1)`。
+  // ⚠⚠ **玩家侧的仪式没有 skipFirst**，与怪物侧那条（`wasJustApplied` 跳过施加当回合）
+  //   正相反——见 `applyEndOfTurnPowers` 里新加的那一格。
+  cultist_potion: (bc, _target, bark) =>
+    addToBot(bc, (c) => addPower(c.player.powers, "ritual", bark ? 2 : 1)),
+  // 复制药水（:2333-2334）：`BuffPlayer<PS::DUPLICATION>(hasBark ? 2 : 1)`。
+  // 效果在四个 `onUseXxxCard` 里（各一句 `queuePurgeCard` + 递减），外加回合末无条件 -1。
+  duplication_potion: (bc, _target, bark) =>
+    addToBot(bc, (c) => addPower(c.player.powers, "duplication", bark ? 2 : 1)),
+
+  // —— 乙族：一条动作，而那条动作引擎已经有了 ——
+
+  // 熔炉祝福（:2288-2289）：`addToBot(Actions::UpgradeAllCardsInHand())`。
+  // ⚠ **不吃神圣树皮**（这条 case 里没有 `hasBark`）——升级这件事没法翻倍。
+  // ⚠ 那个动作**不过 `canUpgrade`**，见 `upgradeAllCardsInHand`。
+  blessing_of_the_forge: (bc) => addToBot(bc, (c) => upgradeAllCardsInHand(c)),
+  // 灵液（:2335-2336）：`addToBot(Actions::ExhaustMany(10))`，与净化共用同一个动作。
+  // ⚠ **不吃神圣树皮**，而且 10 是写死的（净化那张牌是 `up ? 5 : 3`）。
+  // ⚠ `ExhaustMany` **无条件开屏**，手牌为空也开——照抄（harness 那边会答一个空选择）。
+  elixir_potion: (bc) => addToBot(bc, (c) => exhaustManyAction(c, 10)),
+  // 蛇形油（:2425-2427）：**两条动作**，抽牌在前、洗费用在后。
+  // ⚠ 抽牌吃树皮（10/5），`RandomizeHandCost` 不吃——它没有数量可翻。
+  // ⚠ 两条的先后是承重的：先抽进来的牌**也会**被洗费用。
+  snecko_oil: (bc, _target, bark) => {
+    addToBot(bc, (c) => drawCards(c, bark ? 10 : 5));
+    addToBot(bc, (c) => randomizeHandCost(c));
+  },
+  // 混沌精华（:2323-2329）：按份数排 N 条 `PlayTopCard`。
+  // ⚠ 三处照抄：
+  //  ①⚠⚠ **目标在入队那一刻就逐条掷定**（`monsters.getRandomMonsterIdx(cardRandomRng)` 是
+  //     实参，C++ 先算实参再进 `addToBot`）——与混乱那条逐字同形，★ 每份消耗一次
+  //     cardRandomRng，哪怕后来那只怪已经死了。
+  //  ② `exhausts = false`——与浩劫只差这一个 bool，打出的牌正常进弃牌堆。
+  //  ③ 份数吃树皮（6/3），而**每一份都是一条独立的动作**，不是「一条动作打 N 张」。
+  // ⚠⚠ 它与浩劫 / 混乱同族：把抽牌堆顶那张**无条件**打出去，一道门都不过。所以带这瓶药的
+  //   variant 的牌组里不许有未登记的牌（harness 侧有一道显式检查兜底）。
+  distilled_chaos: (bc, _target, bark) => {
+    const cardsToPlay = bark ? 6 : 3;
+    for (let i = 0; i < cardsToPlay; i += 1) {
+      const target = getRandomMonsterIdx(bc); // ★ 消耗一次 cardRandomRng
+      addToBot(bc, (c) => playTopCardInDrawPile(c, target, false));
+    }
+  },
+
+  // —— 丙族：开选牌屏 ——
+
+  // 液态记忆（:2340-2341）：`addToBot(BetterDiscardPileToHandAction(hasBark ? 2 : 1, …))`。
+  // ⚠⚠ **那个 `amount` 参考一个字都没用**：`Actions::BetterDiscardPileToHandAction` 的函数体
+  //   （Actions.cpp:670-682）只按弃牌堆张数分三支，从头到尾没有读 `amount`，而参考自己在
+  //   函数上方注着 `// todo the amount should be the copies put into the hand 2 if have sacred
+  //   bark and liquid memories`。**照抄 as-built：带不带树皮都只拿回一张。** 记进 TODOS。
+  liquid_memories: (bc) => addToBot(bc, (c) => betterDiscardPileToHandAction(c)),
 };
+
+/**
+ * 对齐 `Actions::RandomizeHandCost`（Actions.cpp:423-434，蛇形油）。
+ *
+ * ⚠ 四处照抄：
+ *  ①⚠ 门是 `c.cost >= 0`——负费用（腐化把技能牌压成 -9、`freeToPlay` 那一族）**跳过**，
+ *     而且跳过的那张**一次 cardRandomRng 都不掷**（掷在门里面）。这与困惑正相反：
+ *     困惑是**每抽一张都掷**、再判要不要写。
+ *  ② `cost` 与 `costForTurn` **两个都写**，所以是永久改价，回合末复位也回不去。
+ *  ③ 取值是 `cardRandomRng.random(3)` = 0~3（含端），与困惑同一个分布、同一条流。
+ *  ④ **无条件赋值**（不像困惑那样先比 `cost != newCost`），但两者同解——写的是同一个值。
+ */
+function randomizeHandCost(bc: BattleContext): void {
+  for (const card of bc.hand) {
+    if (card.cost >= 0) {
+      const newCost = bc.rng.cardRandomRng.random(3); // ★ 消耗一次 cardRandomRng
+      card.cost = newCost;
+      card.costForTurn = newCost;
+    }
+  }
+}
+
+/**
+ * 对齐 `BattleContext::chooseDiscardToHandCard`（BattleContext.cpp:3017-3024）：弃牌堆 → 手牌。
+ *
+ * ⚠ 三处照抄：
+ *  ① 先**拷一份**再从弃牌堆移除，然后才改费用——顺序无关但形状照抄。
+ *  ② `forZeroCost` 那个形参参考**没有读**：它判的是 `cardSelectInfo.cardSelectTask ==
+ *     LIQUID_MEMORIES_POTION`（成员，不是形参）。当前只有液态记忆这一条路会进来，
+ *     两者同解；照抄成员那一边的语义（进来就压 0 费）。
+ *  ③ 压的是 `setCostForTurn(0)`（**本回合**免费），不是改 `cost`——与蛇形油正相反。
+ *  ④ 收尾走 `moveToHandHelper`（手牌满了会落进弃牌堆），不是裸 push。
+ */
+function chooseDiscardToHandCard(bc: BattleContext, discardIdx: number): void {
+  const [card] = bc.discardPile.splice(discardIdx, 1);
+  if (card === undefined) {
+    throw new Error(`chooseDiscardToHandCard: 弃牌堆下标越界 ${String(discardIdx)}`);
+  }
+  setCostForTurn(card, 0);
+  moveToHandHelper(bc, card);
+}
+
+/**
+ * 对齐 `Actions::BetterDiscardPileToHandAction`（Actions.cpp:670-682，液态记忆）。
+ *
+ * ⚠ 形状与头槌那条（`headbuttAction`）逐字同形：空弃牌堆直接返回、只有一张就直接选它、
+ * 否则开单选屏。⚠ 「只有一张就直接选」这一支**不开屏**，所以 trace 里那一步没有
+ * `select_card`——两条路的步数不同，抄错会当场对不上。
+ */
+function betterDiscardPileToHandAction(bc: BattleContext): void {
+  if (bc.discardPile.length === 0) {
+    return;
+  }
+  if (bc.discardPile.length === 1) {
+    chooseDiscardToHandCard(bc, 0);
+    return;
+  }
+  openSimpleCardSelectScreen(bc, "liquid_memories_potion", 1);
+}
 
 function healPlayer(bc: BattleContext, amount: number): void {
   // 魔力之花（MAGIC_FLOWER，第四十三批）：对齐 `Player::heal` 的第二道门
@@ -12863,7 +13075,10 @@ export function cardSelectOptions(v: CardSelectView): CardSelectOptions | null {
     case "exhaust_one":
     case "warcry":
       return single(idxsWhere(v.hand, () => true));
+    // 对齐 `enumerateCardSelectActions` 的 HEADBUTT / LIQUID_MEMORIES_POTION 分支：
+    // 两者共用一格、都是「弃牌堆里任意一张」（Action.cpp:519-522）。
     case "headbutt":
+    case "liquid_memories_potion":
       return single(idxsWhere(v.discardPile, () => true));
     case "exhume":
       // 排除掘尸自己（对齐 isValidSingleCardSelectAction 的 EXHUME 分支）。
@@ -12927,6 +13142,9 @@ export function selectCard(bc: BattleContext, idx: number): SelectCardResult {
       break;
     case "headbutt":
       chooseHeadbuttCard(bc, idx);
+      break;
+    case "liquid_memories_potion":
+      chooseDiscardToHandCard(bc, idx);
       break;
     case "secret_technique":
     case "secret_weapon":
@@ -13282,8 +13500,44 @@ function applyEndOfTurnPowers(bc: BattleContext): void {
     removePower(bc.player.powers, "rage");
   }
 
-  // TODO(后续PR): 爆发 / 束缚 / 双重施法 / 缠绕 / 平衡 / 建立 / 敏捷流失 / 欧米茄 /
-  //   反弹 / 再生 / 仪式（玩家侧） / 怨灵形态。
+  // 再生（REGEN=72，第四十五批的再生药水）：枚举序紧跟 RAGE=71 之后。
+  // 对齐 Player.cpp:420-423：
+  //     case PS::REGEN:
+  //         bc.addToTop(Actions::HealPlayer(pair.second));
+  //         bc.addToTop(Actions::DecrementStatus<PS::REGEN>());
+  //         break;
+  // ⚠ 四处照抄：
+  //  ①⚠⚠ **两条都是 `addToTop`，而且递减那条排在后面**——于是出队时**递减先跑、回血后跑**，
+  //     回的却是**递减之前**取好的那个数（`pair.second` 是循环里的当前层数）。
+  //     写成两条 addToBot 会让它们跑在同一函数里排在后面的动作（燃烧的伤害等）之后；
+  //     写成「先递减再按新层数回血」会每回合少回 1 点。
+  //  ②⚠ 与**怪物侧**的再生完全不是一回事：`Monster::applyEndOfTurnTriggers` 那条只有
+  //     `heal`、**一层都不掉**（觉醒者整场恒 10）。两边共用同一个 PowerId。
+  //  ③ 递减走 `DecrementStatus`（归零即摘条目），所以 5 层 = 回 5 次、层数 5→4→3→2→1。
+  //  ④ 回血走 `Actions::HealPlayer` → `Player::heal`，因此过绽放印记 / 魔力之花 / 红骷髅。
+  const regen = getPower(bc.player.powers, "regen");
+  if (regen > 0) {
+    addToTop(bc, (c) => healPlayer(c, regen));
+    addToTop(bc, (c) => decrementPlayerPower(c, "regen"));
+  }
+
+  // 仪式（RITUAL=73，第四十五批的邪教徒药水）：枚举序紧跟 REGEN=72 之后，
+  // 也是这个循环里最后一格命中的。对齐 Player.cpp:427-429：
+  //     case PS::RITUAL:
+  //         bc.addToBot(Actions::BuffPlayer<PS::STRENGTH>(pair.second));
+  //         break;
+  // ⚠ 三处照抄：
+  //  ①⚠⚠ **玩家侧没有 skipFirst**，与怪物侧那条正相反（`Monster::applyEndOfRoundPowers`
+  //     的第一句带 `wasJustApplied`，施加当回合不结算）。所以喝下邪教徒药水的**那个回合末**
+  //     就已经 +1 力量了。两边共用同一个 PowerId，但结算代码是两套。
+  //  ② 加力量走 `BuffPlayer`（不过神器），层数自己一点不掉。
+  //  ③ 位置在再生之后。当前没有任何东西能同时带两者以外的顺序依赖；照抄。
+  const ritual = getPower(bc.player.powers, "ritual");
+  if (ritual > 0) {
+    addToBot(bc, (c) => addPower(c.player.powers, "strength", ritual));
+  }
+
+  // TODO(后续PR): 爆发 / 束缚 / 双重施法 / 缠绕 / 平衡 / 建立 / 欧米茄 / 反弹 / 怨灵形态。
 }
 
 /**
@@ -14445,6 +14699,12 @@ function applyEndOfRoundPowers(bc: BattleContext): void {
   decrementPlayerDebuff(bc, "frail");
   decrementPlayerDebuff(bc, "vulnerable");
   decrementPlayerDebuff(bc, "weak");
+  // 复制（DUPLICATION，第四十五批的复制药水）：**无条件**递减一层
+  // （`decrementStatus<PS::DUPLICATION>()`，Player.cpp:469-471），排在虚弱之后、
+  // 虚无缥缈之前（中间隔着未登记的双倍伤害与平衡）。
+  // ⚠⚠ **这是第二个递减点**：打出一张牌时那四个 handler 各自还会 `decrementStatus` 一次。
+  //   所以「喝一瓶 1 层的复制药水、这一回合一张牌都不打」，层数照样在回合末掉光。
+  decrementPlayerPower(bc, "duplication");
   // 虚无缥缈：同样是**无条件**递减（`decrementStatus<PS::INTANGIBLE>()`，Player.cpp:477）。
   // ⚠ `Player::buff<INTANGIBLE>` 里那句 `setJustApplied(true)` 是死代码——这里用的不是
   // `decrementIfNotJustApplied`，所以「施加当回合跳过」并不成立：幻影给的 1 层在**本回合末**
