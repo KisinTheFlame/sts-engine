@@ -78,35 +78,45 @@ const head = (i) => {
 // 「牌组逐字节相同、只有遗物不同」的两个 variant（例如 writhing_mass 带不带御守），
 // 没有这一维它们指纹撞号 → 行落进同一个文件、被当成一整块，`variant0-rows.mjs`
 // 数出来的冻结前缀**静默变长**。这正是上面那段注释里说的哑弹。
+// ⚠⚠ 第五、六维 `potionSet` / `potionPolicy` 是第四十五批加的，理由与 `relicSet` 同型：
+// 药水这条战线同样会出现「牌组逐字节相同、只有药水清单 / 喝药时机不同」的两个 variant。
 const signature = (t) =>
   `${t.deck.join(",")}|${t.deckUpgraded === undefined ? "" : t.deckUpgraded.join("")}` +
   `|${t.ascension === undefined ? "" : String(t.ascension)}` +
   `|${t.targetPolicy === undefined ? "" : String(t.targetPolicy)}` +
-  `|${t.relicSet === undefined ? "" : String(t.relicSet)}`;
+  `|${t.relicSet === undefined ? "" : String(t.relicSet)}` +
+  `|${t.potionSet === undefined ? "" : String(t.potionSet)}` +
+  `|${t.potionPolicy === undefined ? "" : String(t.potionPolicy)}`;
 
-// 分组键 = 编队 × 爬升度 × 目标策略 × 遗物组。后三维各是一个**后缀**，非默认值时才拼上去：
+// 分组键 = 编队 × 爬升度 × 目标策略 × 遗物组 × 药水组。后四维各是一个**后缀**，
+// 非默认值时才拼上去：
 //
-//   <编队>[@asc<N>][@tgt<N>][@relic<N>]
-//   例如 cultist / cultist@asc19 / centurion_and_healer@tgt1 / large_slime@relic1
+//   <编队>[@asc<N>][@tgt<N>][@relic<N>][@pot<N>]
+//   例如 cultist / cultist@asc19 / centurion_and_healer@tgt1 / large_slime@relic1 /
+//        champ@pot1
 //
-// ⚠⚠ **拼接顺序固定为「asc → tgt → relic」**，而且不许改：文件名就是冻结数据的身份，
+// ⚠⚠ **拼接顺序固定为「asc → tgt → relic → pot」**，而且不许改：文件名就是冻结数据的身份，
 // 顺序一换等于给已提交的文件改名，`regen-traces.sh` 会当场报「没有生成」。
-// 三维同时非默认时得到 `<编队>@asc19@tgt1@relic1`（当前还没有这种组合；键的形状先定死，
+// 四维同时非默认时得到 `<编队>@asc19@tgt1@relic1@pot1`（当前还没有这种组合；键的形状先定死，
 // 以后叠加不用再改这里）。⚠ 三处必须一致：这里、`sts-combat-trace.test.ts` 的 describe 键、
-// `sts-combat-wiring.test.ts` 剥后缀时**从右往左**（先 relic、再 tgt、最后 asc）。
+// `sts-combat-wiring.test.ts` 剥后缀时**从右往左**（先 pot、再 relic、再 tgt、最后 asc）。
 //
-// 为什么三维都用「非默认才拼」：
+// ⚠ 只有 `potionSet` 进分组键，`potionPolicy` 不进：一个 potionSet 就是一个 variant，
+// 时机是它的属性而不是它的身份（与 `relicSet` 之于 `relics` 清单同理）。
+//
+// 为什么四维都用「非默认才拼」：
 //  * 默认值那一侧的分组键一个字不改（harness 也只在非默认时输出对应字段），所以既有文件名
 //    与内容都不动，`regen-traces.sh --check` 仍然逐字节比得上——这是「新轴对旧数据是空操作」
 //    的凭证，加轴时**必须先单独跑一次**。
-//  * 一份文件里只有一个 (爬升度, 目标策略, 遗物组) 组合，于是 `variant0-rows.mjs` 会返回
-//    整份长度，`ENC_V0` 策略下整份冻结，正是我们要的。
+//  * 一份文件里只有一个 (爬升度, 目标策略, 遗物组, 药水组) 组合，于是 `variant0-rows.mjs`
+//    会返回整份长度，`ENC_V0` 策略下整份冻结，正是我们要的。
 const groupKey = (t) => {
   const asc = t.ascension === undefined || t.ascension === 0 ? "" : `@asc${String(t.ascension)}`;
   const tgt =
     t.targetPolicy === undefined || t.targetPolicy === 0 ? "" : `@tgt${String(t.targetPolicy)}`;
   const relic = t.relicSet === undefined || t.relicSet === 0 ? "" : `@relic${String(t.relicSet)}`;
-  return `${t.encounter}${asc}${tgt}${relic}`;
+  const pot = t.potionSet === undefined || t.potionSet === 0 ? "" : `@pot${String(t.potionSet)}`;
+  return `${t.encounter}${asc}${tgt}${relic}${pot}`;
 };
 
 const variantRank = new Map();

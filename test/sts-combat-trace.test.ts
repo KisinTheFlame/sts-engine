@@ -149,6 +149,26 @@ type Trace = {
    */
   relicSet?: number;
   /**
+   * 生成这条 trace 的**药水组编号**（第四十五批新增的轴，文件名后缀 `@potN`）。
+   *
+   * 0（缺省）= 历来的 `POTION_ROTATION` 轮换 + 历来那 13 瓶「可重放药水」白名单；
+   * 非 0 = 这个 variant 点名了自己的药水清单，**并且**放行第四十五批新登记的那 15 瓶。
+   * ⚠ 白名单不能全局放宽：熵酿会从整个药水池补槽，放宽之后策略会开始喝那些以前跳过的
+   * 药水，163 个已提交文件里有相当一部分会被改写。所以它挂在 `potionSet != 0` 上。
+   *
+   * ⚠ **重放侧并不需要它**：每一次喝药已经逐字记在 `steps[].action` 里、药水槽记在每一帧
+   * 快照里。它存在的意义与 `relicSet` 相同——分文件 + 进 variant 指纹。
+   */
+  potionSet?: number;
+  /**
+   * 生成这条 trace 时策略**什么时候肯喝药**（第四十五批新增）。
+   *
+   * 0（缺省）= 历来的「开局第一步就把三瓶全喝光」；1 = 只在玩家血量 ≤ 一半时才喝。
+   * ⚠ 同样**重放侧不需要**：它不进分组键（一个 `potionSet` 就是一个 variant，时机是它的
+   * 属性而不是身份），只进 variant 指纹与这里的文档。
+   */
+  potionPolicy?: number;
+  /**
    * 入场时（`BattleContext::init` **之前**）的玩家生命，第二十一批新增。
    *
    * ⚠ `initial.player.hp` 是 **init 之后**的值，而 `BattleContext::init` 里已经跑过
@@ -1310,16 +1330,17 @@ const start = (t: Trace): BattleContext =>
     potionRng: new StsRandom(BigInt(t.potionRngSeed)),
   });
 
-// 分组 = 编队 × 爬升度 × 目标策略 × 遗物组，与 `tools/split-traces.mjs` 的分文件键同形
-// （**后缀顺序也必须一致：asc → tgt → relic**）。混在一个 describe 里的话，失败时看不出
-// 翻的是 asc0 还是 asc19、打的是 0 号位还是最后一格、身上带的是哪套遗物。
+// 分组 = 编队 × 爬升度 × 目标策略 × 遗物组 × 药水组，与 `tools/split-traces.mjs` 的分文件键
+// 同形（**后缀顺序也必须一致：asc → tgt → relic → pot**）。混在一个 describe 里的话，
+// 失败时看不出翻的是 asc0 还是 asc19、打的是 0 号位还是最后一格、身上带的是哪套遗物 / 药水。
 const byEncounter = new Map<string, Trace[]>();
 for (const t of traces) {
   const key =
     t.encounter +
     (t.ascension ? `@asc${String(t.ascension)}` : "") +
     (t.targetPolicy ? `@tgt${String(t.targetPolicy)}` : "") +
-    (t.relicSet ? `@relic${String(t.relicSet)}` : "");
+    (t.relicSet ? `@relic${String(t.relicSet)}` : "") +
+    (t.potionSet ? `@pot${String(t.potionSet)}` : "");
   const list = byEncounter.get(key) ?? [];
   list.push(t);
   byEncounter.set(key, list);
