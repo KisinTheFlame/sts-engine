@@ -12526,7 +12526,7 @@ const POTION_RULES: Record<string, PotionRule> = {
   //   所以它的全部可观察面就是快照里那一条——与数据磁盘那颗遗物同族。
   // ⚠ 这瓶是**机器人**的角色专属药水，同罐中幽灵。
   focus_potion: (bc, _target, bark) =>
-    addToBot(bc, (c) => addPower(c.player.powers, "focus", bark ? 4 : 3)),
+    addToBot(bc, (c) => addPower(c.player.powers, "focus", bark ? 4 : 2)),
   // 再生药水（:2421-2422）：`BuffPlayer<PS::REGEN>(hasBark ? 10 : 5)`。
   // ⚠ 玩家侧的再生**每回合末回血再掉一层**，与怪物侧那条（一层都不掉）是两回事，
   //   见 `applyEndOfTurnPowers` 里新加的那一格。
