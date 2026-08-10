@@ -660,6 +660,40 @@ export type Effect =
       ascAmount?: AscTier[];
       noAliveGate?: boolean;
     }
+  // 敌人用：给**写死 1 号位**的友军加一个 Power（迪卡守护方阵的 asc19 镀甲，第四十六批）。
+  // 对齐 `MonsterSpecific.cpp:1689-1699`：
+  //   ```cpp
+  //   auto &deca = *this;
+  //   auto &donu = bc.monsters.arr[1];
+  //   deca.addBlock(16);
+  //   donu.addBlock(16);
+  //   if (asc19) { deca.buff<MS::PLATED_ARMOR>(3); donu.buff<MS::PLATED_ARMOR>(3); }
+  //   ```
+  // ⚠⚠ **它与 `buff_ally` 的差别只有一处，但那一处是承重的：下标。** `buff_ally` 写死的是
+  //   **0 号位**（秘法师的鼓舞 / 多努的能量之环，两者都站在 1 号位、照顾 0 号位的同伴），
+  //   这一条写死的是 **1 号位**（迪卡站在 0 号位、照顾 1 号位的多努）。第三十九批装迪卡时
+  //   **正是因为缺这个原语**，asc19 那两句镀甲**整条没有转写**（`ascCalibrated` 没置，
+  //   asc>0 直接抛错），账记在 `enemies.ts` 的守护方阵注释与 TODOS 里，本批一并结清。
+  // ⚠ 形状与 `gain_block_ally_fixed` 逐字对应（同一个下标、同样**同步**执行、同样
+  //   「候选为空就什么都不做」），只是把格挡换成 Power——两条正好是同一条 case 里的两句。
+  // ⚠ **它不给自己加**：参考那两句是两条独立语句，自己那一份走的是 `apply_power` +
+  //   `on: "self"`（省略 `sync` = 同步，与 `buff<MS::PLATED_ARMOR>(3)` 同解）。这与
+  //   `buff_ally` / `heal_ally` 那种「友军 + 自己」的合并形状**不同**，别照搬。
+  //   ⚠ 书写顺序也照抄参考：**自己那条排在前面**（`deca.buff` 先于 `donu.buff`）。
+  // noAliveGate：与 `gain_block_ally_fixed` / `buff_ally` 上那一位同名同形——省略 = 带
+  //   `monstersAlive > 1` 的门（百夫长 / 秘法师那种）。迪卡这条**一道门都没有**，所以为真。
+  //   ⚠ 这一位在本条上是**盲区**而不是「当前同解」：策略恒打 0 号位 ⇒ 迪卡先死是常态，
+  //   而「多努先死」在这个编队里实测 0 / 120。关门条件是 `donu_and_deca@tgt1`。
+  // minAscension：整条效果只在 `ascension >= minAscension` 时才结算，语义与
+  //   `apply_power` 上那一位相同。参考那两句包在 `if (asc19)` 里，是「多出来的一整条语句」。
+  | {
+      kind: "buff_ally_fixed";
+      power: PowerId;
+      amount: number;
+      ascAmount?: AscTier[];
+      noAliveGate?: boolean;
+      minAscension?: number;
+    }
   // 敌人用：**蜥蜴法师的召唤**（第三十六批）。对齐 `Monster::reptomancerSummon`
   //（MonsterSpecific.cpp:3589-3608）——本项目**第四条也是最后一条**召唤路径。
   // ⚠ 第三十六批之前这里是一个通用的 `{ kind: "summon"; defIds: string[] }`，那是旧近似

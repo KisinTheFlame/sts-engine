@@ -13825,8 +13825,13 @@ function takeTurn(bc: BattleContext, m: CombatMonster): string | null {
     // ⚠ 第三十八批把这道门从 `apply_power` 铺到 `gain_block` 与 `add_card`（时间吞噬者的
     //   加速 asc19 加 32 格挡、头槌 asc19 塞两张黏液，都是「case 里多出来的一整句」）。
     //   三种 `kind` 共用同一段判断，不再各写各的。
+    // ⚠ 第四十六批加上第四种 `buff_ally_fixed`（迪卡守护方阵的 asc19 镀甲——参考那两句
+    //   同样包在一个 `if (asc19)` 里，`deca.buff` 那一半走的是上面的 `apply_power`）。
     if (
-      (eff.kind === "apply_power" || eff.kind === "gain_block" || eff.kind === "add_card") &&
+      (eff.kind === "apply_power" ||
+        eff.kind === "gain_block" ||
+        eff.kind === "add_card" ||
+        eff.kind === "buff_ally_fixed") &&
       eff.minAscension !== undefined &&
       bc.ascension < eff.minAscension
     ) {
@@ -14057,6 +14062,30 @@ function takeTurn(bc: BattleContext, m: CombatMonster): string | null {
         }
       }
       addPower(m.powers, power, strBuff);
+    } else if (eff.kind === "buff_ally_fixed") {
+      // 给**写死 1 号位**的友军加一个 Power（迪卡守护方阵 asc19 的镀甲，第四十六批）。参考是
+      //   `if (asc19) { deca.buff<MS::PLATED_ARMOR>(3); donu.buff<MS::PLATED_ARMOR>(3); }`
+      //   （MonsterSpecific.cpp:1694-1697，`donu` 就是 `bc.monsters.arr[1]`）
+      // ⚠ 与 `buff_ally` 的唯一差别是下标（那条写死 0 号位），而这一处是承重的：
+      //   迪卡站 0 号位、照顾 1 号位的多努，秘法师 / 多努站 1 号位、照顾 0 号位。
+      //   第三十九批缺的正是这个原语，那两句因此整条没转写（账见 `enemies.ts` 的守护方阵）。
+      // ⚠ 三处照抄，与 `gain_block_ally_fixed` 逐字同形（两者本来就是同一条 case 的两句）：
+      //   ① 目标写死、**不判活**（参考进门之后直接 `arr[1].buff(...)`）；
+      //   ② **同步**执行（`Monster::buff` 就是 `setStatus(getStatus + n)`，没有 addToBot）；
+      //   ③ 候选为空时什么都不做，**不**退化成「给自己加」。
+      // ⚠ 自己那一份**不在这里**：它是参考里并列的另一句，走 `apply_power` + `on: "self"`
+      //   （省略 `sync` = 同步）。别把两者合并成「友军 + 自己」——那是 `buff_ally` 的形状。
+      // ⚠ `noAliveGate`：迪卡这条**一道门都没有**（与多努的能量之环同源，见 `buff_ally`）。
+      //   ⚠ 它在这一条上是**盲区**：策略恒打 0 号位 ⇒ 迪卡先死，`monstersAlive > 1` 的
+      //   false 侧要的是「多努先死」，实测 0 / 120。关门条件是 `donu_and_deca@tgt1`。
+      const { power } = eff;
+      const buffAmt = ascValue(bc, eff.amount, eff.ascAmount);
+      if (eff.noAliveGate === true || bc.monstersAlive > 1) {
+        const ally = bc.monsters[1];
+        if (ally !== undefined) {
+          addPower(ally.powers, power, buffAmt);
+        }
+      }
     } else if (eff.kind === "buff_minions") {
       // 给「随从位」们加 Power 与格挡，然后给自己加同样的 Power（地精首领的鼓舞，
       // 第二十七批）。对齐 MonsterSpecific.cpp:710-727：
@@ -15838,6 +15867,33 @@ export const ASC_SUPPORTED_ENCOUNTERS: readonly string[] = [
   "champ",
   "collector",
   "automaton",
+  // —— 第四十六批：**第三幕 15 个编队铺上 asc19**（harness 的第七个乘积）——
+  //   17 只怪的 `ascCalibrated` 同批置起，三族阈值仍然逐只对着 `Monster::initHp` 抄：
+  //   普通怪 asc>=7（爆破 / 斥力 / 尖刺 / 暗球游荡者 / 尖塔增生 / 暗影客 / 蠕动血块）、
+  //   精英 asc>=8（巨头 / 复仇魔 / 蜥蜴法师 / **匕首**）、
+  //   Boss asc>=9（觉醒者 / 时间吞噬者 / 迪卡 / 多努）、
+  //   `hpNoRoll` 两只（大嘴 / 复形怪）**没有第二组区间**。
+  //   ⚠ **匕首是精英档**，尽管它是随从——与第三十批的火炬头（Boss 档的随从）同一个坑，
+  //     判据永远是「它落在 `Monster::initHp` 的哪一组 case 里」，不是「它是不是随从」。
+  //   ⚠ 第十六个第三幕编队 `jaw_worm_horde` **不在这里新增**：它自第一个 commit 起就在
+  //     第一幕那份冻结的 `encounters` 里，`jaw_worm_horde@asc19` 第二十一批就装好了
+  //     （上面第三行）。
+  //   ⚠ 顺序照 harness 的 `act3Encounters`（3 weak + 6 strong + 3 elite + 3 boss）。
+  "three_darklings",
+  "orb_walker",
+  "three_shapes",
+  "spire_growth",
+  "transient",
+  "four_shapes",
+  "maw",
+  "sphere_and_two_shapes",
+  "writhing_mass",
+  "giant_head",
+  "nemesis",
+  "reptomancer",
+  "awakened_one",
+  "time_eater",
+  "donu_and_deca",
 ];
 
 /** 这个编队在这个爬升度下有没有背书。asc0 恒等于 `isEncounterSupported`。 */

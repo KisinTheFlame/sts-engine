@@ -1813,6 +1813,9 @@ const ENEMY_LIST: EnemyDef[] = [
     // 的区间——旧近似表写成 30/30 只是碰巧对上了低档。走普通的 `setRandomHp`（掷一次）。
     hpMin: 30,
     hpMax: 30,
+    // 第四十六批：**普通怪那一档**（`MonsterSpecific.cpp:37-74` 那组 case，asc>=7）。
+    hpHigh: { atLeast: 7, hpMin: 30, hpMax: 35 },
+    ascCalibrated: true,
     // ⚠⚠ **爆炸不是亡语**（旧近似表的 `deathEffects` 本批删掉了）。参考把它建模成一条
     //   **招式**：撞击的收尾在「已经连撞两次」时同步 `setMove(EXPLODER_EXPLODE)`，
     //   于是第三个怪物回合它出自爆（MonsterSpecific.cpp:1400-1408）。
@@ -1860,6 +1863,9 @@ const ENEMY_LIST: EnemyDef[] = [
     // MonsterIds.h:201 `{{42,56},{44,60}}`（asc<7 取前者）。走普通的 `setRandomHp`（掷一次）。
     hpMin: 42,
     hpMax: 56,
+    // 第四十六批：**普通怪那一档**（asc>=7）。
+    hpHigh: { atLeast: 7, hpMin: 44, hpMax: 60 },
+    ascCalibrated: true,
     // ⚠ 开局的 **THORNS**（不是 `sharp_hide`！）在 `PRE_BATTLE_ACTION.spiker` 里：
     //   `const int thorns[] {3,4,7}; buff<MS::THORNS>(thorns[getTriIdx(asc,2,17)]);`
     //   （MonsterSpecific.cpp:204-208）。它会进 trace 的怪物快照（`THORNS: 3`）。
@@ -1897,6 +1903,11 @@ const ENEMY_LIST: EnemyDef[] = [
     // MonsterIds.h:186 `{{90,96},{92,102}}`（asc<7 取前者）。
     hpMin: 90,
     hpMax: 96,
+    // 第四十六批：**普通怪那一档**（asc>=7）。⚠ 它同时带 `hpDiscardRoll`，而白掷那次的区间
+    //   **恒是低档的 90~96**（`Monster::initHp` 里那句 `hpRng.random(90, 96)` 是字面量、
+    //   不看 ascension）——asc19 下两次的区间第一次真的不同。别把 `hpHigh` 也套到白掷上。
+    hpHigh: { atLeast: 7, hpMin: 92, hpMax: 102 },
+    ascCalibrated: true,
     // ⚠⚠ **它是 `hpDiscardRoll` 的正主**：`Monster::initHp` 里那条 case 是
     //     hpRng.random(90, 96);                 // 参考只在这里注了
     //     setRandomHp(hpRng, ascension >= 7);   // "first call is discarded by game"
@@ -1961,6 +1972,9 @@ const ENEMY_LIST: EnemyDef[] = [
     //   所以建一只法师消耗 **2 次** monsterHpRng。它是这一族四个宿主里最后一个被登记的
     //   （前三个：暗球游荡者 / 青铜球 / 工头）。白掷那次恒用**低档**区间。
     hpDiscardRoll: { min: 180, max: 190 },
+    // 第四十六批：**精英那一档**（`MonsterSpecific.cpp:91-102`，asc>=8）——不是普通怪的 7。
+    hpHigh: { atLeast: 8, hpMin: 190, hpMax: 200 },
+    ascCalibrated: true,
     // preBattleAction 见 sts-combat.ts 的 `PRE_BATTLE_ACTION.reptomancer`：
     //   `buff<MS::MINION_LEADER>()`（MonsterSpecific.cpp:238-240）。
     // ⚠ 它给 `Monster::die` 加了第二条判胜路径：法师一死当场判胜，匕首还站着也算赢。
@@ -2022,6 +2036,11 @@ const ENEMY_LIST: EnemyDef[] = [
     // ⚠ 「上下界相同」与「两组相同」都**不是** `hpNoRoll` 的判据：这一只照样掷一次。
     hpMin: 20,
     hpMax: 25,
+    // 第四十六批：**精英那一档**（asc>=8）。⚠⚠ 两组区间**逐字相同**，所以这一条在
+    //   `{0, 19}` 这对档位下**产生不了任何可观察差别**——写它是为了「表就是参考的转写」
+    //   这条不变量，别指望它有变异例数（如实记成盲区，关门条件与「阈值恰好是 8」同族）。
+    hpHigh: { atLeast: 8, hpMin: 20, hpMax: 25 },
+    ascCalibrated: true,
     // preBattleAction 见 sts-combat.ts 的 `PRE_BATTLE_ACTION.dagger`：
     //   `buff<MS::MINION>()`（MonsterSpecific.cpp:148-150）。
     // ⚠ 召唤出来的那些**不重跑** preBattleAction，但 `reptomancerSummon` 自己手写了一句
@@ -2084,6 +2103,9 @@ const ENEMY_LIST: EnemyDef[] = [
     //   不是 `hpNoRoll`。
     hpMin: 250,
     hpMax: 250,
+    // 第四十六批：**Boss 那一档**（asc>=9）。
+    hpHigh: { atLeast: 9, hpMin: 265, hpMax: 265 },
+    ascCalibrated: true,
     moves: [
       {
         // 光束（MonsterSpecific.cpp:1683-1687）：
@@ -2135,16 +2157,31 @@ const ENEMY_LIST: EnemyDef[] = [
         //  ③ 两句都是**同步** `addBlock`（`Monster::addBlock` 就是 `block += amount`，
         //     Monster.cpp:278-280），不是 `addToBot(MonsterGainBlock)`。
         //  ④ 收尾是**同步 setMove**，一次 aiRng 都不掷，见 `MOVE_TURN_END`。
-        // ⚠ **asc19 那两句镀甲本批没有转写**（`ascCalibrated` 没置 → asc>0 直接抛错）：
-        //   它是「case 里多出来的一整条语句」，而给**写死 1 号位的友军**加 Power 目前没有
-        //   原语（`buff_ally` 写死的是 0 号位）。与第二十七批工头 asc18 那条同族处理：
-        //   留给第三幕铺爬升度的那一批一并加，**不半写**。
+        //  ⑤⚠⚠ **asc19 那两句镀甲**（第三十九批欠下、第四十六批结清）：
+        //     `if (asc19) { deca.buff<MS::PLATED_ARMOR>(3); donu.buff<MS::PLATED_ARMOR>(3); }`
+        //     它是「case 里多出来的一整条语句」（`minAscension`），不是「换个数」。
+        //     ⚠ 当年没写是因为**给写死 1 号位的友军加 Power 没有原语**（`buff_ally` 写死的
+        //     是 0 号位），而不是因为「asc>0 开不了战」——半写一个原语比不写更糟。
+        //     本批加了 `buff_ally_fixed`（形状与 `gain_block_ally_fixed` 逐字对应，
+        //     两者本来就是这条 case 里并排的两句），账清。
+        //     ⚠ 两句拆成两条效果、**顺序照抄**：自己那句（`apply_power` + `on: "self"`，
+        //     省略 `sync` = 同步）排在给多努那句之前，与参考的 `deca.buff` / `donu.buff` 同序。
+        //     ⚠ 四条效果的整体顺序也照抄：**两句格挡在前、两句镀甲在后**，
+        //     而不是「自己的格挡 + 自己的镀甲 / 多努的格挡 + 多努的镀甲」。
         // ⚠ 这一招**不在** `isMoveAttack` 白名单里（它一点伤害都不带）。
         id: "square_of_protection",
         name: "守护方阵",
         effects: [
           { kind: "gain_block", amount: 16, sync: true },
           { kind: "gain_block_ally_fixed", amount: 16, noAliveGate: true },
+          { kind: "apply_power", power: "plated_armor", amount: 3, on: "self", minAscension: 19 },
+          {
+            kind: "buff_ally_fixed",
+            power: "plated_armor",
+            amount: 3,
+            noAliveGate: true,
+            minAscension: 19,
+          },
         ],
         intent: "defend",
       },
@@ -2160,6 +2197,9 @@ const ENEMY_LIST: EnemyDef[] = [
     // MonsterIds.h:169 `{{250,250},{265,265}}`，与迪卡逐字相同、同一条 `initHp` case。
     hpMin: 250,
     hpMax: 250,
+    // 第四十六批：**Boss 那一档**（asc>=9），与迪卡逐字相同。
+    hpHigh: { atLeast: 9, hpMin: 265, hpMax: 265 },
+    ascCalibrated: true,
     moves: [
       {
         // 光束（MonsterSpecific.cpp:1672-1675）：
@@ -2234,6 +2274,9 @@ const ENEMY_LIST: EnemyDef[] = [
     // MonsterIds.h:191 `{{29,35},{31,38}}`（asc<7 取前者）。走普通的 `setRandomHp`（掷一次）。
     hpMin: 29,
     hpMax: 35,
+    // 第四十六批：**普通怪那一档**（asc>=7）。
+    hpHigh: { atLeast: 7, hpMin: 31, hpMax: 38 },
+    ascCalibrated: true,
     // ⚠ 它**没有** preBattleAction（`Monster::preBattleAction` 的 switch 里压根没有它的 case），
     //   所以开局身上一个 Power 都没有——别按「形状怪」把尖刺客那条荆棘也给它。
     moves: [
@@ -2277,6 +2320,10 @@ const ENEMY_LIST: EnemyDef[] = [
     hpMin: 999,
     hpMax: 999,
     hpNoRoll: true,
+    // 第四十六批：校准了，但 `hpNoRoll` ⇒ **没有** `hpHigh`（参考那条 case 压根不看
+    //   ascension，两组区间也都是 `{999,999}`）。与球状守卫者、大嘴同为
+    //   `data-tables.test.ts` 里 `ASC_CALIBRATED` 的 `null` 档。
+    ascCalibrated: true,
     // ⚠ 开局 `preBattleAction` 一次上**两个** Power（MonsterSpecific.cpp:171-175，
     //   参考只在那行注了 `// game adds ShiftingPower`）：
     //     buff<MS::SHIFTING>();              // 纯 bool，快照里是 SHIFTING: 1
@@ -2331,6 +2378,9 @@ const ENEMY_LIST: EnemyDef[] = [
     //（MonsterSpecific.cpp:91-102，**精英**那一档，不是普通怪的 7）。
     hpMin: 500,
     hpMax: 500,
+    // 第四十六批：**精英那一档**（asc>=8）。
+    hpHigh: { atLeast: 8, hpMin: 520, hpMax: 520 },
+    ascCalibrated: true,
     // preBattleAction 见 sts-combat.ts 的 `PRE_BATTLE_ACTION.giant_head`：
     //   `setHasStatus<MS::SLOW>(true); setStatus<MS::SLOW>(0);`（MonsterSpecific.cpp:163-165）
     // ⚠ **不是 `buff(n)`**：bit 置上、层数是 0，所以缓慢平时不出现在快照里。
@@ -2400,8 +2450,12 @@ const ENEMY_LIST: EnemyDef[] = [
     // ⚠ 二阶段的血量**不读这张表**：复活那条 case 写死 `maxHp = asc9 ? 320 : 300`
     //   （MonsterSpecific.cpp:1712），是与这里并列的**第二个字面量**。旧近似表那个
     //   `reviveHp` 字段第三十七批起就没有任何读者，**第三十八批把它从 `EnemyDef` 里删掉了**。
+    // 第四十六批：**Boss 那一档**（asc>=9）。⚠ 高档那一组是 `{300,320}`——**下界与低档相同、
+    //   只有上界抬高**，全语料唯一一只这样的怪，所以它的血量在 asc19 下仍然可能掷出 300。
     hpMin: 300,
     hpMax: 300,
+    hpHigh: { atLeast: 9, hpMin: 300, hpMax: 320 },
+    ascCalibrated: true,
     // preBattleAction 见 sts-combat.ts 的 `PRE_BATTLE_ACTION.awakened_one`
     //（MonsterSpecific.cpp:186-193）：asc4 才有的 +2 力量、CURIOSITY 1（asc19 是 2）、
     // REGEN 10（asc19 是 15）。⚠ 参考在那里注着 `// buff minion leader only in stage 2`
@@ -2492,8 +2546,13 @@ const ENEMY_LIST: EnemyDef[] = [
     //（MonsterSpecific.cpp:76-89，**Boss** 那一档）。
     // ⚠ 上下界相同**照样掷一次**（`Random::random(int,int)` 无条件 `++counter`）——
     //   与守卫者的 `{240,240}` 同族，不是 `hpNoRoll`。
+    // 第四十六批：**Boss 那一档**（asc>=9）。⚠ 480 与 456 **都是偶数**，所以加速那道门里
+    //   `maxHp / 2` 的整数除法在**任何**爬升度下都分辨不出来（第三十八批记的那条永久盲区
+    //   在 asc19 下仍然成立）。
     hpMin: 456,
     hpMax: 456,
+    hpHigh: { atLeast: 9, hpMin: 480, hpMax: 480 },
+    ascCalibrated: true,
     // preBattleAction 见 sts-combat.ts 的 `PRE_BATTLE_ACTION.time_eater`
     //（MonsterSpecific.cpp:223-226）：整条只有一句 `buff<MS::TIME_WARP>(0)`。
     // ⚠ 那是「位置上、层数 0」的第三种写法（与蠕动血块的反应、巨头的缓慢同族），
@@ -2618,8 +2677,11 @@ const ENEMY_LIST: EnemyDef[] = [
     //（MonsterSpecific.cpp:91-102，**精英**那一档）。
     // ⚠ 上下界相同**照样掷一次**（`Random::random(int,int)` 无条件 `++counter`）——
     //   与守卫者的 `{240,240}` 同族，不是 `hpNoRoll`。
+    // 第四十六批：**精英那一档**（asc>=8）。
     hpMin: 185,
     hpMax: 185,
+    hpHigh: { atLeast: 8, hpMin: 200, hpMax: 200 },
+    ascCalibrated: true,
     // ⚠ 它**没有** `preBattleAction`（`Monster::preBattleAction` 的 switch 里没有
     //   `NEMESIS` 这一格），虚无缥缈全靠三条招式自己在 `takeTurn` 里补，见 MOVE_TURN_END。
     moves: [
@@ -3453,6 +3515,11 @@ const ENEMY_LIST: EnemyDef[] = [
     // MonsterIds.h:167 `{{48,56},{50,59}}`（asc<7 取前者）。⚠ **两组**，不是一个区间。
     hpMin: 48,
     hpMax: 56,
+    // 第四十六批：**普通怪那一档**（asc>=7）。⚠ 它与建怪时那次「撕咬伤害」的 `miscInfo`
+    //   分档（`asc>=2 ? random(9,13) : random(7,11)`，Monster.cpp:124-130）是**两个独立的
+    //   阈值**（7 与 2），两次都掷 monsterHpRng——asc19 下两处同时切到高档。
+    hpHigh: { atLeast: 7, hpMin: 50, hpMax: 59 },
+    ascCalibrated: true,
     // ⚠⚠ 它是**第二个** `Monster::construct` 里带怪种特例的怪（第一个是虱子）：
     //     case MonsterId::DARKLING:
     //         if (asc >= 2) miscInfo = monsterHpRng.random(9, 13);
@@ -3531,6 +3598,9 @@ const ENEMY_LIST: EnemyDef[] = [
     // 走普通的 `setRandomHp`（掷一次）——上下界相同**照样掷**，别与 `hpNoRoll` 混。
     hpMin: 170,
     hpMax: 170,
+    // 第四十六批：**普通怪那一档**（asc>=7）。
+    hpHigh: { atLeast: 7, hpMin: 190, hpMax: 190 },
+    ascCalibrated: true,
     // ⚠ 它**没有** preBattleAction（`Monster::preBattleAction` 的 switch 里没有它的 case），
     //   开局身上一个 Power 都没有。
     moves: [
@@ -3593,6 +3663,9 @@ const ENEMY_LIST: EnemyDef[] = [
     //   （MonsterSpecific.cpp:119-124）。写成「上下界相同的普通怪」会多掷一次 monsterHpRng，
     //   此后每一次取值整体错位。⚠ 反例就在隔壁：守卫者的 `{240,240}` 照样掷一次。
     hpNoRoll: true,
+    // 第四十六批：校准了，但 `hpNoRoll` ⇒ **没有** `hpHigh`（两组区间都是 `{300,300}`，
+    //   而且那条 case 压根不看 ascension）。与球状守卫者、复形怪同为 `null` 档。
+    ascCalibrated: true,
     // ⚠ 它**没有** preBattleAction（switch 里没有 `THE_MAW`）。
     moves: [
       {
@@ -3676,6 +3749,9 @@ const ENEMY_LIST: EnemyDef[] = [
     // ⚠ **两组**，不是一个区间；走普通的 `setRandomHp`（掷一次），上下界相同**照样掷**。
     hpMin: 160,
     hpMax: 160,
+    // 第四十六批：**普通怪那一档**（asc>=7）。
+    hpHigh: { atLeast: 7, hpMin: 175, hpMax: 175 },
+    ascCalibrated: true,
     // preBattleAction 见 sts-combat.ts 的 `PRE_BATTLE_ACTION.writhing_mass`：
     //   `setHasStatus<REACTIVE>(true); setStatus<REACTIVE>(0); buff<MALLEABLE>(3);`
     // ⚠ 它是**全参考项目唯一同时带易塑与反应的怪**，也正因为如此，

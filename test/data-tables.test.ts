@@ -598,6 +598,33 @@ describe("敌人与编队表", () => {
     champ: 9,
     // ⚠ 球状守卫者：校准了，但 `hpNoRoll` ⇒ **没有** `hpHigh`（见上方注释）。
     spheric_guardian: null,
+    // —— 第四十六批：第三幕 17 只怪。三族阈值同样逐只对着 `Monster::initHp` 抄——
+    //   普通怪 :37-74（asc>=7）、精英 :91-102（asc>=8）、Boss :76-89（asc>=9）。
+    //   ⚠ **匕首是 8（精英档）**，尽管它是随从：`MonsterSpecific.cpp:91-102` 那组 case 里
+    //     真的有 `DAGGER`。与第三十批的火炬头（随从却是 Boss 档）互为镜像——判据永远是
+    //     「它落在哪一组 case 里」，不是「它是不是随从」。
+    //   ⚠ 暗球游荡者与蜥蜴法师同时带 `hpDiscardRoll`：白掷那次的区间是**字面量、恒低档**
+    //     （`hpRng.random(90,96)` / `(180,190)`），与这里的高档组是两回事。
+    //   ⚠ 觉醒者的高档组是 `{300,320}`——**下界与低档相同**，全表唯一一只。
+    exploder: 7,
+    repulsor: 7,
+    spiker: 7,
+    orb_walker: 7,
+    spire_growth: 7,
+    darkling: 7,
+    writhing_mass: 7,
+    giant_head: 8,
+    nemesis: 8,
+    reptomancer: 8,
+    dagger: 8,
+    awakened_one: 9,
+    time_eater: 9,
+    deca: 9,
+    donu: 9,
+    // ⚠ 大嘴与复形怪：校准了，但 `hpNoRoll` ⇒ **没有** `hpHigh`（`Monster::initHp` 的
+    //   `curHp = monsterHpRange[id][0][0];` 那条 case 压根不看 ascension，三只共用它）。
+    the_maw: null,
+    transient: null,
   };
 
   it("已校准爬升度的敌人都带第二组血量区间，且区间合法", () => {
@@ -624,12 +651,15 @@ describe("敌人与编队表", () => {
   });
 
   it("没标 ascCalibrated 的敌人不许带 hpHigh（半填会静默放行）", () => {
-    // 抽查几只**第三幕及以后**、按 WORKFLOW 短期内不会被校准的：harness 的两个乘积跑满了
-    // 第一 / 二幕，第三幕的怪要等追加第三遍循环才有预言机。
-    // ⚠ 别再拿第一幕的三精英 / 三 Boss 当样本（第二十二批全校准了），
-    //   也别再拿第二幕的怪（**第三十批把 17 只全校准了**：原先这里放的是
-    //   centurion / book_of_stabbing / byrd / snecko / champ / the_collector）。
-    for (const id of ["exploder", "spiker", "orb_walker", "reptomancer", "giant_head", "nemesis"]) {
+    // ⚠⚠ **第四十六批之后这条用例只剩一个样本，而且它没有别的选择**：三幕 59 只怪全部
+    //   校准了（第二十二批第一幕、第三十批第二幕、本批第三幕），`enemies.ts` 里唯一一只
+    //   没校准的就是第四幕的腐化之心——而它本来就是「只有血量、没有招式」的那条 def
+    //   （当前唯一的用途是当 `sts-combat-rules.test.ts` 那条「未登记怪物 rollMove」的样本）。
+    //   历史：第一幕三精英 / 三 Boss（第二十二批顶掉）→ 第二幕六只（第三十批顶掉）
+    //   → exploder / spiker / orb_walker / reptomancer / giant_head / nemesis（本批顶掉）。
+    // ⚠ **不要为了让这条用例「多几个样本」去造一只游戏里不存在的怪**（同 WORKFLOW 里
+    //   「未迁移编队样本」那条）。它下一次有第二个样本，是第四幕装上尖塔护盾 / 长矛的时候。
+    for (const id of ["corrupt_heart"]) {
       expect(ASC_CALIBRATED[id], `${id} 不该在已校准名单里`).toBeUndefined();
       const def = getEnemyDef(id);
       expect(def.ascCalibrated ?? false, `${id} 不该标 ascCalibrated`).toBe(false);
