@@ -479,7 +479,35 @@ ENC_V0_RELIC="large_slime@relic1 slime_boss@relic1 spheric_guardian@relic1 greml
 #   （three_sentries 120 条里 **112 条一口药都没喝**、gremlin_nob 95、lagavulin 66）。
 #   champ 与 three_darklings 是 0。
 ENC_V0_POT="champ@pot1 three_darklings@pot1 champ@pot2 three_darklings@pot2 champ@pot3 three_darklings@pot3 champ@pot4 champ@pot5 hexaghost@pot5 champ@pot6 hexaghost@pot7 slime_boss@pot7 slime_boss@pot8 three_sentries@pot9 slime_boss@pot9 slime_boss@pot10 hexaghost@pot11 slime_boss@pot11 hexaghost@pot12"
-ENC_V0="$ENC_V0_ASC0 $ENC_V0_ASC19 $ENC_V0_TGT1 $ENC_V0_ACT3 $ENC_V0_RELIC $ENC_V0_POT"
+# 第四十六批：**第三幕的爬升度**（15 个编队 × asc19，第七个乘积）。文件名后缀是 `@asc19`——
+# 与第二十一 / 二十二 / 三十批同一个后缀、同一条策略（一份文件里只有一个 variant ⇒
+# `variant0-rows.mjs` 返回整份长度 ⇒ 整份冻结）。装完这 15 个，**三幕 54 个编队在
+# asc0 与 asc19 两个档位上全满**。
+#
+# ⚠⚠ **它是从 `act3Variants` 派生出来的，不是重打一遍**：8 个 asc0 variant 各复制一份、
+#   只改 `ascension` / `relics` / `potions` 三个字段。第三幕是唯一「各 variant 牌组不同」
+#   的乘积（22 张 / 45 张全升级 / 59 张全升级三副），手抄必然漂移；派生之后「与 asc0 那份
+#   只差爬升度与遗物药水」这句话是**按构造成立**的，不是注释里的承诺。
+#
+# ⚠⚠ **每个 variant 都钉死了遗物与药水**，理由与第四十五批药水那个乘积**逐字相同**：
+#   `traceIdx` 只驱动遗物轮换与药水轮换，两者都钉死的 variant 一次都不读它 ⇒ 它排在乘积里
+#   的哪个位置无关。于是遗物那条战线（`relicVariants`）与药水那条（`potionVariants`）
+#   ——两者都排在它**前面**、都还在每批追加——继续追加对这 15 个文件是空操作，
+#   而这个乘积**自己**以后也还能追加（第二个爬升度档位就是一次纯追加）。
+#   harness 里是硬检查，不是注释。
+#   ⚠ 代价要说清楚：这 15 个文件与它们的 asc0 对应文件在**遗物 / 药水上不可比**
+#     （asc0 那些走的是 2 遗物 + 3 药水的轮换）。这是有意的取舍——用可比性换顺序无关性，
+#     而本批要买的是**怪物侧**（血量档 / `ascAmount` / `minAscension` / 开局 Power 分档），
+#     那些全部是在同一份文件内部量的，不靠与 asc0 对比。
+#   钉的是：金刚杵（整条实现就是 `initRelics` 里一句 `buff<STRENGTH>(1)`，
+#   `src/combat` 里再无第二个读点 ⇒ 这 15 个文件里没有任何现象能记到遗物头上）
+#   + 格挡药水 + 力量药水（都是纯玩家侧，正好补回 asc19 拿走的两样东西：活得久
+#   [asc>=6 九成血入场、asc>=14 铁甲上限 75、asc>=10 多一张登顶者之殇] 与打得动
+#   [每只怪血量与伤害都涨]）。⚠ 故意**不选**火焰 / 爆炸药水（它们走 `Monster::damage`，
+#   会在好几只第三幕怪被测的那条路径上再加一个写者），也**不选**熵酿（它从整池补槽，
+#   与「钉死」正好相反）。⚠ asc>=11 药水槽是 **2**，所以这两瓶恰好各占一格。
+ENC_V0_ACT3_ASC19="three_shapes@asc19 four_shapes@asc19 sphere_and_two_shapes@asc19 orb_walker@asc19 spire_growth@asc19 maw@asc19 three_darklings@asc19 transient@asc19 writhing_mass@asc19 giant_head@asc19 nemesis@asc19 reptomancer@asc19 awakened_one@asc19 time_eater@asc19 donu_and_deca@asc19"
+ENC_V0="$ENC_V0_ASC0 $ENC_V0_ASC19 $ENC_V0_TGT1 $ENC_V0_ACT3 $ENC_V0_RELIC $ENC_V0_POT $ENC_V0_ACT3_ASC19"
 
 policy_of() {
   case " $ENC_ALL " in *" $1 "*) echo all; return;; esac
