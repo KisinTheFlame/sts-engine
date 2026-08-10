@@ -750,7 +750,8 @@ ENC_V0="small_slimes lots_of_slimes large_slime blue_slaver red_slaver looter ex
 与 `@asc19` 那批同构（脚本不需要为此改任何逻辑，加名字即可）。
 ✅ 第三十批的 19 个 `<第二幕编队>@asc19` 同样如此（`ENC_V0_ACT2_ASC19`）。
 ✅ 第三十一批的 23 个 `<编队>@tgt1`（`ENC_V0_TGT1`）与第三十二批的第三幕编队
-（`ENC_V0_ACT3`）也一样——**凡是走「自己的乘积、每份文件只有一个 variant」的，
+（`ENC_V0_ACT3`）也一样，第四十批起的 `ENC_V0_RELIC` / 第四十五批的 `ENC_V0_POT` /
+第四十六批的 `ENC_V0_ACT3_ASC19` 同理——**凡是走「自己的乘积、每份文件只有一个 variant」的，
 都自动等于整份冻结**，脚本一行都不用改，加名字即可。
 
 为什么怪物走 variant 0：
@@ -816,6 +817,45 @@ ENC_V0="small_slimes lots_of_slimes large_slime blue_slaver red_slaver looter ex
   与附录里「加 `isReplayableCard` 那道门时先只加门跑一次 `--check`」是同一个套路。
   不过就停下来查，不要往下走。
 - **第二步**：再加 variant、跑 `--install`。
+
+#### ⚠⚠ 第四次做（第四十六批，第三幕）：这条轴现在**自带一个乘积**，而且不冻结任何人
+
+前三次（第二十一 / 二十二 / 三十批）都是往**当时最后一个乘积**里追加 variant。
+第四十六批不能这么做——`relicVariants` 与 `potionVariants` 都排在后面且**都还在每批追加**。
+做法是把第四十五批那条硬检查照抄一遍，开**第七个乘积** `act3AscVariants`：
+
+- 每个 variant **必须同时钉死 `relics` 与 `potions`** ⇒ 它一次 `traceIdx` 都不读
+  ⇒ 它在乘积序列里的位置完全无关 ⇒ **遗物、药水、爬升度三条战线可以同时活着**，
+  各往各的乘积追加，谁也不作废谁。**这是 harness 里的 `return 1`，不是注释。**
+- 另加两道自己的检查：**`ascension` 不许为 0**（否则分组键退化成 `<编队>.jsonl`，
+  会去覆盖已冻结的 asc0 文件）、**钉死的药水必须在窄白名单里**（`potionSet` 是 0 ⇒
+  `isReplayablePotion` 不放宽，钉一瓶新登记的药水会让 trace 不可重放）。
+
+⚠⚠ **variant 要「派生」而不是重打一遍。** 第三幕是唯一「各 variant 牌组不同」的乘积
+（22 张 / 45 张全升级 / 59 张全升级三副，各自都是量出来的），所以第四十六批的 8 个 asc19
+variant 是把 `act3Variants` 逐个**复制**、只改 `ascension` / `relics` / `potions` 三个字段。
+好处有两个：牌组不可能漂移；「与 asc0 那份只差爬升度与 loadout」变成按构造成立的性质。
+**判据：新档位的 variant 只要与某批 asc0 variant 一一对应，就复制它，别照着注释重打。**
+
+⚠ **钉死 loadout 的代价要写进报告**：这些文件与它们的 asc0 对应文件在**遗物 / 药水上不可比**。
+这笔账划算的前提是「本批要买的东西是在同一份文件内部用变异量的」——怪物的血量档 / 数值档
+正是如此。如果一批要的是**逐行 diff**（第四十批的 `@relic2`/`@relic3`、第四十五批的树皮
+A/B），那就不能这么钉。
+
+⚠ **体积别按「种子数线性」估。** 第三十批量出「≈ 2.7MB / 编队 / 档位」，可第四十六批的
+asc19 反而**比 asc0 便宜**（39MB vs 56MB，种子数相同）：asc19 的玩家 68/75 血入场、多一张
+登顶者之殇，三个 Boss 编队的平均回合数从 8.55 / 7.18 / 6.81 掉到 4.65 / 4.72 / 4.97。
+**加档位的成本要按「那个档位下仗有多长」推。**
+⚠⚠ 同一件事的另一面是**背书会变薄**：觉醒者走到假死从 46/120 掉到 7/120、时间吞噬者的
+加速从 53 条掉到 10 条，于是「复活的 `maxHp = asc9 ? 320 : 300`」只有 **7 例**、
+「加速 asc19 的 32 点格挡」只有 **10 例**。非 0，但**必须在报告里标出来是薄的**，
+关门条件是更强的牌组或更多种子。
+
+⚠ **把一副带浩劫 / 混乱的牌组挪到 asc >= 10 之前，先去 `CardInstance::canUse` 数一遍。**
+asc>=10 的起始牌组多一张 `ASCENDERS_BANE`，而浩劫是**无条件**把抽牌堆顶那张塞进出牌队列。
+安全的理由不是「运气」：`canUse` 对 CURSE 一族直接 `return false`（没有蓝烛），
+于是 `useCard()` 根本不会被调到；我们这边同一道门也在（`type === "curse" && !hasRelic(blue_candle)`），
+两边同解。第四十六批是这两者第一次同处一副牌组，先读了源码才敢用。
 
 #### 档位怎么选：一个档位点亮所有分支的两侧
 
@@ -992,8 +1032,13 @@ emitProduct(variants, encounters);            // 第一幕，冻结
 emitProduct(act2Variants, act2Encounters);    // 第二幕，冻结
 emitProduct(tgtVariants, tgtEncounters);      // 目标策略，冻结
 emitProduct(act3Variants, act3Encounters);    // 第三幕（第三十二批），装满后不再增长
-emitProduct(relicVariants, relicEncounters);  // 遗物/药水（第四十批），**必须最后**
+emitProduct(relicVariants, relicEncounters);  // 遗物（第四十批），还在每批追加
+emitProduct(potionVariants, potionEncounters);// 药水（第四十五批），还在每批追加
+emitProduct(act3AscVariants, act3AscEncounters); // 第三幕爬升度（第四十六批），还能追加
 ```
+
+⚠ **后三个乘积互不冻结**：它们各自的 variant 都被 harness 强制「遗物与药水都钉死」，
+于是一次 `traceIdx` 都不读，排在哪里都一样。前四个仍然是冻结的（它们读轮换）。
 
 ⚠ **第五个乘积是第四十批加的，而它挂得下正是因为第三幕装满了。** 它的编队列表是
 **三幕全部 54 个**（遗物的读点散在三幕里，而一个乘积只绑一份编队列表——这就是它必须
@@ -1019,6 +1064,11 @@ emitProduct(relicVariants, relicEncounters);  // 遗物/药水（第四十批）
 ✅ **第四十五批挂了第六个乘积 `potionVariants`，而它没有冻结 `relicVariants`**——
 遗物那条战线照旧可以往里追加。做得到的原因是一条**硬检查**而不是排序：那个乘积里的每个
 variant 都必须「遗物与药水都钉死」，于是它一次 `traceIdx` 都不读。详见「药水这条轴」。
+✅ **第四十六批挂了第七个 `act3AscVariants`（第三幕的爬升度），照抄同一条硬检查。**
+于是现在**三条战线同时活着**：遗物、药水、爬升度各往各的乘积追加，谁也不冻结谁。
+⚠ **「必须最后」这条规矩从此只对「不钉死 loadout 的乘积」成立**。新乘积要么钉死遗物与
+药水（推荐，顺序无关），要么排最后并接受「它后面不许再加」。**把它写成 harness 里的
+`return 1`，别写在注释里。**
 
 ⚠ **诊断线索（复核方补）**：这类错误不会静默——`--check` 会红——但它红的样子很容易误判。
 表现是**某一整个乘积的文件一次性全红，而它之前的乘积一个都没红**。
@@ -1657,7 +1707,7 @@ tools/regen-traces.sh --install UPPERCUT DEMON_FORM --moves SENTRY_BOLT SENTRY_B
 pnpm typecheck && pnpm lint && pnpm test && pnpm format
 ```
 
-全绿是**下限**，不是完成。`sts-combat-trace.test.ts` 现有 39466 例逐帧对拍（第四十五批），
+全绿是**下限**，不是完成。`sts-combat-trace.test.ts` 现有 41266 例逐帧对拍（第四十六批），
 其中一部分用**全升级牌组**——所以每条规则 `up ? x : y` 的两个分支都会被验证。
 
 改共享路径（`callEndOfTurnActions`、`drawCards`、`onTurnEnding`、`useCard` 之类）时，
