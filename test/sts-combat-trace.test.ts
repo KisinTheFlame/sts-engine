@@ -508,6 +508,15 @@ const ENCOUNTER: Record<string, string> = {
   //     createMonster(DONU);`（MonsterGroup.cpp:235-238），所以快照里 **0 号位是迪卡、
   //     1 号位是多努**。这不是笔误，参考的枚举名就是这么写的。
   DONU_AND_DECA: "donu_and_deca",
+  // —— 第四十七批乙：第四幕两个 + 蒙面强盗，走 harness 新开的**第九个乘积**。
+  //   ⚠ `SHIELD_AND_SPEAR` 建的是 `SPIRE_SHIELD`（0 号位）+ `SPIRE_SPEAR`（1 号位），
+  //     两只怪身上写死的下标全靠这个顺序。
+  SHIELD_AND_SPEAR: "shield_and_spear",
+  //   ⚠ `THE_HEART` 是单怪。
+  THE_HEART: "the_heart",
+  //   ⚠⚠ `MASKED_BANDITS_EVENT` 建的是 `POINTY` / `ROMEO` / `BEAR`——**熊在最后一格**。
+  //     我们这边原先那条 `masked_bandits`（劫掠者 ×2 + 抢劫者）是旧近似表编的，本批改掉。
+  MASKED_BANDITS_EVENT: "masked_bandits_event",
 };
 const MONSTER: Record<string, string> = {
   CULTIST: "cultist",
@@ -644,6 +653,18 @@ const MONSTER: Record<string, string> = {
   // 我们这边用 `EMPTY_MONSTER_SLOT` 占位，字段全对齐：hp/maxHp/block 0、alive false、
   // move ""（见下面 MOVE 表里的 `INVALID`）、powers 空。
   "INVALID = 0": "__empty",
+  // —— 第四十七批乙：`MOVE_RULES` 的最后六只，怪物线 65 / 65 收官 ——
+  // ⚠ 腐化之心开局那一帧的 powers 是 `{"BEAT_OF_DEATH":1,"INVINCIBLE":300}`——两条都
+  //   进快照（层数非 0），与缓慢 / 反应 / 时间扭曲那种「层数 0 看不见」的写法不同族。
+  CORRUPT_HEART: "corrupt_heart",
+  // ⚠ 尖塔护盾开局给**玩家**上被围攻（快照里是玩家 powers 的 `SURROUNDED: 1`），
+  //   自己身上只有 `ARTIFACT: 1`；长矛只有 `ARTIFACT: 1`。
+  SPIRE_SHIELD: "spire_shield",
+  SPIRE_SPEAR: "spire_spear",
+  // ⚠ 蒙面强盗三只开局身上一个 Power 都没有（`preBattleAction` 里压根没有它们的 case）。
+  BEAR: "bear",
+  POINTY: "pointy",
+  ROMEO: "romeo",
 };
 const MOVE: Record<string, string> = {
   CULTIST_INCANTATION: "incantation",
@@ -919,6 +940,29 @@ const MOVE: Record<string, string> = {
   // `currentMove` 是空串。⚠ 这一条只有那个空格用得到——所有真怪在 `MonsterGroup::init`
   // 里都 rollMove 过，意图不可能是 INVALID。
   INVALID: "",
+  // —— 第四十七批乙：第四幕与蒙面强盗的 17 条招式 ——
+  // ⚠ 腐化之心：强化（BUFF）**永远不会被 roll 出来**，它只由血弹 / 回响的收尾 setMove
+  //   定出来；虚弱化只出在第一个怪物回合。
+  CORRUPT_HEART_BLOOD_SHOTS: "blood_shots",
+  CORRUPT_HEART_BUFF: "heart_buff",
+  CORRUPT_HEART_DEBILITATE: "debilitate",
+  CORRUPT_HEART_ECHO: "heart_echo",
+  // ⚠ 尖塔护盾：重砸（SMASH）同样不会被 roll 出来，只由猛击 / 加固的收尾定出来。
+  SPIRE_SHIELD_BASH: "shield_bash",
+  SPIRE_SHIELD_FORTIFY: "fortify",
+  SPIRE_SHIELD_SMASH: "shield_smash",
+  // ⚠ 尖塔长矛：贯穿（SKEWER）同理。
+  SPIRE_SPEAR_BURN_STRIKE: "burn_strike",
+  SPIRE_SPEAR_PIERCER: "piercer",
+  SPIRE_SPEAR_SKEWER: "skewer",
+  // ⚠ 熊抱 / 嘲讽各只出一次（三拍循环回到的是第二拍，不是起点）。
+  BEAR_BEAR_HUG: "bear_hug",
+  BEAR_LUNGE: "bear_lunge",
+  BEAR_MAUL: "maul",
+  POINTY_ATTACK: "pointy_attack",
+  ROMEO_MOCK: "mock",
+  ROMEO_AGONIZING_SLASH: "agonizing_slash",
+  ROMEO_CROSS_SLASH: "cross_slash",
 };
 // 药水在 trace 里是显示名。含熵酿填回来的未登记药水——它们只占槽位、不会被喝。
 const POTION: Record<string, string | null> = {
@@ -1198,6 +1242,22 @@ const POWER: Record<string, string> = {
   //   ⚠⚠ REGEN 与 RITUAL 是**两边共用一个映射、结算是两套代码**的典型：
   //   玩家侧的再生每回合末回血再 -1 层，怪物侧（觉醒者）一层都不掉；
   //   玩家侧的仪式**没有** skipFirst，怪物侧（邪教徒）有。
+  // —— 第四十七批乙（第四幕）——
+  // 无敌：**怪物身上**，腐化之心开局 300 层（asc19 是 200）。
+  // ⚠ 它是 `attackedUnblockedHelper` 那条 else-if 链的**第一格**（链上最后一个补上宿主的
+  //   格子），同时住在 `damageUnblockedHelper` 的第一句与 `applyStartOfTurnPowers` 的
+  //   「每个怪物回合复位」那一段。快照里它逐击递减、每个怪物回合弹回 300。
+  INVINCIBLE: "invincible",
+  // 死亡节拍：**怪物身上**，腐化之心开局 1 层（asc19 是 2；「强化」的第二档再 +1）。
+  // ⚠ 读点在 `onAfterUseCard` 那道 `triggerOnUse` 门里的第三条：玩家**每打出一张牌**
+  //   吃一次 = 层数的非攻击伤害。
+  BEAT_OF_DEATH: "beat_of_death",
+  // 被围攻：**玩家身上**的纯 bool（harness 恒输出 1），尖塔护盾的 `preBattleAction` 上的
+  // ——全参考唯一一处「怪物开局给玩家上 Power」。
+  // ⚠ 唯一读点在 `Monster::calculateDamageToPlayer`，判据是 `Player::lastTargetedMonster`。
+  SURROUNDED: "surrounded",
+  // ⚠ ARTIFACT / PAINFUL_STABS / STRENGTH 早就在表里；本批是 PAINFUL_STABS 第一次出现在
+  //   突刺之书**之外**的怪身上（腐化之心「强化」的第三档），同一个映射直接复用。
   // ⚠ PLATED_ARMOR / STRENGTH / LOSE_STRENGTH 早就在表里，本批是 PLATED_ARMOR 第一次出现在
   //   **玩家**身上（线与针开局 4 层）。同一个映射直接复用，但两侧是两套代码：
   //   玩家侧的递减在 `Player::attacked` 里、加格挡在 `callEndOfTurnActions` 里。

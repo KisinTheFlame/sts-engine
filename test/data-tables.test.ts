@@ -659,7 +659,11 @@ describe("敌人与编队表", () => {
     //   → exploder / spiker / orb_walker / reptomancer / giant_head / nemesis（本批顶掉）。
     // ⚠ **不要为了让这条用例「多几个样本」去造一只游戏里不存在的怪**（同 WORKFLOW 里
     //   「未迁移编队样本」那条）。它下一次有第二个样本，是第四幕装上尖塔护盾 / 长矛的时候。
-    for (const id of ["corrupt_heart"]) {
+    // ⚠ 第四十七批：样本从 1 个涨到 **6 个**（第四幕三只 + 蒙面强盗三只），
+    //   六只的第二组区间都只写在注释里、没有进 `hpHigh` —— 与第三十二~三十九批对第三幕的
+    //   办法逐字相同（招式的 `ascAmount` / `ascTimes` / `minAscension` 照抄，
+    //   血量第二组与 `ascCalibrated` 留给第四幕的爬升度那一批一起补）。
+    for (const id of ["corrupt_heart", "spire_shield", "spire_spear", "bear", "pointy", "romeo"]) {
       expect(ASC_CALIBRATED[id], `${id} 不该在已校准名单里`).toBeUndefined();
       const def = getEnemyDef(id);
       expect(def.ascCalibrated ?? false, `${id} 不该标 ascCalibrated`).toBe(false);

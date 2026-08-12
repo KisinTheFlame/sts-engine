@@ -658,15 +658,23 @@ describe("接线：尚未迁移的内容显式抛错", () => {
   //   rollMove」）**仍然成立**：那条要真的走进 `initCombat`，所以需要一只
   //   「在 `enemies.ts` 里、却不在 `MOVE_RULES` 里」的怪。两条用例因此代价不同，
   //   详见那边的注释（本批给 `corrupt_heart` 只补了血量、没补招式）。
-  // ⚠ 别换成事件编队：它们**已经**有 `enemies.ts` 条目的可能性更低，而且它们不在任何
-  //   编队池里这件事本身也许有一天会变；`the_heart` 是唯一「按定义排在最后」的那个。
+  // ⚠⚠ **第四十七批把 `the_heart` 也登记了，样本换成 `mysterious_sphere`。**
+  //   第三十九批写在这里的「别换成事件编队」那句话到期了——第四幕两个编队本批一起装完，
+  //   剩下的就只有**六个**：`two_fungi_beasts`（第一幕 strong 池）与五个事件编队
+  //   （`LAGAVULIN_EVENT` / `COLOSSEUM_EVENT_SLAVERS` / `COLOSSEUM_EVENT_NOBS` /
+  //   `MUSHROOMS_EVENT` / `MYSTERIOUS_SPHERE_EVENT`）。判据仍是「挑最晚才会被登记的那个」：
+  //   `two_fungi_beasts` 是**真的会在 run 里出现**的编队（它在第一幕 strong 池里），
+  //   所以它排在事件编队前面；五个事件编队里选 `mysterious_sphere`，因为它的
+  //   `ENCOUNTERS` 条目已经存在且成员与参考一致（两只暗球游荡者），零新数据。
+  // ⚠ 六个都由**已登记的怪**组成，所以下一批很可能一次装完——这条样本大概率只活一批。
+  //   这是这条用例的常态（见 WORKFLOW「附：踩过的坑」），不是选错了。
   // ⚠ 历史：`gremlin_nob`（第十八批顶掉）→ `giant_head`（第三十五批顶掉）→
-  //   `donu_deca`（**第三十九批**顶掉）→ 现在这个。
+  //   `donu_deca`（第三十九批顶掉）→ `the_heart`（**第四十七批**顶掉）→ 现在这个。
   it("未迁移的编队：startCombat 抛错，且不留半个战斗状态", () => {
     const state = runAtMap();
-    expect(() => startCombat(state, "the_heart")).toThrow(/the_heart/);
+    expect(() => startCombat(state, "mysterious_sphere")).toThrow(/mysterious_sphere/);
     expect(state.combat).toBeNull();
-    expect(reason(state, "the_heart")).toContain("尚未迁移");
+    expect(reason(state, "mysterious_sphere")).toContain("尚未迁移");
   });
 
   // 样本牌选 `seek` 搜寻：参考项目三个 switch 里都**没有 case**，等于压根没实现，
