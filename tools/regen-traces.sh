@@ -530,7 +530,17 @@ ENC_V0_ACT3_ASC19="three_shapes@asc19 four_shapes@asc19 sphere_and_two_shapes@as
 #   的**镀甲那一半只在 asc>=19 存在**（第四十六批装的），所以它那条 `noAliveGate` 要**两条轴
 #   同时**才观察得到。分组键的 `[@ascN][@tgtN]` 顺序从第三十一批起就定死了，正是为了这一天。
 ENC_V0_ACT3_TGT1="three_shapes@tgt1 four_shapes@tgt1 sphere_and_two_shapes@tgt1 three_darklings@tgt1 reptomancer@tgt1 awakened_one@tgt1 donu_and_deca@tgt1 donu_and_deca@asc19@tgt1"
-ENC_V0="$ENC_V0_ASC0 $ENC_V0_ASC19 $ENC_V0_TGT1 $ENC_V0_ACT3 $ENC_V0_RELIC $ENC_V0_POT $ENC_V0_ACT3_ASC19 $ENC_V0_ACT3_TGT1"
+# 第四十七批乙：**第四幕两个 + 蒙面强盗**（harness 的第九个乘积 `act4Variants`），
+# 装完 `MOVE_RULES` 65 / 65 —— **怪物线收官**。同样是两个钉死遗物药水的 variant，
+# 所以它既不冻结前面的乘积、也不被它们冻结。
+#
+# ⚠⚠ **两个 variant 用两副牌组，而且腐化之心那副是往「弱」里挑的**（本项目第一次）：
+#   腐化之心 750 血 + 无敌 300 ⇒ 强牌组三个回合就打完，而「强化」那一招的档位由
+#   `getMonsterTurnNumber() / 3` 决定。打得快与死得快**都会**压低回合数，所以它用的是
+#   一副只防不攻的 40 张全升级牌组（平均 5.73 个怪物回合 / 最长 10），
+#   而尖塔与强盗那两个编队用第三十七批那副 45 张。逐副候选的实测表见 harness 注释。
+ENC_V0_ACT4="shield_and_spear the_heart masked_bandits_event"
+ENC_V0="$ENC_V0_ASC0 $ENC_V0_ASC19 $ENC_V0_TGT1 $ENC_V0_ACT3 $ENC_V0_RELIC $ENC_V0_POT $ENC_V0_ACT3_ASC19 $ENC_V0_ACT3_TGT1 $ENC_V0_ACT4"
 
 policy_of() {
   case " $ENC_ALL " in *" $1 "*) echo all; return;; esac
