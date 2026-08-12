@@ -507,7 +507,30 @@ ENC_V0_POT="champ@pot1 three_darklings@pot1 champ@pot2 three_darklings@pot2 cham
 #   会在好几只第三幕怪被测的那条路径上再加一个写者），也**不选**熵酿（它从整池补槽，
 #   与「钉死」正好相反）。⚠ asc>=11 药水槽是 **2**，所以这两瓶恰好各占一格。
 ENC_V0_ACT3_ASC19="three_shapes@asc19 four_shapes@asc19 sphere_and_two_shapes@asc19 orb_walker@asc19 spire_growth@asc19 maw@asc19 three_darklings@asc19 transient@asc19 writhing_mass@asc19 giant_head@asc19 nemesis@asc19 reptomancer@asc19 awakened_one@asc19 time_eater@asc19 donu_and_deca@asc19"
-ENC_V0="$ENC_V0_ASC0 $ENC_V0_ASC19 $ENC_V0_TGT1 $ENC_V0_ACT3 $ENC_V0_RELIC $ENC_V0_POT $ENC_V0_ACT3_ASC19"
+# 第四十七批甲：**第三幕的目标策略轴**（harness 的第八个乘积 `act3TgtVariants`）。
+# 第三十一批开的 `@tgt1` 覆盖了第一、二幕的 23 个多怪编队，第三幕一个都没有——第四十六批
+# 补上爬升度之后，它是第三幕**唯一剩下的整块结构性缺口**。
+#
+# ⚠⚠ **判据是「场上会不会同时有两只可选目标」，不是「开局有几只」**（第三十一批那条）。
+#   逐个读 `MonsterGroup::createMonsters` + `Monster::onHpLost`（全参考只有三种大史莱姆的
+#   分裂与守卫者的模式切换）+ 四个召唤宿主，得到 **7 / 15**：
+#     ✅ three_shapes / four_shapes / sphere_and_two_shapes（开局 3 / 4 / 3 只）
+#     ✅ three_darklings（3 只）/ reptomancer（1、2、4 号位三只 + 召唤）
+#     ✅ awakened_one（**两只邪教徒 + Boss**，Boss 在 2 号位）/ donu_and_deca（2 只）
+#     ✗ orb_walker / spire_growth / transient / maw / writhing_mass / giant_head /
+#       nemesis / time_eater —— 八个单怪，且**中途也不会变多**：第三幕一个分裂都没有，
+#       唯一的召唤宿主是蜥蜴法师（已在名单里），其余的场上变化全是**减少**（消逝自杀、
+#       自爆）或**就地**（觉醒者假死、暗影客重生）。harness 里是硬检查，不是注释。
+#
+# ⚠ variant 同样是从 `act3Variants` **派生**的（只改 `targetPolicy` / `relics` / `potions`），
+#   编队被筛空的那三个 variant（批 33 / 35 / 38，全是单怪）整个不出现。钉死遗物药水的
+#   理由与第四十六批逐字相同。
+#
+# ⚠⚠ 最后那个 `donu_and_deca@asc19@tgt1` 是**全语料第一个带两个后缀的文件**：迪卡守护方阵
+#   的**镀甲那一半只在 asc>=19 存在**（第四十六批装的），所以它那条 `noAliveGate` 要**两条轴
+#   同时**才观察得到。分组键的 `[@ascN][@tgtN]` 顺序从第三十一批起就定死了，正是为了这一天。
+ENC_V0_ACT3_TGT1="three_shapes@tgt1 four_shapes@tgt1 sphere_and_two_shapes@tgt1 three_darklings@tgt1 reptomancer@tgt1 awakened_one@tgt1 donu_and_deca@tgt1 donu_and_deca@asc19@tgt1"
+ENC_V0="$ENC_V0_ASC0 $ENC_V0_ASC19 $ENC_V0_TGT1 $ENC_V0_ACT3 $ENC_V0_RELIC $ENC_V0_POT $ENC_V0_ACT3_ASC19 $ENC_V0_ACT3_TGT1"
 
 policy_of() {
   case " $ENC_ALL " in *" $1 "*) echo all; return;; esac
