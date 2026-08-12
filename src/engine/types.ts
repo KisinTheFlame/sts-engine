@@ -347,6 +347,44 @@ export type PowerId =
   //   （BattleContext.cpp:2227-2233）。所以层数恒是 1（harness 也按 1 输出），叠加两次
   //   只会让 `cardDrawPerTurn` 再少 1，快照里还是 1。
   | "draw_reduction"
+  // 无敌（腐化之心，**敌人身上**，第四十七批）。
+  // ⚠⚠ 它是 `attackedUnblockedHelper` 那条 else-if 链的**第一格**，也是整条链上最后一个
+  //   补上宿主的格子（第三十五批点名过：「链上现在只剩第一格『无敌』没有宿主」）。
+  //   全参考项目**只有腐化之心**带它（`preBattleAction`：`buff<INVINCIBLE>(asc19 ? 200 : 300)`，
+  //   MonsterSpecific.cpp:144）。
+  // ⚠ 读点有**三处**，形状各不相同，逐处照抄：
+  //   ① `applyStartOfTurnPowers`（Monster.cpp:32-34）：**每个怪物回合开始复位**回
+  //      `asc19 ? 200 : 300`——门是 `hasStatus`，写的是 `setStatus`（覆盖）。
+  //      这是「每回合最多只能被打掉 N 点血」的机制本体。
+  //   ② `attackedUnblockedHelper` 的链首（:348-351）：
+  //        damage = std::min(damage, getStatus<INVINCIBLE>());
+  //        setStatus<INVINCIBLE>(getStatus<INVINCIBLE>() - damage);
+  //      ⚠ **它改写 `damage` 本身**，而这个值一路流到末尾的 `curHp -= damage`——
+  //      所以它不是「先扣血再记账」，是「先把这一击削平再扣血」。
+  //   ③ `damageUnblockedHelper` 的**第一个 if**（:444-447），函数体逐字相同，
+  //      但那里它**不构成 else-if**（沉睡与变换是并列的独立 if）。
+  // ⚠ 层数**永不摘除**（写的是裸 `setStatus`、不碰 statusBits，与飞行同族），
+  //   所以打到 0 之后它照样占着链首那一格——本回合此后任何一击都被削成 0 点。
+  | "invincible"
+  // 死亡节拍（腐化之心，**敌人身上**，第四十七批）。
+  // ⚠ 唯一读点在 `BattleContext::onAfterUseCard` 的 `triggerOnUse` 门里
+  //   （BattleContext.cpp:1988-1990）：`addToBot(Actions::DamagePlayer(层数))`
+  //   ——**玩家每打出一张牌**吃一次非攻击伤害。它是那道门里的**第三条**，
+  //   顺序照参考：时间扭曲 → 缓慢 → 死亡节拍，三者共用同一道门、都只读 `arr[0]`。
+  // ⚠ 层数有两个来源：`preBattleAction` 的 `buff<BEAT_OF_DEATH>(asc19 ? 2 : 1)`
+  //   与「强化」那一招的第二档 `buff<BEAT_OF_DEATH>(1)`（**累加**，MonsterSpecific.cpp:1848）。
+  | "beat_of_death"
+  // 被围攻（尖塔护盾开局给**玩家**上的纯 bool 标记，第四十七批）。
+  // ⚠ 它在参考里是 `Player::debuff` 那条「只置位、不写 statusMap」的名单里
+  //   （Player.h:335-343，与壁垒 / 腐化 / 困惑 / 笔尖同族），所以 harness 恒输出 `SURROUNDED: 1`。
+  // ⚠⚠ 唯一读点在 `Monster::calculateDamageToPlayer`（Monster.cpp:565-570），
+  //   而且它读的是一个**此前没有任何人读过的字段** `Player::lastTargetedMonster`：
+  //     const bool facingSelf = p.lastTargetedMonster == idx ||
+  //                             bc.monsters.arr[p.lastTargetedMonster].isDeadOrEscaped();
+  //     if (!facingSelf) { damage *= 1.5; }
+  //   即「你没在打这只怪的时候，它从背后打你多 50%」。参考在这一行自注 `// todo this is
+  //   probably wrong`——照抄，见 TODOS 待裁定。
+  | "surrounded"
   | "duplication"; // 复制：接下来 = 层数张打出的牌各额外结算一次（复制药水；每张 -1 层）
 
 /**
@@ -900,6 +938,49 @@ export type Effect =
   //  ⑤ 收尾是 `setMove(DARK_ECHO)` + **同步 `noOpRollMove`**（暗影客是同步的**真** rollMove）。
   // ⚠ 不带参数：七句里没有一句是「数据」，全是引擎侧的状态机。asc9 那一档写在实现里。
   | { kind: "awakened_rebirth" }
+  // 敌人用：**打一下，然后获得等于这一击伤害输出的格挡**（尖塔护盾的重砸，第四十七批）。
+  // 对齐 `MMID::SPIRE_SHIELD_SMASH`（MonsterSpecific.cpp:1789-1795）：
+  //   ```cpp
+  //   const auto damageOutput = calculateDamageToPlayer(bc, asc3 ? 38 : 34);
+  //   bc.addToBot( Actions::AttackPlayer(idx, damageOutput) );
+  //   bc.addToBot( Actions::MonsterGainBlock(idx, asc18 ? 99 : damageOutput));
+  //   ```
+  // ⚠⚠ **不能写成「`deal_damage` + `gain_block`」两条效果**，这是这条原语存在的全部理由：
+  //   格挡的数量是**那一击算完之后的 `damageOutput`**（怪物力量、玩家易伤 / 虚弱、
+  //   虚无缥缈钳制全部已经乘进去、并且已经截断成整数），不是招式的基础伤害 34。
+  //   参考把 `attackPlayerHelper` 拆开写正是为了把这个中间值留下来复用。
+  // ⚠ 三处照抄：
+  //  ① 伤害在**排队那一刻**算好（与 `attackPlayerHelper` 同源），所以两条动作看到的是
+  //     同一个数，中间就算玩家掉了易伤也不会变。
+  //  ② 两条都是 `addToBot`（**入队**），顺序是先伤害后格挡。
+  //  ③⚠ `ascBlock` 覆盖的是**格挡那一半**：`asc18 ? 99 : damageOutput`——asc>=18 时格挡
+  //     变成写死的 99、与伤害脱钩。它与 `ascAmount`（覆盖伤害基数）正交，两者可以同时出现。
+  | {
+      kind: "deal_damage_block_equal";
+      amount: number;
+      ascAmount?: AscTier[];
+      ascBlock?: AscTier[];
+    }
+  // 敌人用：**腐化之心的「强化」**（第四十七批）。对齐 `MMID::CORRUPT_HEART_BUFF` 那条 case
+  // 的**前面全部**（MonsterSpecific.cpp:1838-1861，末尾的 `rollMove(bc)` 是收尾）：
+  //   ```cpp
+  //   const auto newStr = std::max(0, getStatus<MS::STRENGTH>()) + 2;
+  //   setStatus<MS::STRENGTH>(newStr);
+  //   const auto buffCount = bc.getMonsterTurnNumber() / 3;
+  //   switch (buffCount) {
+  //       case 1: buff<MS::ARTIFACT>(2);        break;
+  //       case 2: buff<MS::BEAT_OF_DEATH>(1);   break;
+  //       case 3: buff<MS::PAINFUL_STABS>();    break;
+  //       case 4: buff<MS::STRENGTH>(10);       break;
+  //       default: buff<MS::STRENGTH>(50);      break;
+  //   }
+  //   ```
+  // ⚠ 不带参数：五个分支各是一个写死的字面量，`buffCount` 是全局怪物回合数的整数除法。
+  //   把它做成「数据表里的五条效果」需要一个「按回合数选第几条」的通用机制，而全参考
+  //   只有这一处——那就是第二份真相。逐条形状见 sts-combat.ts 里那条 case。
+  // ⚠⚠ 第一句**不是 `buff`（累加）而是 `setStatus`（覆盖）**，而且先把负力量夹回 0：
+  //   它是这只怪对「玩家给它减力量」的解药，抄成 `buff<STRENGTH>(2)` 会让负力量一直留着。
+  | { kind: "corrupt_heart_buff" }
   // sync：敌人专用。参考塞状态牌同样**两种写法并存**——史莱姆们是
   // `addToBot(Actions::MakeTempCardInDiscard(...))`，而史莱姆王的黏液喷射写的是
   // `Actions::MakeTempCardInDiscard({SLIMED}, 3).actFunc(bc)`（MonsterSpecific.cpp:1112）

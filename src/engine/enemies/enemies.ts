@@ -2247,24 +2247,434 @@ const ENEMY_LIST: EnemyDef[] = [
     intentRule: { scripted: [], weighted: [] },
   },
 
-  // —— 第四幕 Boss：腐化之心（**尚未登记**，见下方 `ENCOUNTERS.the_heart` 的注释）——
+  // —— 第四幕 Boss：腐化之心（第四十七批登记，`MOVE_RULES` 的第 65 只，怪物线收官）——
   //
-  // ⚠⚠ **这条 def 里只有血量区间，没有任何招式**，而且这是**故意的**：
-  //   它当前唯一的用途是当 `test/sts-combat-rules.test.ts` 那条「未登记怪物 rollMove 会
-  //   显式抛错」用例的样本——那条用例需要一只**在 `enemies.ts` 里、却不在 `MOVE_RULES` 里**
-  //   的怪，而第三十九批装完迪卡与多努之后，`enemies.ts` 里**每一只**怪都进 `MOVE_RULES` 了。
-  // ⚠ 血量是逐字抄的（`MonsterIds.h:165` `{{750,750},{800,800}}`，`setRandomHp(hpRng, asc>=9)`
-  //   的 Boss 档，`MonsterSpecific.cpp:76-89` 那组 case 里真的有 `CORRUPT_HEART`），
-  //   **不是编的**——第四幕那一批会直接用上它。招式与出招规则那一批再写：
-  //   现在写等于写一份没有预言机的实现，而「未验证的实现比没有实现更糟」。
-  // ⚠ 它**走不到任何战斗**：`the_heart` 不在 `SUPPORTED_ENCOUNTERS` 里（`startCombat` 当场
-  //   拒绝），直接调 `initCombat` 也会在 rollMove 那一步抛错——那正是用例要断言的东西。
+  // ⚠ 第三十九~四十六批期间这条 def 里**只有血量、没有招式**，它当时唯一的用途是当
+  //   `test/sts-combat-rules.test.ts` 那条「未登记怪物 rollMove 会显式抛错」用例的样本。
+  //   本批把它填完整，那条用例的样本同时换成了 `slime_and_bear_event`（见那边的注释）。
+  // ⚠ `ascCalibrated` **没有置**：本批只做 asc0。`hpHigh` 与各处 `ascAmount` /
+  //   `minAscension` 照抄参考（第三十二~三十九批对第三幕也是这么办的），但它们在这一批
+  //   没有任何例数——`constructMonster` 在 `ascension > 0` 时照旧抛错。
   {
     id: "corrupt_heart",
     name: "腐化之心",
+    // MonsterIds.h:164 `{{750,750},{800,800}}`；`setRandomHp(hpRng, asc >= 9)`
+    //（MonsterSpecific.cpp:76-89 的 **Boss** 档，与六火 / 史莱姆王 / 冠军 / 迪卡多努同族）。
+    // ⚠ 上下界相同照样掷一次（`Random::random(int,int)` 无条件 `++counter`），不是 `hpNoRoll`。
+    // ⚠ **第二组区间（800/800，asc>=9）本批不写进 `hpHigh`**：`ascCalibrated` 没有置，
+    //   而「半填」会被 `data-tables.test.ts` 那条用例挡下（省略 = 还没校准，不是「没有第二组」）。
+    //   第四幕的爬升度那一批把两者一起补上，同第三十二~三十九批对第三幕的办法。
     hpMin: 750,
     hpMax: 750,
-    moves: [],
+    // ⚠ 开局 `preBattleAction` 一次上**两个** Power（MonsterSpecific.cpp:142-146）：
+    //     buff<MS::BEAT_OF_DEATH>(asc19 ? 2 : 1);
+    //     buff<MS::INVINCIBLE>(asc19 ? 200 : 300);
+    //   两条都在 `PRE_BATTLE_ACTION.corrupt_heart` 里，顺序照抄。
+    //   ⚠ **两条都进快照**（层数非 0），所以开局那一帧就是
+    //     `{"BEAT_OF_DEATH":1,"INVINCIBLE":300}`——与缓慢 / 反应那种「层数 0 看不见」的相反。
+    moves: [
+      {
+        // 血弹（MonsterSpecific.cpp:1828-1836）：
+        //     attackPlayerHelper(bc, 2, asc4 ? 15 : 12);
+        //     if (bc.getMonsterTurnNumber() % 3 == 0) setMove(CORRUPT_HEART_BUFF);
+        //     else                                    setMove(CORRUPT_HEART_ECHO);
+        //     bc.noOpRollMove();
+        // ⚠ 分档挂在**第三个实参**（段数）上，不是伤害上——`ascTimes`，与拜鸟的啄击、
+        //   尖塔长矛的贯穿同族（全参考只有这三处）。每击伤害是裸的 2。
+        //   抄成 `ascAmount` 不是「总伤害差一点」，而是段数错 → 玩家侧格挡 / 荆棘 /
+        //   火焰屏障触发的**次数**全错。
+        // ⚠ 收尾是第五形态（任意函数）：按**全局怪物回合数**分岔 + 同步 noOpRollMove，
+        //   见 `MOVE_TURN_END["corrupt_heart/blood_shots"]`。
+        id: "blood_shots",
+        name: "血弹",
+        effects: [
+          {
+            kind: "deal_damage_multi",
+            amount: 2,
+            times: 12,
+            ascTimes: [{ atLeast: 4, amount: 15 }],
+          },
+        ],
+        intent: "attack",
+      },
+      {
+        // 强化（MonsterSpecific.cpp:1838-1861）——整条 case 的前半段是一条专用原语
+        // `corrupt_heart_buff`（五个分支各是一个写死的字面量，见 `Effect` 那里的注释）。
+        // ⚠ 收尾是**同步的真 rollMove**（第六形态），不是 noOpRollMove。
+        // ⚠ 这一招**不在** `isMoveAttack` 白名单里。
+        id: "heart_buff",
+        name: "强化",
+        effects: [{ kind: "corrupt_heart_buff" }],
+        intent: "buff",
+      },
+      {
+        // 虚弱化（MonsterSpecific.cpp:1864-1874）：
+        //     bc.player.debuff<PS::VULNERABLE>(2, true);
+        //     bc.player.debuff<PS::WEAK>(2, true);
+        //     bc.player.debuff<PS::FRAIL>(2, true);
+        //     Actions::ShuffleTempCardIntoDrawPile(CardId::DAZED).actFunc(bc);
+        //     Actions::ShuffleTempCardIntoDrawPile(CardId::SLIMED).actFunc(bc);
+        //     Actions::ShuffleTempCardIntoDrawPile(CardId::WOUND).actFunc(bc);
+        //     Actions::ShuffleTempCardIntoDrawPile(CardId::BURN).actFunc(bc);
+        //     Actions::ShuffleTempCardIntoDrawPile(CardId::VOID).actFunc(bc);
+        //     rollMove(bc);
+        // ⚠ 五处照抄：
+        //  ① **八句全是同步的**（三句裸 `player.debuff`、五句 `.actFunc(bc)`），
+        //     所以 `sync: true` 到底；顺序照抄（三条减益在前、五张牌在后）。
+        //  ② 三条减益都是 `isSourceMonster = true`（当回合不递减）。
+        //  ③ 五张牌各**一张**（`ShuffleTempCardIntoDrawPile` 的 `count` 默认 1，
+        //     Actions.h:86），去向是**抽牌堆**，**每张各掷一次 `cardRandomRng`** 选插入位。
+        //     ⚠ 五张的顺序是承重的：五次 `cardRandomRng` 的上界是「当时抽牌堆的张数-1」，
+        //     而每插一张牌堆就长一张，所以换序会让此后每一次取值错位。
+        //  ④ 虚无（VOID）是第三十七批觉醒者的污泥带进来的那张，已在 `CARD` 映射里；
+        //     它与恍惚 / 伤口 / 灼伤一样**打不出**（`CardInstance.cpp:329` 的例外只放行黏液），
+        //     只有黏液进 `CARD_RULES`。
+        //  ⑤ 收尾是**同步的真 rollMove**（第六形态）。
+        // ⚠ 它**不在** `isMoveAttack` 白名单里（一点伤害都不带）。
+        // ⚠ 它只可能出在**第一个**怪物回合（出招规则的 `firstTurn()`），所以一场仗恰好一次。
+        id: "debilitate",
+        name: "虚弱化",
+        effects: [
+          { kind: "apply_power", power: "vulnerable", amount: 2, on: "target", sync: true },
+          { kind: "apply_power", power: "weak", amount: 2, on: "target", sync: true },
+          { kind: "apply_power", power: "frail", amount: 2, on: "target", sync: true },
+          { kind: "add_card", cardId: "dazed", pile: "draw", count: 1, sync: true },
+          { kind: "add_card", cardId: "slimed", pile: "draw", count: 1, sync: true },
+          { kind: "add_card", cardId: "wound", pile: "draw", count: 1, sync: true },
+          { kind: "add_card", cardId: "burn", pile: "draw", count: 1, sync: true },
+          { kind: "add_card", cardId: "void", pile: "draw", count: 1, sync: true },
+        ],
+        intent: "debuff",
+      },
+      {
+        // 回响（MonsterSpecific.cpp:1876-1884）：
+        //     attackPlayerHelper(bc, asc4 ? 45 : 40);
+        //     if (bc.getMonsterTurnNumber() % 3 == 0) setMove(CORRUPT_HEART_BUFF);
+        //     else                                    setMove(CORRUPT_HEART_BLOOD_SHOTS);
+        //     bc.noOpRollMove();
+        // ⚠ 收尾与血弹**只差 else 那一支**（这条回落到血弹、那条回落到回响），
+        //   所以两条各写各的，别合并成一个函数。
+        id: "heart_echo",
+        name: "回响",
+        effects: [{ kind: "deal_damage", amount: 40, ascAmount: [{ atLeast: 4, amount: 45 }] }],
+        intent: "attack",
+      },
+    ],
+    // 出招规则见 sts-combat.ts 的 `MOVE_RULES.corrupt_heart`（MonsterSpecific.cpp:3330-3340）：
+    // 首回合恒虚弱化，其后 `aiRng.randomBoolean()` 在血弹 / 回响之间二选一
+    // ——⚠ 顶部那次 `random(99)` 照掷但**结果被丢掉**，所以一次 rollMove 消耗 **2** 次 aiRng
+    // （与酸液史莱姆小同族）。
+    // ⚠ 参考在那一行注着 `// only called if not going to buff`：强化是由血弹 / 回响的收尾
+    //   `setMove` 定出来的，出招规则**永远不会**返回它。
+    intentRule: { scripted: [], weighted: [] },
+  },
+
+  // —— 第四幕：尖塔护盾（第四十七批）——
+  //
+  // ⚠⚠ 它是全参考项目**唯一**给玩家上被围攻（SURROUNDED）的东西，而被围攻的唯一读点
+  //   （`Monster::calculateDamageToPlayer`）读的是一个此前从没有人读过的字段
+  //   `Player::lastTargetedMonster`。详见 `PowerId` 的 "surrounded" 与
+  //   `CombatPlayer.lastTargetedMonster`。
+  {
+    id: "spire_shield",
+    name: "尖塔护盾",
+    // MonsterIds.h:206 `{{110,110},{125,125}}`；`setRandomHp(hpRng, asc >= 8)`
+    //（MonsterSpecific.cpp:99-100，**精英**那一档——⚠ 它是第四幕 Boss 战的一半，
+    //  但阈值跟着参考走的是 8 不是 9，与「按身份猜阈值」那条教训同源）。
+    // ⚠ 第二组（125/125，asc>=8）同上，本批不写。
+    hpMin: 110,
+    hpMax: 110,
+    // ⚠ 开局 `preBattleAction`（MonsterSpecific.cpp:261-265）：
+    //     bc.player.buff<PS::SURROUNDED>();        // ← 给**玩家**上的，纯 bool
+    //     buff<MS::ARTIFACT>(asc18 ? 2 : 1);
+    //   ⚠ 第一句是**全参考唯一一处怪物给玩家上 Power 的 `preBattleAction`**，
+    //     所以它不能写成数据表里的 `apply_power`（那是招式效果），只能在
+    //     `PRE_BATTLE_ACTION.spire_shield` 里手写。
+    moves: [
+      {
+        // 猛击（MonsterSpecific.cpp:1761-1774）：
+        //     attackPlayerHelper(bc, asc3 ? 14 : 12);
+        //     if (bc.player.orbSlots > 0) { bc.addToBot( Actions::SpireShieldDebuff() ); }
+        //     else                        { bc.player.debuff<PS::STRENGTH>(-1); }
+        //     …收尾…
+        // ⚠ 三处照抄：
+        //  ①⚠⚠ `orbSlots > 0` 那一支对铁甲**结构性不可达**（`orbSlots` 恒 0，只有机器人
+        //     才有球槽），而它的函数体是 `aiRng.randomBoolean() ? debuff<FOCUS>(-1)
+        //     : debuff<STRENGTH>(-1)`（Actions.cpp:529-537）——**多掷一次 aiRng**。
+        //     我们这边不实现它，理由与「参考没实现的卡不登记」同源：没有预言机。
+        //     ⚠ 记进报告：登记机器人时这一支要一起做。
+        //  ② else 那一支是**裸的** `bc.player.debuff<PS::STRENGTH>(-1)`——第三种写法
+        //     （连 `Actions::DebuffPlayer` 都没经过，与冠军的嘲讽同族），所以 `sync: true`。
+        //  ③ 它**过神器**（`Player::debuff` 的神器门排在写数值之前），所以玩家带神器时
+        //     这 1 点力量一点都不掉、还吃掉一层神器。
+        id: "shield_bash",
+        name: "猛击",
+        effects: [
+          { kind: "deal_damage", amount: 12, ascAmount: [{ atLeast: 3, amount: 14 }] },
+          { kind: "apply_power", power: "strength", amount: -1, on: "target", sync: true },
+        ],
+        intent: "attack",
+      },
+      {
+        // 加固（MonsterSpecific.cpp:1777-1786）：
+        //     addBlock(30);
+        //     bc.monsters.arr[1].addBlock(30);
+        //     …收尾…
+        // ⚠ 形状与迪卡的守护方阵**逐字对应**（自己在前、写死 1 号位的友军在后、
+        //   两句都是同步 `addBlock`、**一道门都没有**），所以复用同一对原语。
+        //   ⚠ 这里的 1 号位是尖塔长矛——编队建怪顺序是「护盾 0 号位、长矛 1 号位」
+        //   （MonsterGroup.cpp:SHIELD_AND_SPEAR），反了就静默错。
+        // ⚠ 这一招**不在** `isMoveAttack` 白名单里。
+        id: "fortify",
+        name: "加固",
+        effects: [
+          { kind: "gain_block", amount: 30, sync: true },
+          { kind: "gain_block_ally_fixed", amount: 30, noAliveGate: true },
+        ],
+        intent: "defend",
+      },
+      {
+        // 重砸（MonsterSpecific.cpp:1789-1795）：
+        //     const auto damageOutput = calculateDamageToPlayer(bc, asc3 ? 38 : 34);
+        //     bc.addToBot( Actions::AttackPlayer(idx, damageOutput) );
+        //     bc.addToBot( Actions::MonsterGainBlock(idx, asc18 ? 99 : damageOutput));
+        //     bc.addToBot( Actions::RollMove(idx) );
+        // ⚠ 格挡取的是**算完之后的伤害输出**（力量 / 被围攻 / 虚弱 / 易伤都已经乘进去、
+        //   并且已经截断成整数），不是基础的 34——所以它是一条专用原语
+        //   `deal_damage_block_equal`，不能拆成 `deal_damage` + `gain_block`。
+        id: "shield_smash",
+        name: "重砸",
+        effects: [
+          {
+            kind: "deal_damage_block_equal",
+            amount: 34,
+            ascAmount: [{ atLeast: 3, amount: 38 }],
+            ascBlock: [{ atLeast: 18, amount: 99 }],
+          },
+        ],
+        intent: "attack",
+      },
+    ],
+    // 出招规则见 sts-combat.ts 的 `MOVE_RULES.spire_shield`（MonsterSpecific.cpp:3342-3351）：
+    // `aiRng.randomBoolean()` 在加固 / 猛击之间二选一——⚠ 顶部那次 `random(99)` 照掷但
+    // 结果被丢掉，一次 rollMove 消耗 **2** 次 aiRng。**重砸永远不会被 roll 出来**，
+    // 它只由猛击 / 加固的收尾 `setMove` 定出来。
+    intentRule: { scripted: [], weighted: [] },
+  },
+
+  // —— 第四幕：尖塔长矛（第四十七批）——
+  {
+    id: "spire_spear",
+    name: "尖塔长矛",
+    // MonsterIds.h:207 `{{160,160},{180,180}}`；同样是 `setRandomHp(hpRng, asc >= 8)`。
+    // ⚠ 第二组（180/180，asc>=8）同上，本批不写。
+    hpMin: 160,
+    hpMax: 160,
+    // ⚠ 开局 `preBattleAction`（MonsterSpecific.cpp:267-270）只有一句
+    //   `buff<MS::ARTIFACT>(asc18 ? 2 : 1)`——**没有**护盾那句被围攻。两只怪各写各的。
+    moves: [
+      {
+        // 灼烧打击（MonsterSpecific.cpp:1797-1810）：
+        //     attackPlayerHelper(bc, asc3 ? 6 : 5, 2);
+        //     if (asc18) { bc.addToBot( Actions::MakeTempCardInDrawPile(CardId::BURN, 2, false) ); }
+        //     else       { bc.addToBot( Actions::MakeTempCardInDiscard(CardId::BURN, 2) ); }
+        //     …收尾…
+        // ⚠⚠ **asc18 那一支在参考里是空操作**：`Actions::MakeTempCardInDrawPile` 的循环体是
+        //   `if (shuffleInto) { … } // todo else`（Actions.cpp:239-250），而这里传的
+        //   `shuffleInto` 就是 `false` ⇒ 一张灼伤都不塞。这是参考的一处「没实现完」，
+        //   **记进报告、不自己拍板**（三条判据只过第 ①：真实游戏 asc18 会把灼伤塞进抽牌堆，
+        //   但补上它没有预言机——预言机就是参考本身）。
+        //   本批只做 asc0，`ascCalibrated` 未置 ⇒ asc>0 当场抛错，所以这里**只写 else 那一支**。
+        //   TODO(后续PR): 第四幕的爬升度那一批要把这道 asc18 分岔连同参考那处一起裁定。
+        // ⚠ else 那一支去向是**弃牌堆**（`MakeTempCardInDiscard`，一次 RNG 都不掷），
+        //   两张，**入队**。
+        id: "burn_strike",
+        name: "灼烧打击",
+        effects: [
+          {
+            kind: "deal_damage_multi",
+            amount: 5,
+            times: 2,
+            ascAmount: [{ atLeast: 3, amount: 6 }],
+          },
+          { kind: "add_card", cardId: "burn", pile: "discard", count: 2 },
+        ],
+        intent: "attack",
+      },
+      {
+        // 穿刺（MonsterSpecific.cpp:1812-1821）：
+        //     buff<MS::STRENGTH>(2);
+        //     bc.monsters.arr[0].buff<MS::STRENGTH>(2);
+        //     …收尾…
+        // ⚠⚠ 它与多努的能量之环**是同一条原语**（`buff_ally` 本身就是「0 号位 + 自己」
+        //   两句，见 sts-combat.ts 那一格），所以这里只写**一条**效果——写成
+        //   「`apply_power on:self` + `buff_ally`」会让长矛自己拿 4 点力量。
+        // ⚠ 两句都是同步 `buff`（累加）、**一道门都没有**（`noAliveGate`）。
+        //   ⚠ 0 号位是尖塔护盾。护盾死了之后这一半照样往尸体上加力量，快照里逐帧可见。
+        // ⚠ 唯一与多努不同的是**两句的先后**：多努写的是「先 arr[0] 再自己」，长矛是
+        //   「先自己再 arr[0]」（MonsterSpecific.cpp:1813-1814）。两句作用在**不同对象**
+        //   上、都是 `+=`，而长矛恒在 1 号位，所以顺序当前不可观察——共用一条原语成立。
+        id: "piercer",
+        name: "穿刺",
+        effects: [{ kind: "buff_ally", power: "strength", amount: 2, noAliveGate: true }],
+        intent: "buff",
+      },
+      {
+        // 贯穿（MonsterSpecific.cpp:1823-1826）：`attackPlayerHelper(bc, 10, asc3 ? 4 : 3);`
+        // ⚠ 分档挂在**段数**上（`ascTimes`），每击伤害是裸的 10——全参考三处之一
+        //   （另两处是拜鸟的啄击与腐化之心的血弹）。
+        id: "skewer",
+        name: "贯穿",
+        effects: [
+          {
+            kind: "deal_damage_multi",
+            amount: 10,
+            times: 3,
+            ascTimes: [{ atLeast: 3, amount: 4 }],
+          },
+        ],
+        intent: "attack",
+      },
+    ],
+    // 出招规则见 sts-combat.ts 的 `MOVE_RULES.spire_spear`（MonsterSpecific.cpp:3353-3362）：
+    // 首回合恒灼烧打击，其后 `aiRng.randomBoolean()` 在穿刺 / 灼烧打击之间二选一。
+    // ⚠ 与护盾的差别是**多一道 `firstTurn()`**，两只怪的规则别互相照抄。
+    intentRule: { scripted: [], weighted: [] },
+  },
+
+  // —— 事件编队 `MASKED_BANDITS_EVENT` 的三只（第四十七批，怪物线的最后三只）——
+  //
+  // ⚠ 三只的出招规则**都是常量**（各返回一个招式，MonsterSpecific.cpp:2996-3009），
+  //   `roll` 掷了但一个字都不读；此后整条链全靠 `takeTurn` 的收尾 `setMove` 推进，
+  //   而且**三只没有一条排 RollMove / NoOpRollMove**——所以这个编队的 `rng.ai` 计数器
+  //   在开局那三次 rollMove 之后**再也不动**。与迪卡多努那个「全员静态循环」的编队同族。
+  {
+    id: "bear",
+    name: "熊",
+    // MonsterIds.h:156 `{{38,52},{40,44}}`；`setRandomHp(hpRng, asc >= 7)`（普通怪那一档）。
+    // ⚠ 高档区间**比低档窄**（40~44 vs 38~52），不是「整体上移」——照抄，别按印象改。
+    // ⚠ 第二组（40~44，asc>=7）同上，本批不写。
+    hpMin: 38,
+    hpMax: 52,
+    // ⚠ 它在 `Monster::preBattleAction` 的 switch 里**压根没有 case** ⇒ 开局身上一个 Power
+    //   都没有。别按「事件编队」给它加东西。
+    moves: [
+      {
+        // 熊抱（MonsterSpecific.cpp:405-408）：`bc.player.debuff<PS::DEXTERITY>(asc17 ? -4 : -2);`
+        // ⚠ 裸的同步 `player.debuff`（第三种写法），而且是**负数**——`Player::debuff<DEXTERITY>`
+        //   直接 `dexterity += amount`，所以这是「减敏捷」而不是「上一层减益」。
+        //   它照样**过神器**（神器门排在写数值之前）。
+        id: "bear_hug",
+        name: "熊抱",
+        effects: [
+          {
+            kind: "apply_power",
+            power: "dexterity",
+            amount: -2,
+            on: "target",
+            sync: true,
+            ascAmount: [{ atLeast: 17, amount: -4 }],
+          },
+        ],
+        intent: "debuff",
+      },
+      {
+        // 猛扑（MonsterSpecific.cpp:410-414）：
+        //     attackPlayerHelper(bc, asc2 ? 10 : 9);
+        //     bc.addToBot( Actions::MonsterGainBlock(idx, 9) );
+        // ⚠ 格挡是**入队**的（`addToBot`，省略 `sync`），而且是裸的 9、没有分档。
+        id: "bear_lunge",
+        name: "猛扑",
+        effects: [
+          { kind: "deal_damage", amount: 9, ascAmount: [{ atLeast: 2, amount: 10 }] },
+          { kind: "gain_block", amount: 9 },
+        ],
+        intent: "attack",
+      },
+      {
+        // 撕咬（MonsterSpecific.cpp:416-419）：`attackPlayerHelper(bc, asc2 ? 20 : 18);`
+        id: "maul",
+        name: "撕咬",
+        effects: [{ kind: "deal_damage", amount: 18, ascAmount: [{ atLeast: 2, amount: 20 }] }],
+        intent: "attack",
+      },
+    ],
+    // 出招规则见 sts-combat.ts 的 `MOVE_RULES.bear`：**恒返回熊抱**，roll 被掷但不读。
+    intentRule: { scripted: [], weighted: [] },
+  },
+  {
+    id: "pointy",
+    name: "尖头怪",
+    // MonsterIds.h:187 `{{30,30},{34,34}}`；`setRandomHp(hpRng, asc >= 7)`。
+    // ⚠ 第二组（34/34，asc>=7）同上，本批不写。
+    hpMin: 30,
+    hpMax: 30,
+    moves: [
+      {
+        // 攻击（MonsterSpecific.cpp:421-423）：`attackPlayerHelper(bc, asc2 ? 6 : 5, 2);`
+        // ⚠⚠ 整条 case **只有这一句**——效果之后**什么收尾都没有**（既不 setMove、
+        //   也不排 RollMove、也不 noOpRollMove）。所以尖头怪从第一次 rollMove 之后
+        //   意图就再也不变，全场只出这一招。收尾登记在 `MOVE_TURN_END` 里写 `"none"`。
+        id: "pointy_attack",
+        name: "攻击",
+        effects: [
+          {
+            kind: "deal_damage_multi",
+            amount: 5,
+            times: 2,
+            ascAmount: [{ atLeast: 2, amount: 6 }],
+          },
+        ],
+        intent: "attack",
+      },
+    ],
+    intentRule: { scripted: [], weighted: [] },
+  },
+  {
+    id: "romeo",
+    name: "罗密欧",
+    // MonsterIds.h:192 `{{35,39},{37,41}}`；`setRandomHp(hpRng, asc >= 7)`。
+    // ⚠ 第二组（37~41，asc>=7）同上，本批不写。
+    hpMin: 35,
+    hpMax: 39,
+    moves: [
+      {
+        // 嘲讽（MonsterSpecific.cpp:436-438）：整条 case **只有收尾**
+        //（`setMove(ROMEO_AGONIZING_SLASH)`），一点效果都没有——纯粹的「白站一回合」。
+        // ⚠ 效果表为空是**有意的**，不是漏抄。
+        id: "mock",
+        name: "嘲讽",
+        effects: [],
+        intent: "unknown",
+      },
+      {
+        // 苦痛斩（MonsterSpecific.cpp:425-429）：
+        //     attackPlayerHelper(bc, asc2 ? 12 : 10);
+        //     bc.addToBot( Actions::DebuffPlayer<PS::WEAK>(asc17 ? 3 : 2, true) );
+        // ⚠ 虚弱是**入队**的（省略 `sync`），`isSourceMonster = true`（当回合不递减）。
+        id: "agonizing_slash",
+        name: "苦痛斩",
+        effects: [
+          { kind: "deal_damage", amount: 10, ascAmount: [{ atLeast: 2, amount: 12 }] },
+          {
+            kind: "apply_power",
+            power: "weak",
+            amount: 2,
+            on: "target",
+            ascAmount: [{ atLeast: 17, amount: 3 }],
+          },
+        ],
+        intent: "attack",
+      },
+      {
+        // 十字斩（MonsterSpecific.cpp:431-434）：`attackPlayerHelper(bc, asc2 ? 17 : 15);`
+        id: "cross_slash",
+        name: "十字斩",
+        effects: [{ kind: "deal_damage", amount: 15, ascAmount: [{ atLeast: 2, amount: 17 }] }],
+        intent: "attack",
+      },
+    ],
+    // 出招规则见 sts-combat.ts 的 `MOVE_RULES.romeo`：**恒返回嘲讽**，roll 被掷但不读。
     intentRule: { scripted: [], weighted: [] },
   },
 
@@ -3994,8 +4404,8 @@ const ENCOUNTERS: Record<string, EncounterDef> = {
   // —— 事件触发的战斗遭遇 ——
   // 斗兽场：工头 + 地精头目，事件触发的硬仗（胜利发遗物）。
   colosseum: { id: "colosseum", enemies: ["taskmaster", "gremlin_nob"], isBoss: false },
-  // 蒙面强盗：3 名劫掠者（会偷金币、烟雾弹逃跑）。
-  masked_bandits: { id: "masked_bandits", enemies: ["mugger", "mugger", "looter"], isBoss: false },
+  // ⚠ 蒙面强盗那条**第四十七批搬到下面去了**（改名成 `masked_bandits_event` 并按参考
+  //   改了成员：旧的「劫掠者 ×2 + 抢劫者」是旧近似表编的，参考建的是尖头怪 / 罗密欧 / 熊）。
   // 神秘球：2 只暗球游荡者（事件触发，胜利发遗物）。
   mysterious_sphere: {
     id: "mysterious_sphere",
@@ -4152,15 +4562,36 @@ const ENCOUNTERS: Record<string, EncounterDef> = {
   the_guardian: { id: "the_guardian", enemies: ["the_guardian"], isBoss: true },
   hexaghost: { id: "hexaghost", enemies: ["hexaghost"], isBoss: true },
   slime_boss: { id: "slime_boss", enemies: ["slime_boss"], isBoss: true },
-  // 第四幕：腐化之心（`MonsterEncounter::THE_HEART`，MonsterGroup.cpp 里是一句
-  // `createMonster(bc, MonsterId::CORRUPT_HEART);`）。**整个第四幕都还没有登记**，
-  // 它不在 `SUPPORTED_ENCOUNTERS` 里、`corrupt_heart` 也不在 `MOVE_RULES` 里。
+  // —— 第四幕与事件编队（第四十七批乙，编队线 57 / 63、怪物线 65 / 65 收官）——
   //
-  // ⚠⚠ **它在这里的唯一用途是当那两条「未迁移 / 未登记」用例的样本**，第三十九批从
-  //   `donu_deca` 换过来的（那个编队本批装了）。判据与换法见 WORKFLOW「附：踩过的坑」，
-  //   本批重新评估的结论见 `test/sts-combat-wiring.test.ts` 里那条注释。
+  // 第四幕：腐化之心（`MonsterEncounter::THE_HEART`，MonsterGroup.cpp 里是一句
+  // `createMonster(bc, MonsterId::CORRUPT_HEART);`）——单怪。
+  // ⚠ 第三十九~四十六批期间它是那两条「未迁移 / 未登记」用例的样本；本批登记它，样本
+  //   换成了 `slime_and_bear_event`（判据与换法见 WORKFLOW「附：踩过的坑」与
+  //   `test/sts-combat-wiring.test.ts` 里那条注释）。
   // ⚠ **不进任何编队池**：run 层还打不了第四幕。
   the_heart: { id: "the_heart", enemies: ["corrupt_heart"], isBoss: true },
+  // 第四幕的另一场：尖塔护盾 + 尖塔长矛（MonsterGroup.cpp:SHIELD_AND_SPEAR）：
+  //     createMonster(bc, MonsterId::SPIRE_SHIELD);   // arr[0]
+  //     createMonster(bc, MonsterId::SPIRE_SPEAR);    // arr[1]
+  // ⚠⚠ **顺序是承重的**：护盾的加固给 `arr[1]` 加格挡、长矛的穿刺给 `arr[0]` 加力量，
+  //   两条写死的下标都依赖这个顺序（与迪卡多努那对同族）。
+  shield_and_spear: {
+    id: "shield_and_spear",
+    enemies: ["spire_shield", "spire_spear"],
+    isBoss: true,
+  },
+  // 蒙面强盗（`MonsterEncounter::MASKED_BANDITS_EVENT`，MonsterGroup.cpp）：
+  //     createMonster(bc, MonsterId::POINTY);   // arr[0]
+  //     createMonster(bc, MonsterId::ROMEO);    // arr[1]
+  //     createMonster(bc, MonsterId::BEAR);     // arr[2]
+  // ⚠ 顺序与编队名（「熊 / 尖头 / 罗密欧」的常见叫法）无关，照抄参考的建怪序。
+  // ⚠ **不进任何编队池**：它是事件专属编队，run 层的事件还没接线。
+  masked_bandits_event: {
+    id: "masked_bandits_event",
+    enemies: ["pointy", "romeo", "bear"],
+    isBoss: false,
+  },
 };
 
 export function getEncounterDef(id: string): EncounterDef {

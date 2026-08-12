@@ -891,6 +891,23 @@ export type CombatPlayer = {
    * ⚠ 只有 `attacked`（怪物攻击）这条路写它；`damage` / `loseHp`（灼伤、自伤）**不写**。
    */
   lastAttackUnblockedDamage: number;
+  /**
+   * 上一次「需要指定目标的牌」打在了哪个下标上（对齐 `Player::lastTargetedMonster`，
+   * Player.h:47）。**初值是 1，不是 0**——参考的成员初始化器写死 `= 1`。
+   *
+   * ⚠ 写入点只有一处，而且带两道门（BattleContext.cpp:864-874）：
+   *     if (canUseCard) { … if (c.requiresTarget()) { player.lastTargetedMonster = item.target; } … }
+   *   ① 在 `canUseCard` 里面——被 `canUse` 挡下的牌（浩劫翻出的诅咒 / 状态牌）不写；
+   *   ② `requiresTarget()` 就是 `cardTargetsEnemy(id, upgraded)`，与我们的 `targetedOf`
+   *      同源——技能 / 能力 / 群伤牌一律不写，所以它可以在整场仗里停在 1 不动。
+   * ⚠ 它排在紧接着的目标有效性判断**之前**：目标死了、这张牌没打出去，这个字段照样已经改了。
+   *
+   * ⚠⚠ 唯一的读者是被围攻（SURROUNDED，第四十七批的尖塔护盾）：
+   *   `Monster::calculateDamageToPlayer` 的
+   *     facingSelf = (lastTargetedMonster == idx) || arr[lastTargetedMonster].isDeadOrEscaped()
+   *   在此之前它是纯粹的死字段，所以第四十七批之前这里只有一条 `TODO(后续PR)`。
+   */
+  lastTargetedMonster: number;
 };
 
 // ============================================================================
@@ -1071,6 +1088,22 @@ function lastMoveBefore(m: CombatMonster, moveId: string): boolean {
  */
 function eitherLastTwo(m: CombatMonster, moveId: string): boolean {
   return m.moveHistory[0] === moveId || m.moveHistory[1] === moveId;
+}
+
+/**
+ * 对齐 `lastMoveBefore(MonsterMoveId::INVALID)`（**moveHistory[1] 还没被写过**）。
+ *
+ * 参考的 `moveHistory` 是一个初值全 `INVALID` 的定长两格数组，所以「上上一格是 INVALID」
+ * 等价于「这只怪至多出过一次手」。我们这边 `moveHistory` 是 `string[]`（最近的在前），
+ * 于是同一件事就是 `moveHistory[1] === undefined`。
+ *
+ * ⚠ 唯一的用户是尖塔护盾的猛击与加固（第四十七批，MonsterSpecific.cpp:1768 / :1780）：
+ *   `if (lastMoveBefore(SPIRE_SHIELD_SMASH) || lastMoveBefore(INVALID))`——两个析取项，
+ *   第二项专门管「这才是它第二次出手，上上格还是空的」那一帧。漏掉它会让护盾第二次
+ *   出手就滚进重砸，整条意图链从第二个怪物回合起全错。
+ */
+function lastMoveBeforeInvalid(m: CombatMonster): boolean {
+  return m.moveHistory[1] === undefined;
 }
 
 const MOVE_RULES: Record<string, MoveForRoll> = {
@@ -2647,6 +2680,59 @@ const MOVE_RULES: Record<string, MoveForRoll> = {
   //     本批选牌组要解决的是别的事（见 TODOS「牌组先量再定」）。
   deca: () => "deca_beam",
   donu: () => "circle_of_power",
+
+  // —— 第四十七批乙：第四幕与蒙面强盗，`MOVE_RULES` 的最后六只（65 / 65）——
+  //
+  // 腐化之心（MonsterSpecific.cpp:3330-3340）：
+  //     if (firstTurn()) { return CORRUPT_HEART_DEBILITATE; }
+  //     // only called if not going to buff
+  //     if (bc.aiRng.randomBoolean()) { return CORRUPT_HEART_BLOOD_SHOTS; }
+  //     else                          { return CORRUPT_HEART_ECHO; }
+  // ⚠ 三处照抄：
+  //  ①⚠ **顶部那次 `random(99)` 照掷、结果被丢掉**，这里又掷一次 `randomBoolean()`
+  //     ——所以一次 rollMove 消耗 **2 次** aiRng（与酸液史莱姆小同族）。
+  //     写成「读 roll 分档」会少掷一次，`rng.ai` 计数器当场对不上。
+  //  ② 参考那行注释 `// only called if not going to buff` 是在说：**强化永远不会被
+  //     roll 出来**，它只由血弹 / 回响的收尾 `setMove` 定出来（见 `MOVE_TURN_END`）。
+  //  ③ `firstTurn()` 读的是 `moveHistory[0] == INVALID`，所以虚弱化恰好出现在第一个
+  //     怪物回合，一场仗一次。
+  corrupt_heart: (bc, m) => {
+    if (firstTurn(m)) {
+      return "debilitate";
+    }
+    return bc.rng.aiRng.randomBoolean() ? "blood_shots" : "heart_echo"; // ★ 消耗一次 aiRng
+  },
+
+  // 尖塔护盾（MonsterSpecific.cpp:3342-3351）：
+  //     if (bc.aiRng.randomBoolean()) { return SPIRE_SHIELD_FORTIFY; }
+  //     else                          { return SPIRE_SHIELD_BASH; }
+  // ⚠ 与长矛的差别是**没有 `firstTurn()` 那道门**——两只怪的规则并排放着，照抄邻居必错。
+  // ⚠ 重砸（SMASH）**不在这条规则里**：它只由猛击 / 加固的收尾 `setMove` 定出来，
+  //   参考在这条 case 上方还并排注了 `// 1 bash / 2 fortify / 3 smash` 三行。
+  // ⚠ 同样是「掷 99 丢掉 + 再掷一次 randomBoolean」＝ **2 次** aiRng。
+  spire_shield: (bc) => (bc.rng.aiRng.randomBoolean() ? "fortify" : "shield_bash"), // ★ 一次 aiRng
+
+  // 尖塔长矛（MonsterSpecific.cpp:3353-3362）：
+  //     if (firstTurn()) { return SPIRE_SPEAR_BURN_STRIKE; }
+  //     if (bc.aiRng.randomBoolean()) { return SPIRE_SPEAR_PIERCER; }
+  //     else                          { return SPIRE_SPEAR_BURN_STRIKE; }
+  // ⚠ `firstTurn()` 那一支**不掷** `randomBoolean`，所以开局那次 rollMove 只消耗 1 次
+  //   aiRng（顶部那次），其后每次 2 次。护盾没有这道门 —— 两只的计数器从第一帧就不同。
+  spire_spear: (bc, m) => {
+    if (firstTurn(m)) {
+      return "burn_strike";
+    }
+    return bc.rng.aiRng.randomBoolean() ? "piercer" : "burn_strike"; // ★ 消耗一次 aiRng
+  },
+
+  // 蒙面强盗三只（MonsterSpecific.cpp:2996-3009）：三条 case 各只有一句 `return`，
+  // 与迪卡 / 多努同形——**roll 被掷出来但一个字都不读**，一次 rollMove 恒消耗 1 次 aiRng。
+  // ⚠ 而且这三只的 `takeTurn` **没有一条排 RollMove / NoOpRollMove**（全是同步 setMove
+  //   或干脆什么都没有，见 `MOVE_TURN_END`），所以整个编队的 `rng.ai` 计数器在开局那
+  //   三次 rollMove 之后**再也不动**。
+  bear: () => "bear_hug",
+  romeo: () => "mock",
+  pointy: () => "pointy_attack",
 };
 
 // ============================================================================
@@ -3653,6 +3739,105 @@ const MOVE_TURN_END: Record<string, MoveTurnEnd> = {
   "deca/square_of_protection": { setMove: "deca_beam" },
   "donu/donu_beam": { setMove: "circle_of_power" },
   "donu/circle_of_power": { setMove: "donu_beam" },
+
+  // —— 第四十七批乙：第四幕的两只（尖塔护盾 / 尖塔长矛）——
+  //
+  // 六条 case **两种形态并存**（MonsterSpecific.cpp:1761-1826），照抄别统一：
+  //   猛击 / 加固 / 灼烧打击 / 穿刺   条件 `setMove` + **同步** `bc.noOpRollMove()`
+  //                                   —— 第五形态（两件事都做），静态形态一个都表达不了
+  //   重砸 / 贯穿                     `addToBot(Actions::RollMove(idx));` —— 默认 `"roll"`，不写进来
+  //
+  // ⚠⚠ **两只怪的条件长得像，其实不一样，这是本批最容易抄串的一处**：
+  //   护盾是 `lastMoveBefore(SMASH) || lastMoveBefore(INVALID)`（**两个析取项**），
+  //   长矛是 `lastMoveBefore(SKEWER)`（**一个**）。差别在于护盾要处理「第二次出手时
+  //   上上格还是空的」那一帧——那一帧长矛不需要，因为它的首招被 `firstTurn()` 钉死成
+  //   灼烧打击、第二次出手时上上格必然已经写过。
+  // ⚠ 两条真侧的 `setMove` 也不同：护盾在猛击后进加固、在加固后进猛击（两条互换），
+  //   长矛在灼烧打击后进穿刺、在穿刺后进灼烧打击。假侧则**都是**「进那条大招」
+  //   （重砸 / 贯穿）——于是两只都是「小招小招大招」的三拍循环。
+  "spire_shield/shield_bash": (bc, m) => {
+    if (lastMoveBefore(m, "shield_smash") || lastMoveBeforeInvalid(m)) {
+      setMove(m, "fortify");
+    } else {
+      setMove(m, "shield_smash");
+    }
+    bc.rng.aiRng.random(99); // ★ 消耗一次 aiRng（noOpRollMove，**同步**）
+  },
+  "spire_shield/fortify": (bc, m) => {
+    if (lastMoveBefore(m, "shield_smash") || lastMoveBeforeInvalid(m)) {
+      setMove(m, "shield_bash");
+    } else {
+      setMove(m, "shield_smash");
+    }
+    bc.rng.aiRng.random(99); // ★ 消耗一次 aiRng（noOpRollMove，**同步**）
+  },
+  "spire_spear/burn_strike": (bc, m) => {
+    if (lastMoveBefore(m, "skewer")) {
+      setMove(m, "piercer");
+    } else {
+      setMove(m, "skewer");
+    }
+    bc.rng.aiRng.random(99); // ★ 消耗一次 aiRng（noOpRollMove，**同步**）
+  },
+  "spire_spear/piercer": (bc, m) => {
+    if (lastMoveBefore(m, "skewer")) {
+      setMove(m, "burn_strike");
+    } else {
+      setMove(m, "skewer");
+    }
+    bc.rng.aiRng.random(99); // ★ 消耗一次 aiRng（noOpRollMove，**同步**）
+  },
+
+  // —— 第四十七批乙：腐化之心 ——
+  //
+  // 四条 case **三种形态并存**（MonsterSpecific.cpp:1828-1884）：
+  //   血弹 / 回响   按**全局怪物回合数**分岔的 `setMove` + **同步** `bc.noOpRollMove()`
+  //   强化 / 虚弱化 **同步的真** `rollMove(bc)` —— 第六形态（掷 `aiRng.random(99)` 并选
+  //                 新意图，而出招规则里还会再掷一次 `randomBoolean`）
+  //
+  // ⚠⚠ **`% 3 == 0` 读的是「执行这一招的那个怪物回合」的编号**，而不是下一个：参考在
+  //   `takeTurn` 里读 `bc.getMonsterTurnNumber()`，那一刻本回合的计数已经生效。于是
+  //   第 2 个怪物回合的血弹（2 % 3 != 0）排回响、第 3 个怪物回合的回响（3 % 3 == 0）
+  //   排强化 —— 强化因此落在第 **4** 个怪物回合执行，而它自己读的 `buffCount =
+  //   getMonsterTurnNumber() / 3` 那时是 4/3 = **1**。两处的回合数差一个，照抄别对齐。
+  // ⚠ 两条的 else 分支**互为对方**（血弹回落到回响、回响回落到血弹），所以两条各写各的。
+  "corrupt_heart/blood_shots": (bc, m) => {
+    setMove(m, getMonsterTurnNumber(bc) % 3 === 0 ? "heart_buff" : "heart_echo");
+    bc.rng.aiRng.random(99); // ★ 消耗一次 aiRng（noOpRollMove，**同步**）
+  },
+  "corrupt_heart/heart_echo": (bc, m) => {
+    setMove(m, getMonsterTurnNumber(bc) % 3 === 0 ? "heart_buff" : "blood_shots");
+    bc.rng.aiRng.random(99); // ★ 消耗一次 aiRng（noOpRollMove，**同步**）
+  },
+  // ⚠ 这两条是**真** rollMove（`rollMove(bc)`），不是 noOpRollMove：它会掷一次
+  //   `aiRng.random(99)`（结果丢弃）**再**进出招规则掷一次 `randomBoolean` —— 一次收尾
+  //   消耗 **2** 次 aiRng。写成 `"no_op_roll"` 会少掷一次且意图不变。
+  "corrupt_heart/heart_buff": (bc, m) => {
+    rollMove(bc, m); // ★ 消耗至少一次 aiRng（同步的真 rollMove）
+  },
+  "corrupt_heart/debilitate": (bc, m) => {
+    rollMove(bc, m); // ★ 消耗至少一次 aiRng（同步的真 rollMove）
+  },
+
+  // —— 第四十七批乙：蒙面强盗三只 ——
+  //
+  // 七条 case 里六条是**同步 `setMove`**（第一形态），一条**什么都没有**
+  // （MonsterSpecific.cpp:405-438）——整个编队一次 RollMove / NoOpRollMove 都不排。
+  //
+  // ⚠ 熊是三拍循环，但**不是回到起点**：熊抱 → 猛扑 → 撕咬 → **猛扑** → 撕咬 → …
+  //   （撕咬的收尾是 `setMove(BEAR_LUNGE)`，不是熊抱）。熊抱一场仗只出一次。
+  // ⚠ 罗密欧同理：嘲讽 → 苦痛斩 → 十字斩 → 苦痛斩 → …，嘲讽也只出一次。
+  // ⚠⚠ 尖头怪那条 case **只有 `attackPlayerHelper` 一句**，效果之后什么都没有——
+  //   与大史莱姆的分裂、抢劫者的逃跑同为 `"none"` 形态。它因此整场只出这一招，
+  //   而且 `moveHistory` 从第一次 rollMove 之后再也不推进。
+  //   判据仍是那句老话：**照着 case 从上到下读，效果之外的每一句都要有地方放**。
+  "bear/bear_hug": { setMove: "bear_lunge" },
+  "bear/bear_lunge": { setMove: "maul" },
+  "bear/maul": { setMove: "bear_lunge" },
+  "pointy/pointy_attack": "none",
+  "romeo/mock": { setMove: "agonizing_slash" },
+  "romeo/agonizing_slash": { setMove: "cross_slash" },
+  "romeo/cross_slash": { setMove: "agonizing_slash" },
 };
 
 /**
@@ -5505,6 +5690,44 @@ const PRE_BATTLE_ACTION: Record<string, PreBattleAction> = {
   // ⚠ `ARTIFACT` 会进 trace 的怪物 powers 快照（`ARTIFACT: 2`），漏了当场抛「未映射的 power」。
   deca: decaDonuPreBattle,
   donu: decaDonuPreBattle,
+
+  // —— 第四十七批乙：第四幕的三只 ——
+  //
+  // 腐化之心（MonsterSpecific.cpp:142-146）：
+  //     buff<MS::BEAT_OF_DEATH>(asc19 ? 2 : 1);
+  //     buff<MS::INVINCIBLE>(asc19 ? 200 : 300);
+  // ⚠ 三处照抄：
+  //  ① 顺序（死亡节拍在前、无敌在后）；
+  //  ②⚠⚠ **无敌的 asc19 档是变小**（300 → 200，怪更难打是因为「每回合能被打掉的血更少」），
+  //     与「爬升度让数值变大」的直觉相反——照抄，别顺手写成 `asc19 ? 400 : 300`；
+  //  ③ **两条都进快照**（层数非 0），所以开局那一帧就是 `{"BEAT_OF_DEATH":1,"INVINCIBLE":300}`。
+  //     与缓慢 / 反应 / 时间扭曲那种「层数 0 看不见」的第三种写法**不同族**。
+  corrupt_heart: (bc, m) => {
+    addPower(m.powers, "beat_of_death", bc.ascension >= 19 ? 2 : 1);
+    addPower(m.powers, "invincible", bc.ascension >= 19 ? 200 : 300);
+  },
+
+  // 尖塔护盾（MonsterSpecific.cpp:261-265）：
+  //     bc.player.buff<PS::SURROUNDED>();
+  //     buff<MS::ARTIFACT>(asc18 ? 2 : 1);
+  // ⚠⚠ **第一句是全参考唯一一处「怪物的 preBattleAction 给玩家上 Power」**，所以它
+  //   只能写在这里，不能进数据表的 `effects`（那张表的 `on: "target"` 是招式效果的目标）。
+  // ⚠ 被围攻是**纯 bool**（`Player::debuff` 那条「只置位、不写 statusMap」的名单，
+  //   Player.h:335-343），harness 恒输出 `SURROUNDED: 1` ⇒ 我们这边层数写 1。
+  // ⚠ 分档是 **asc18**（精英那一族 `getTriIdx(asc, 3, 18)` 的高阈值），不是 asc17 也不是 19。
+  spire_shield: (bc, m) => {
+    addPower(bc.player.powers, "surrounded", 1);
+    addPower(m.powers, "artifact", bc.ascension >= 18 ? 2 : 1);
+  },
+
+  // 尖塔长矛（MonsterSpecific.cpp:267-270）：只有 `buff<MS::ARTIFACT>(asc18 ? 2 : 1);`
+  // ⚠ **没有**护盾那句被围攻——两只并排放着、只差第一句，照抄邻居必错。
+  spire_spear: (bc, m) => {
+    addPower(m.powers, "artifact", bc.ascension >= 18 ? 2 : 1);
+  },
+
+  // ⚠ 熊 / 尖头怪 / 罗密欧在 `Monster::preBattleAction` 的 switch 里**压根没有 case**，
+  //   所以这里三只一条都不写（同斥力怪那条注释：别按「事件编队」给它们加东西）。
 };
 
 type EncounterSetup = (bc: BattleContext) => void;
@@ -5959,6 +6182,34 @@ const MONSTER_ATTACK_MOVES: ReadonlySet<string> = new Set([
   //   但键是 `defId/moveId`，所以两条互不干扰。
   "deca/deca_beam",
   "donu/donu_beam",
+  // —— 第四十七批乙：第四幕与蒙面强盗，**白名单就此抄完**（`MonsterMoves.h:416-535`
+  //   的每一格现在都有宿主）——
+  //
+  // 腐化之心（`:444-445`）：四招里**只有两条在**——
+  //   `CORRUPT_HEART_BLOOD_SHOTS` / `CORRUPT_HEART_ECHO` → 在（都走 `attackPlayerHelper`）；
+  //   `CORRUPT_HEART_DEBILITATE` / `CORRUPT_HEART_BUFF`  → **不在**（一点伤害都不带）。
+  // ⚠ 虚弱化上三层减益 + 塞五张牌却不算攻击，判据仍是那一条：**有没有走
+  //   `attackPlayerHelper` / `Actions::AttackPlayer`**。
+  "corrupt_heart/blood_shots",
+  "corrupt_heart/heart_echo",
+  // 尖塔护盾（`:508-509`）：猛击与重砸在，**加固不在**。
+  // ⚠ 重砸走的是拆开写的 `calculateDamageToPlayer` + `Actions::AttackPlayer`（不是
+  //   `attackPlayerHelper`），照样算攻击——那正是第三十二批那条更强判据的措辞
+  //   「走 `attackPlayerHelper` / `Actions::AttackPlayer` 的那些招」。
+  "spire_shield/shield_bash",
+  "spire_shield/shield_smash",
+  // 尖塔长矛（`:510-511`）：灼烧打击与贯穿在，**穿刺不在**（它只加力量）。
+  "spire_spear/burn_strike",
+  "spire_spear/skewer",
+  // 蒙面强盗三只（`:427-428` / `:480` / `:487-488`）：
+  //   熊     猛扑 / 撕咬 在，**熊抱不在**（只减敏捷）；
+  //   尖头怪 唯一那招在；
+  //   罗密欧 苦痛斩 / 十字斩 在，**嘲讽不在**（它连效果都没有）。
+  "bear/bear_lunge",
+  "bear/maul",
+  "pointy/pointy_attack",
+  "romeo/agonizing_slash",
+  "romeo/cross_slash",
 ]);
 
 /**
@@ -6991,6 +7242,10 @@ export function initCombat(input: CombatInitInput): BattleContext {
       gold: input.gold ?? 0,
       // 对齐 `Player::lastAttackUnblockedDamage` 的初值 0（Player.h:86）。
       lastAttackUnblockedDamage: 0,
+      // ⚠ 对齐 `Player::lastTargetedMonster` 的初值 **1**（Player.h:47），不是 0。
+      //   它在被围攻那条门里是可观察的：玩家还没打过任何指定目标的牌时，0 号位的怪
+      //   看到的 `facingSelf` 是假（`1 != 0` 且 1 号位还活着）⇒ 它开场那一击 ×1.5。
+      lastTargetedMonster: 1,
     },
     monsters: [],
     monstersAlive: 0,
@@ -7255,13 +7510,23 @@ function playCardQueueItem(bc: BattleContext, item: CardQueueItem): void {
   // 而场上还有别的怪时，复制的那一击**不会**打出去（目标已死）。TWO_LOUSE 上很常见。
   // 参考在那行自注 `// this is redundant right???? -> no i think echo form abilities can
   // queue a card with invalid target`。
-  // TODO(后续PR): `if (c.isFreeToPlay(bc)) c.freeToPlayOnce = true;` 与
-  //   `player.lastTargetedMonster = item.target`（只被未登记的内容读）。
+  // TODO(后续PR): `if (c.isFreeToPlay(bc)) c.freeToPlayOnce = true;`。
   const canUseCard =
     item.purgeOnUse ||
     (item.triggerOnUse && cardCanUse(bc, card, item.target, item.autoplay) === null);
-  const targetStillValid =
-    !targetedOf(getCardDef(card.defId), card.upgraded) || bc.monsters[item.target]?.alive === true;
+  const targetsEnemy = targetedOf(getCardDef(card.defId), card.upgraded);
+  const targetStillValid = !targetsEnemy || bc.monsters[item.target]?.alive === true;
+  // `player.lastTargetedMonster = item.target`（BattleContext.cpp:872-874，第四十七批）。
+  // ⚠ 三处照抄：
+  //  ① 它在 **`canUseCard` 里面**——被 `canUse` 挡下的牌（浩劫翻出的诅咒 / 状态牌）不写；
+  //  ② 门是 `c.requiresTarget()`（= `cardTargetsEnemy`，与我们的 `targetedOf` 同源），
+  //     所以技能 / 能力 / 群伤牌一律不写，它可以整场停在初值 1 不动；
+  //  ③⚠ 它排在紧接着那道**目标有效性**判断**之前**：目标已经死了、这张牌根本没打出去，
+  //     这个字段照样已经被改写。（二连击的复制项就会走到这一格。）
+  // ⚠ 在被围攻（第四十七批的尖塔护盾）之前它是纯粹的死字段，所以此前这里只有一条 TODO。
+  if (canUseCard && targetsEnemy) {
+    bc.player.lastTargetedMonster = item.target;
+  }
   if (canUseCard && targetStillValid) {
     useCard(bc, item);
   }
@@ -7832,13 +8097,38 @@ function monsterDamageUnblocked(bc: BattleContext, m: CombatMonster, rawDamage: 
   // ⚠ 它是一条 **else-if 链**：同时带蜷缩与沉睡的怪只会触发排在前面的那一条。当前没有这种
   //   怪（虱子只有蜷缩、拉加维林只有沉睡），但形状照抄——写成两个独立 if 会在将来静默出错。
   // 蜷缩把加格挡 addToBot 排在扣血之后，故这里先记下、扣完血再加。
+  //
+  // ⚠⚠ **第一格：无敌（INVINCIBLE，腐化之心，第四十七批）**——链上最后一个补上宿主的格子。
+  //   对齐 Monster.cpp:348-351：
+  //       if (hasStatus<MS::INVINCIBLE>()) {
+  //           damage = std::min(damage, getStatus<MS::INVINCIBLE>());
+  //           setStatus<MS::INVINCIBLE>(getStatus<MS::INVINCIBLE>() - damage);
+  //       } else if (…镀甲…)
+  //   ⚠ 四处照抄：
+  //    ①⚠⚠ 它**改写 `damage` 本身**，而这个值一路流到末尾的 `curHp -= damage`——所以
+  //       它不是「扣完血再记账」，是「先把这一击削平再扣血」。写成「只减层数、不改伤害」
+  //       在层数还够的时候两者同解，层数不够时就分岔。
+  //    ② 减的是**削平之后**的 `damage`（两句共用同一个新值），不是原始伤害——所以层数
+  //       永远不会变成负数。
+  //    ③ 门是 `hasStatus`（条目在不在），写的是裸 `setStatus`（**只写数值、不碰 bit**），
+  //       所以打到 0 之后它**照样占着这一格**：本回合此后任何一击都被削成 0 点，
+  //       后面的镀甲 / 蜷缩 / 飞行 / 易塑 / 荆棘 / 沉睡 / 变换一格都轮不到。
+  //    ④ 它每个怪物回合开始被复位回 300（`applyPreTurnLogic`），见那里。
+  //   ⚠ 当前语料下**没有任何一副候选牌组能把它打到 0**（最强的一副只到 14 / 300），
+  //     所以 `Math.min` 那道钳制是盲区；「逐击递减」这一半在快照里逐帧可见。
+  const invincible = findPower(m.powers, "invincible");
   const platedArmor = findPower(m.powers, "plated_armor");
   const curl = findPower(m.powers, "curl_up");
   const flight = findPower(m.powers, "flight");
   const malleable = findPower(m.powers, "malleable");
   const reactive = findPower(m.powers, "reactive");
   const thorns = findPower(m.powers, "thorns");
-  if (platedArmor !== undefined) {
+  if (invincible !== undefined) {
+    // ⚠ 两句共用**削平之后**的那个 `damage`，所以层数不会变成负数；而 `damage` 被改写
+    //   之后一路流到末尾的扣血。
+    damage = Math.min(damage, invincible.amount);
+    invincible.amount -= damage;
+  } else if (platedArmor !== undefined) {
     // 镀甲（PLATED_ARMOR，带壳寄生虫）：对齐 Monster.cpp:352-355 那一格。
     //
     //     } else if (hasStatus<MS::PLATED_ARMOR>()) {
@@ -12207,10 +12497,28 @@ function onAfterUseCard(
     if (m0 !== undefined && hasPower(m0.powers, "slow")) {
       addPower(m0.powers, "slow", 1);
     }
-    // TODO(后续PR): 死亡节拍（BEAT_OF_DEATH，**第四幕**的腐化之心）——
-    //   `if (m.hasStatus<MS::BEAT_OF_DEATH>()) addToBot(Actions::DamagePlayer(层数));`
-    //   （BattleContext.cpp:1988-1990）。它是这道门里的**第三条**，顺序照参考：
-    //   时间扭曲 → 缓慢 → 死亡节拍。腐化之心连 `enemies.ts` 的条目都还没有。
+    // 死亡节拍（BEAT_OF_DEATH，腐化之心，第四十七批——第三十八批做时间扭曲时留的那笔账）：
+    //     if (m.hasStatus<MS::BEAT_OF_DEATH>()) {
+    //         addToBot( Actions::DamagePlayer(m.getStatus<MS::BEAT_OF_DEATH>()) );
+    //     }
+    //（BattleContext.cpp:1988-1990）
+    // ⚠ 四处照抄：
+    //  ①⚠ 它是这道 `triggerOnUse` 门里的**第三条**，顺序是**时间扭曲 → 缓慢 → 死亡节拍**。
+    //     三者共用同一道门、都只读写死的 `monsters.arr[0]`、都不判死活。
+    //  ② 是 `Actions::DamagePlayer`（**非攻击伤害**）：不过 `calculateDamageToPlayer`，
+    //     所以怪物力量、玩家易伤 / 虚弱一概不参与——1 点就是 1 点；但**照样被格挡吸收**。
+    //  ③ **入队**（`addToBot`），所以它排在这张牌自己排的效果之后。
+    //  ④ 门是 `hasStatus`（条目在不在）。腐化之心开局层数就是 1（非 0），所以这里
+    //     写 `hasPower` 与 `> 0` 当前同解——但形状照抄（同时间扭曲那条的教训）。
+    // ⚠⚠ 它是这场仗真正的时间压力：**每打出一张牌**扣一次血，于是「多打牌」直接换成
+    //   「少活几个回合」。本批的腐化之心牌组因此故意只打 2~3 张（见 harness 注释）。
+    if (m0 !== undefined && hasPower(m0.powers, "beat_of_death")) {
+      const amount = getPower(m0.powers, "beat_of_death");
+      // ⚠ `Actions::DamagePlayer(n)` 的 `selfDamage` 取默认 **false**（不触发破裂），
+      //   `clearOnCombatVictory` 是 **false**（Actions.cpp:91-95 的第二个实参）——
+      //   与爆破怪的自爆走的是同一个 Action，两处形状必须一致。
+      addToBot(bc, (c) => damagePlayerNonAttack(c, amount, false), false);
+    }
   }
   if (purgeOnUse) {
     return;
@@ -12894,6 +13202,23 @@ function monsterDamage(bc: BattleContext, idx: number, rawDamage: number): void 
   handDrillOnBlockBroken(bc, m, hadBlock);
   if (damage <= 0) {
     return;
+  }
+  // 无敌（INVINCIBLE，腐化之心，第四十七批）：`damageUnblockedHelper` 的**第一句**
+  //（Monster.cpp:444-447），函数体与 `attackedUnblockedHelper` 那一格**逐字相同**：
+  //     if (hasStatus<MS::INVINCIBLE>()) {
+  //         damage = std::min(damage, getStatus<MS::INVINCIBLE>());
+  //         setStatus<MS::INVINCIBLE>(getStatus<MS::INVINCIBLE>() - damage);
+  //     }
+  // ⚠⚠ **形状不同，别合并**：那条路上它是 else-if 链的**第一格**（挡住后面七位），
+  //   这条路上它是一个**独立的 if**——沉睡与变换紧跟其后、**不被它遮挡**。
+  //   所以「非攻击伤害打在无敌的怪身上」照样会叫醒拉加维林、照样触发变换（当前没有
+  //   同时带无敌与那两位的怪，形状照抄）。
+  // ⚠ 它排在这里意味着**燃烧 / 荆棘 / 主宰 / 火焰药水 / 自爆也吃这道上限**，
+  //   而且它们与攻击共用同一份层数——同一个玩家回合里攻击先削 250、荆棘再来就只剩 50。
+  const invincible = findPower(m.powers, "invincible");
+  if (invincible !== undefined) {
+    damage = Math.min(damage, invincible.amount);
+    invincible.amount -= damage;
   }
   // 沉睡被打断（Monster.cpp:448-452）。⚠ 这条路上它是**独立的 if**、不在任何 else-if 链里
   //（那条链只在 attacked 那条路上），所以非攻击伤害叫醒它时不受蜷缩之类的遮挡。
@@ -13727,8 +14052,24 @@ function applyPreTurnLogic(bc: BattleContext): void {
     if (flight !== undefined) {
       flight.amount = bc.ascension >= 17 ? 4 : 3;
     }
+    // ④ 无敌复位（第四十七批，Monster.cpp:32-34）：
+    //      `if (hasStatus<MS::INVINCIBLE>()) setStatus<MS::INVINCIBLE>(bc.ascension >= 19 ? 200 : 300);`
+    // ⚠ 四处照抄：
+    //  ①⚠⚠ **这一句就是「无敌」这个机制的本体**：链上那两处只负责削平并扣层数，
+    //     真正让它变成「每个怪物回合最多掉 300 血」的是这次复位。整条去掉的话，
+    //     腐化之心一场仗总共只能掉 300 血。
+    //  ② 入口判的是 `hasStatus`（条目在不在），**不是层数 > 0**——被打到 0 的那一回合
+    //     照样复位（与飞行那一条同族、与「层数 > 0」正相反）。
+    //  ③ 是 **`setStatus`（覆盖）**，不是 `buff`（累加）。
+    //  ④ 时点是**怪物阶段开始**（整个 `applyPreTurnLogic` 循环），排在清格挡与飞行复位
+    //     **之后**——三段是并列的（不是 else-if），壁垒只挡第一段。
+    // ⚠⚠ asc19 那一档是**变小**（300 → 200），照抄别顺手写成变大。本批只做 asc0。
+    const invincible = findPower(m.powers, "invincible");
+    if (invincible !== undefined) {
+      invincible.amount = bc.ascension >= 19 ? 200 : 300;
+    }
   }
-  // TODO(后续PR): 窒息（②）、无敌复位（④）、中毒扣血（⑤）。
+  // TODO(后续PR): 窒息（②）、中毒扣血（⑤）。
 }
 
 function doMonsterTurn(bc: BattleContext, idx: number): void {
@@ -13963,6 +14304,81 @@ function takeTurn(bc: BattleContext, m: CombatMonster): string | null {
       addToBot(bc, (c) => {
         vampireAttack(c, dmg);
       });
+    } else if (eff.kind === "deal_damage_block_equal") {
+      // 打一下、然后获得**等于这一击伤害输出**的格挡（尖塔护盾的重砸，第四十七批）。
+      // 对齐 MonsterSpecific.cpp:1789-1795：
+      //     const auto damageOutput = calculateDamageToPlayer(bc, asc3 ? 38 : 34);
+      //     bc.addToBot( Actions::AttackPlayer(idx, damageOutput) );
+      //     bc.addToBot( Actions::MonsterGainBlock(idx, asc18 ? 99 : damageOutput));
+      // ⚠ 四处照抄：
+      //  ①⚠⚠ 格挡取的是 **`damageOutput`**，也就是过完 `calculateDamageToPlayer` 之后的
+      //     那个整数（力量、被围攻的 ×1.5、玩家虚弱 / 易伤、虚无缥缈钳制全都已经乘进去
+      //     并且截断过）。拆成 `deal_damage` + `gain_block` 会退化成「34 点格挡」，
+      //     在带被围攻的第四幕里差得很远。
+      //  ② **两条都入队**，顺序是先伤害后格挡——中间隔着的荆棘 / 火焰屏障因此排在
+      //     加格挡之前。
+      //  ③ 攻击那条是 `Actions::AttackPlayer`，`clearOnCombatVictory` 是 **false**
+      //     （与普通多段攻击同源）；格挡那条 `Actions::MonsterGainBlock` 走单参构造，
+      //     取默认的 **true**。两者不对称，照抄。
+      //  ④ `ascBlock` 覆盖的是**格挡那一半**（asc>=18 时是写死的 99、与伤害脱钩），
+      //     与覆盖伤害基数的 `ascAmount` 正交。本批只做 asc0，那一档没有例数。
+      const dmg = calculateDamageToPlayer(bc, m, ascValue(bc, eff.amount, eff.ascAmount));
+      const blockAmount = ascValue(bc, dmg, eff.ascBlock);
+      const idx = bc.monsters.indexOf(m);
+      addToBot(bc, (c) => dealDamageToPlayer(c, dmg, idx), false);
+      addToBot(bc, () => {
+        m.block += blockAmount;
+      });
+    } else if (eff.kind === "corrupt_heart_buff") {
+      // 腐化之心的「强化」（第四十七批）。对齐 MonsterSpecific.cpp:1838-1861：
+      //     const auto newStr = std::max(0, getStatus<MS::STRENGTH>()) + 2;
+      //     setStatus<MS::STRENGTH>(newStr);
+      //     const auto buffCount = bc.getMonsterTurnNumber() / 3;
+      //     switch (buffCount) {
+      //         case 1: buff<MS::ARTIFACT>(2);      break;
+      //         case 2: buff<MS::BEAT_OF_DEATH>(1); break;
+      //         case 3: buff<MS::PAINFUL_STABS>();  break;
+      //         case 4: buff<MS::STRENGTH>(10);     break;
+      //         default: buff<MS::STRENGTH>(50);    break;
+      //     }
+      // ⚠ 五处照抄：
+      //  ①⚠⚠ 第一句是 **`setStatus`（覆盖）而不是 `buff`（累加）**，而且先把负力量夹回 0
+      //     ——它是这只怪对「玩家给它减力量」（缴械 / 黑暗镣铐）的解药。抄成
+      //     `buff<STRENGTH>(2)` 会让负力量一直留着，而且**在没有减力量牌的牌组下两者同解**
+      //     （本批的牌组正是这一种），所以这一处当前是盲区，见 TODOS。
+      //  ② `buffCount` 用的是**整数除法**（`getMonsterTurnNumber() / 3`），
+      //     而叫它出场的那道门在**另一招**里（血弹 / 回响的收尾 `% 3 == 0`）——
+      //     两处读的回合数**差一个怪物回合**（收尾跑在第 N 回合、强化执行在第 N+1 回合），
+      //     所以第 3 个怪物回合的收尾排出的强化，执行时 `buffCount = 4/3 = 1`。
+      //     ⚠ 这正是 WORKFLOW 那条「分档读执行那一刻、出招门读滚意图那一刻」的第二个实例。
+      //  ③ 五个分支**全是同步 `buff`（累加）**，没有一条入队。
+      //  ④ `default` 收的是 `buffCount >= 5` **以及 0**——按上面那条时序，`buffCount == 0`
+      //     结构性不可达（强化最早出在第 4 个怪物回合），所以 default 等价于「第 15 个
+      //     怪物回合起」。
+      //  ⑤ 痛苦突刺是**纯 bool**（`buff<PAINFUL_STABS>()` 无参），层数写 1。
+      // ⚠ 裸 `find`（不是 `findPower`）：参考这两句读写的是**数值字段** `strength`，
+      //   与 statusBits 无关——同 `addPower` / `setPower` 那两处故意保留裸 `find` 的理由。
+      const strength = m.powers.find((p) => p.id === "strength");
+      const newStr = Math.max(0, strength?.amount ?? 0) + 2;
+      if (strength === undefined) {
+        m.powers.push({ id: "strength", amount: newStr });
+      } else {
+        // ⚠ 只写数值、**不碰 `cleared`**：`Monster::setStatus<STRENGTH>` 就是
+        //   `strength = amount;`，一个 bit 都不动（同飞行那条裸 `setStatus`）。
+        strength.amount = newStr;
+      }
+      const buffCount = Math.trunc(getMonsterTurnNumber(bc) / 3);
+      if (buffCount === 1) {
+        addPower(m.powers, "artifact", 2);
+      } else if (buffCount === 2) {
+        addPower(m.powers, "beat_of_death", 1);
+      } else if (buffCount === 3) {
+        addPower(m.powers, "painful_stabs", 1);
+      } else if (buffCount === 4) {
+        addPower(m.powers, "strength", 10);
+      } else {
+        addPower(m.powers, "strength", 50);
+      }
     } else if (eff.kind === "apply_power" && eff.on === "target") {
       // 怪物给玩家上减益：isSourceMonster=true，故虚弱/易伤**跳过**首次递减。
       // ⚠ 与加格挡同族，参考里两种写法并存（见 Effect 的 sync 注释）：
@@ -14440,6 +14856,40 @@ function takeTurn(bc: BattleContext, m: CombatMonster): string | null {
  */
 function calculateDamageToPlayer(bc: BattleContext, m: CombatMonster, baseDamage: number): number {
   let damage = Math.fround(baseDamage + getPower(m.powers, "strength"));
+  // 被围攻（SURROUNDED，尖塔护盾开局给玩家上的，第四十七批）：对齐 Monster.cpp:565-570，
+  // **位置在力量之后、虚弱之前**（整条乘法链的第一格）：
+  //     if (p.hasStatus<PS::SURROUNDED>()) { // todo this is probably wrong
+  //         const bool facingSelf = p.lastTargetedMonster == idx ||
+  //                                 bc.monsters.arr[p.lastTargetedMonster].isDeadOrEscaped();
+  //         if (!facingSelf) { damage *= 1.5; }
+  //     }
+  // ⚠ 五处照抄：
+  //  ①⚠⚠ `facingSelf` 是两个析取项：**「你上一次打的就是这只怪」或「你上一次打的那只
+  //     已经死了 / 跑了」**。第二项是这条门在 `SHIELD_AND_SPEAR` 里真正会翻面的那一半
+  //     ——护盾（0 号位）被打死之后，长矛读 `arr[0].isDeadOrEscaped()` 为真、
+  //     于是它的 ×1.5 当场停掉。实测护盾被打死 26 / 120 条。
+  //  ② `lastTargetedMonster` 的**初值是 1**（Player.h:47），所以玩家还没打出任何
+  //     「需要指定目标」的牌时，0 号位那只怪看到的 `facingSelf` 是**假** ⇒ 它开场那一击
+  //     ×1.5。写成初值 0 会让这一帧静默错。
+  //  ③ 倍率写的是 **`1.5`（double 字面量）**而不是 `1.5f`——参考这一行是
+  //     `damage *= 1.5;`，与虚弱 / 易伤那几行的 `0.75f` / `1.5f` 不同。
+  //     在 `float` 域上 `1.5` 与 `1.5f` 精确相等（都是二进制可表示的），所以这里没有分岔，
+  //     但记一笔：**不要**照着邻居把它写成别的常数。
+  //  ④ 它排在**虚弱之前**，所以虚弱是在被围攻放大之后再打折的。位置目前不可观察
+  //     （乘法可交换、且中间没有截断），形状照抄。
+  //  ⑤⚠ 参考在这一行自注 `// todo this is probably wrong`——它知道自己可能与真实游戏
+  //     不符。照抄，记进 TODOS 待裁定。
+  if (getPower(bc.player.powers, "surrounded") > 0) {
+    const last = bc.player.lastTargetedMonster;
+    // ⚠ 参考的 `arr` 是定长 5 格、越界那几格躺着默认构造的 `Monster`（`curHp` 0 ⇒
+    //   `isDeadOrEscaped()` 为真）。我们的 `bc.monsters` 只有真正的格子，所以
+    //   「下标越界」与「那一格是死的」在这里必须**同解**——单怪编队的初值 1 正是这种情况。
+    const facingSelf =
+      last === bc.monsters.indexOf(m) || (bc.monsters[last]?.alive ?? false) === false;
+    if (!facingSelf) {
+      damage = Math.fround(damage * 1.5);
+    }
+  }
   // 虚弱（对齐 Monster.cpp:574-580）。⚠ 纸鹤（PAPER_KRANE，第四十三批）在这里：
   //     if (hasStatus<MS::WEAK>()) {
   //         if (p.hasRelic<RelicId::PAPER_KRANE>()) { damage *= 0.6f; }
@@ -15799,6 +16249,50 @@ export const SUPPORTED_ENCOUNTERS: readonly string[] = [
   //   ⚠ 这个编队**只有 asc0 的背书**：两只怪的 `ascCalibrated` 都没有置
   //     （神器 3 层、光束 12 点、守护方阵那两句 asc19 镀甲一条都没有预言机）。
   "donu_and_deca",
+  // —— 第四十七批乙：**第四幕两个 + 蒙面强盗**，`MOVE_RULES` 就此 65 / 65（怪物线收官）。
+  //   走 harness 新开的**第九个乘积** `act4Variants`（两个 variant，各钉死遗物与药水，
+  //   所以它既不冻结前面的乘积、也不被它们冻结）。40 种子、爬升度 0、目标策略 0。
+  //
+  //   `shield_and_spear`（尖塔护盾 0 号位 + 尖塔长矛 1 号位）带来三样新东西：
+  //   ⚠⚠ ① **被围攻（SURROUNDED）**——全参考唯一一处「怪物的 `preBattleAction` 给玩家
+  //        上 Power」，而它的唯一读点 `Monster::calculateDamageToPlayer` 读的是一个此前
+  //        **从没有人读过的字段** `Player::lastTargetedMonster`（初值 **1**）。
+  //        于是「你没在打的那只怪从背后打你 ×1.5」第一次有了预言机：护盾在 0 号位、
+  //        长矛在 1 号位，而策略的攻击恒落在 0 号位 ⇒ **长矛的每一击都 ×1.5、护盾的不**，
+  //        护盾一死（实测 26 / 120）长矛那一半也随之关掉（`isDeadOrEscaped` 那个析取项）。
+  //   ② **`deal_damage_block_equal`**（重砸：格挡 = 这一击**算完之后**的伤害输出）；
+  //   ③ 加固 / 穿刺分别复用迪卡的 `gain_block_ally_fixed` 与多努的 `buff_ally`
+  //      ——两条**都不带存活门**，与第二十六批百夫长 / 秘法师那三条正相反。
+  //
+  //   `the_heart`（腐化之心，单怪）带来的是**两条共享路径上的最后两个格子**：
+  //   ⚠⚠ ④ **无敌（INVINCIBLE）**——`attackedUnblockedHelper` 那条 else-if 链的**第一格**。
+  //        第三十五批点名过「链上现在只剩第一格没有宿主（腐化之心）」，本批把它填上，
+  //        **整条链八格第一次全部有背书**。它同时住在 `damageUnblockedHelper` 的链首与
+  //        `applyPreTurnLogic` 的第四段（每个怪物回合复位回 300）。
+  //   ⚠ ⑤ **死亡节拍（BEAT_OF_DEATH）**——`onAfterUseCard` 那道 `triggerOnUse` 门里的
+  //        **第三条**（第三十八批做时间扭曲时留的 `TODO(后续PR)`），顺序是
+  //        时间扭曲 → 缓慢 → 死亡节拍。
+  //   ⚠⚠ **牌组是本项目第三次为「让新代码被走到」而设计，也是第一次往弱里挑**：
+  //     腐化之心 750 血 + 无敌 300 ⇒ 强牌组三个回合就打完，而「强化」那一招的档位由
+  //     `getMonsterTurnNumber() / 3` 决定（第 3 / 6 / 9 / 12 个怪物回合各一档）。
+  //     打得快与死得快**都会**压低回合数，所以这个 variant 用的是一副**只防不攻**的
+  //     40 张全升级牌组（10 铁壁 + 8 幽灵护甲 + 4 耸肩 + 4 包扎 + 2 金属化 + 2 觅敌之弱），
+  //     实测平均 5.73 个怪物回合、最长 10。逐副候选的对比表见 harness 注释与 TODOS。
+  //   ⚠ 代价：**没有任何候选牌组能把无敌打到 0**（最强的一副也只到 14 / 300），
+  //     所以 `min(damage, invincible)` 那道**钳制**在本批是盲区；钳制之外的
+  //     「逐击递减」与「每回合复位」两半都有背书。
+  //
+  //   `masked_bandits_event`（尖头怪 0 / 罗密欧 1 / 熊 2）是**第一个事件专属编队**：
+  //   它不在任何 `MonsterEncounterPool` 里，run 层的事件也还没接线，所以它当前只有
+  //   trace 这一条到达路径。三只怪的出招规则都是常量、收尾全是同步 `setMove` 或
+  //   干脆没有 —— 整个编队开局三次 rollMove 之后 `rng.ai` 再也不动。
+  //   ⚠ 我们这边原先有一条**错的** `masked_bandits`（劫掠者 ×2 + 抢劫者，旧近似表编的），
+  //     本批按参考改名 + 改成员，`events.ts` 的引用跟着改（同第二十五批 `shell_parasite`
+  //     那次改名的理由：编队 id 必须与参考枚举同名，trace 文件名就是它）。
+  //   ⚠ 这三个编队**都只有 asc0 的背书**：六只怪的 `ascCalibrated` 一只都没有置。
+  "shield_and_spear",
+  "the_heart",
+  "masked_bandits_event",
 ];
 
 export function isEncounterSupported(encounterId: string): boolean {
@@ -15931,6 +16425,23 @@ export function isRelicSupported(relicId: string): boolean {
     RELIC_OTHER_HOOKS.has(relicId)
   );
 }
+
+/**
+ * 出招规则（`MOVE_RULES`）已转写的全部怪物 id（第四十七批）。
+ *
+ * ⚠⚠ **它存在的理由是一条用例失去了样本**。`initCombat` → `rollMove` 里那句
+ * 「暂未登记怪物 rollMove」的 throw 此前由 `sts-combat-rules.test.ts` 直接测：
+ * 拿一只「在 `enemies.ts` 里、却不在 `MOVE_RULES` 里」的怪去开战。第四十七批把
+ * `MOVE_RULES` 铺到 **65 / 65**（参考的 `MonsterId` 一共就 65 项）之后，
+ * **这样的怪一只都不存在了**——而 WORKFLOW 明确禁止「造一只游戏里不存在的哨兵怪」。
+ *
+ * 于是那条用例改成断言**让那道 throw 不可达的不变量本身**：`ENEMIES` 与这份名单
+ * 双向相等。它比原来那条样本用例**更强**（原来只证明「有一只没登记的会抛错」，
+ * 现在证明「一只没登记的都没有」），而且**不会再被下一批顶掉**。
+ * ⚠ 那道 throw 本身**留着**：它守的是「参考将来加了第 66 只怪、我们只补了数据表」
+ * 这种情况，那时这条不变量会先红。
+ */
+export const SUPPORTED_MONSTER_IDS: readonly string[] = Object.keys(MOVE_RULES);
 
 /**
  * 战斗内行为已转写的全部遗物 id（`isRelicSupported` 的枚举版）。
