@@ -40,6 +40,10 @@ jobs:
           # 超过 fork 出来的 vitest worker 的 V8 老生代默认上限 ⇒ worker 被杀、
           # 主进程只看到 ERR_IPC_CHANNEL_CLOSED，日志里**一个字的测试输出都没有**。
           # 本地用 `NODE_OPTIONS=--max-old-space-size=2048` 可稳定复现。
+          # ⚠⚠ 值要**压低**不要抬高：先设 8192 时 CI 反而连挂两次（89 秒后进程被
+          # SIGKILL、日志截断、一个字输出都没有）。把上限设得远高于实际需要，
+          # V8 就会推迟大回收、峰值 RSS 冲上去被 OS 杀掉。实测需要 2.1GB，
+          # 3072 给了足够余量又逼 V8 老实回收；本地 2048 会挂、3072/4096 都过。
           # ⚠ 这只是把天花板抬高，没有消除它——真正的解法见 TODOS「测试基础设施」。
-          NODE_OPTIONS: --max-old-space-size=8192
+          NODE_OPTIONS: --max-old-space-size=3072
       - run: pnpm build
