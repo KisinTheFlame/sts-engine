@@ -1,7 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import {
   initCombat,
   endTurn,
@@ -10,8 +9,17 @@ import {
   selectCard,
   selectCards,
   type BattleContext,
-} from "../src/engine/sts-combat.js";
-import { StsRandom } from "../src/engine/sts-rng.js";
+} from "../../src/engine/sts-combat.js";
+import { StsRandom } from "../../src/engine/sts-rng.js";
+import { TRACE_DIR, listTraceFiles, type TraceSlice } from "./trace-slices.js";
+
+// ============================================================================
+// 逐帧重放对拍的**机器**（映射表 + 折叠函数 + 建 suite 的入口）。
+//
+// ⚠ 这个文件**故意不叫 `*.test.ts`**：它自己不产生任何用例，只导出 `defineTraceSuite`。
+//   真正跑对拍的是 `test/sts-combat-trace-<切片>.test.ts` 那一组薄文件，每个只认领
+//   `test/helpers/trace-slices.ts` 里的一片语料。切片的理由与完备性保证见那个文件。
+// ============================================================================
 
 // ============================================================================
 // 逐帧重放对拍：数据由参考项目**真实 BattleContext** 驱动产出（非手工转写）。
@@ -21,7 +29,7 @@ import { StsRandom } from "../src/engine/sts-rng.js";
 // 只有引擎行为会。
 // ============================================================================
 
-type Snapshot = {
+export type Snapshot = {
   turn: number;
   outcome: string;
   /**
@@ -76,12 +84,12 @@ type Snapshot = {
   };
 };
 
-type Step = {
+export type Step = {
   action: { type: string; idx?: number; target?: number; idxs?: number[] };
   after: Snapshot;
 };
 
-type Trace = {
+export type Trace = {
   seed: string;
   relics: string[];
   /**
@@ -213,18 +221,7 @@ type Trace = {
  * 也没有能发现它的信息——variant 0 全 375 条 `exordium_thugs` 里偷得最狠的一场也才 -45，
  * 离 0 还有一倍余量，钳制从没真的咬合过。这一条记在 TODOS 的盲区里。
  */
-const HARNESS_GOLD_BASELINE = 99;
-
-const traceDir = fileURLToPath(new URL("./golden/traces", import.meta.url));
-const traces: Trace[] = readdirSync(traceDir)
-  .filter((f) => f.endsWith(".jsonl"))
-  .sort()
-  .flatMap((f) =>
-    readFileSync(join(traceDir, f), "utf8")
-      .split("\n")
-      .filter((line) => line.length > 0)
-      .map((line) => JSON.parse(line) as Trace),
-  );
+export const HARNESS_GOLD_BASELINE = 99;
 
 // —— 参考枚举名 → 我们的 id ——
 const CARD: Record<string, string> = {
@@ -1413,92 +1410,108 @@ const start = (t: Trace): BattleContext =>
     potionRng: new StsRandom(BigInt(t.potionRngSeed)),
   });
 
-// 分组 = 编队 × 爬升度 × 目标策略 × 遗物组 × 药水组，与 `tools/split-traces.mjs` 的分文件键
-// 同形（**后缀顺序也必须一致：asc → tgt → relic → pot**）。混在一个 describe 里的话，
-// 失败时看不出翻的是 asc0 还是 asc19、打的是 0 号位还是最后一格、身上带的是哪套遗物 / 药水。
-const byEncounter = new Map<string, Trace[]>();
-for (const t of traces) {
-  const key =
-    t.encounter +
-    (t.ascension ? `@asc${String(t.ascension)}` : "") +
-    (t.targetPolicy ? `@tgt${String(t.targetPolicy)}` : "") +
-    (t.relicSet ? `@relic${String(t.relicSet)}` : "") +
-    (t.potionSet ? `@pot${String(t.potionSet)}` : "");
-  const list = byEncounter.get(key) ?? [];
-  list.push(t);
-  byEncounter.set(key, list);
+// —— 以下是原 `test/sts-combat-trace.test.ts` 末尾那一小块 `describe`，改成按切片建 suite
+//    的函数。用例本身**一个字没动**：一条 trace 仍然一个 `it()`。 ——
+
+/** 读入若干个 jsonl，逐行 JSON.parse。**只读传进来的那些文件**——切片的全部意义在此。 */
+export function loadTraces(files: string[]): Trace[] {
+  return files.flatMap((f) =>
+    readFileSync(join(TRACE_DIR, f), "utf8")
+      .split("\n")
+      .filter((line) => line.length > 0)
+      .map((line) => JSON.parse(line) as Trace),
+  );
 }
 
-describe("trace 数据自身的不变量", () => {
-  // HARNESS_GOLD_BASELINE 偏小时给一条比「第 N 步状态不符」直白得多的诊断：
-  // 参考的金币不会为负（`stealGoldFromPlayer` 按 `min(gold, 额度)` 钳制、`gainGold` 只加），
-  // 所以任何一条 `goldGained` 都不可能比入场值还负。
-  // ⚠ 反方向（常数偏大）**测不出来**，数据里没有那份信息，见 HARNESS_GOLD_BASELINE 的注释。
-  it(`每条快照的 goldGained 都不低于 -${HARNESS_GOLD_BASELINE}（金币不会为负）`, () => {
-    let worst = 0;
-    let where = "";
-    for (const t of traces) {
-      for (const s of [t.initial, ...t.steps.map((step) => step.after)]) {
-        const d = s.goldGained ?? 0;
-        if (d < worst) {
-          worst = d;
-          where = `${t.encounter} seed ${t.seed} @floor ${t.floor}`;
-        }
+/**
+ * 逐条流式遍历**全部**语料，一次只在内存里留一个文件的量。
+ *
+ * 给「必须扫全库」的不变量用（见 `test/sts-combat-trace-meta.test.ts`）。
+ * ⚠ 不要在这里 flatMap 成一个大数组——那正是这次拆分要消除的 2.1GB 堆。
+ */
+export function forEachTrace(visit: (t: Trace, file: string) => void): void {
+  for (const f of listTraceFiles()) {
+    for (const line of readFileSync(join(TRACE_DIR, f), "utf8").split("\n")) {
+      if (line.length > 0) {
+        visit(JSON.parse(line) as Trace, f);
       }
     }
-    expect(
-      worst,
-      `最深的一次金币变化是 ${worst}（${where}）。它比 -HARNESS_GOLD_BASELINE 还低，` +
-        `说明重放侧的入场金币常数比 harness 的小——偷金的钳制会提前生效，见 HARNESS_GOLD_BASELINE。`,
-    ).toBeGreaterThanOrEqual(-HARNESS_GOLD_BASELINE);
-  });
-});
-
-describe("sts-combat 逐帧重放参考项目真实战斗 trace", () => {
-  for (const [encounter, list] of byEncounter) {
-    describe(encounter, () => {
-      for (const t of list) {
-        // 牌组规格进标题：同一 (seed, floor) 现在有多条 trace（不同 deck variant），
-        // 不标出来失败时看不出是哪一副牌组翻的。
-        const variant = `${t.deck.length}张${t.deckUpgraded === undefined ? "" : "·升级"}`;
-        it(`seed "${t.seed}" @floor ${t.floor} [${variant}]（${t.steps.length} 步）`, () => {
-          const bc = start(t);
-          expect(shape(bc)).toEqual(shapeExpected(t.initial));
-
-          t.steps.forEach((step, i) => {
-            if (step.action.type === "card") {
-              const r = playCard(bc, step.action.idx!, step.action.target!);
-              expect(r, `第 ${i + 1} 步出牌被拒: ${JSON.stringify(step.action)}`).toEqual({
-                ok: true,
-              });
-            } else if (step.action.type === "potion") {
-              const r = drinkPotion(bc, step.action.idx!, step.action.target!);
-              expect(r, `第 ${i + 1} 步喝药水被拒: ${JSON.stringify(step.action)}`).toEqual({
-                ok: true,
-              });
-            } else if (step.action.type === "select_card") {
-              // 选牌屏单选。被拒**同样是失败**：说明我们这边压根没开屏、或开的是另一块屏、
-              // 或候选集算错了——静默跳过会让整块机制看着是绿的。
-              const r = selectCard(bc, step.action.idx!);
-              expect(r, `第 ${i + 1} 步选牌被拒: ${JSON.stringify(step.action)}`).toEqual({
-                ok: true,
-              });
-            } else if (step.action.type === "select_cards") {
-              const r = selectCards(bc, step.action.idxs!);
-              expect(r, `第 ${i + 1} 步多选被拒: ${JSON.stringify(step.action)}`).toEqual({
-                ok: true,
-              });
-            } else {
-              const r = endTurn(bc);
-              expect(r, `第 ${i + 1} 步结束回合被拒`).toEqual({ ok: true });
-            }
-            expect(
-              shape(bc),
-              `第 ${i + 1} 步后状态不符（动作 ${JSON.stringify(step.action)}）`,
-            ).toEqual(shapeExpected(step.after));
-          });
-        });
-      }
-    });
   }
-});
+}
+
+/**
+ * 给一个切片建对拍 suite。
+ *
+ * ⚠⚠ 粒度是**一条 trace 一个 `it()`**，不许改：TODOS 里上千个变异例数的单位都是
+ *   「失败用例数」= 失败 trace 数，合并用例会让那份表整体失去可比性。
+ */
+export function defineTraceSuite(slice: TraceSlice): void {
+  const traces = loadTraces(listTraceFiles().filter((f) => slice.matches(f)));
+
+  // 分组 = 编队 × 爬升度 × 目标策略 × 遗物组 × 药水组，与 `tools/split-traces.mjs` 的分文件键
+  // 同形（**后缀顺序也必须一致：asc → tgt → relic → pot**）。混在一个 describe 里的话，
+  // 失败时看不出翻的是 asc0 还是 asc19、打的是 0 号位还是最后一格、身上带的是哪套遗物 / 药水。
+  // ⚠ 分组只在**本切片内部**做：同一个编队的文件恒是同一个文件、恒落在同一片，所以一个
+  //   分组不会被切片劈开（切片的单位是 jsonl 文件，而分组键与文件名一一对应）。
+  const byEncounter = new Map<string, Trace[]>();
+  for (const t of traces) {
+    const key =
+      t.encounter +
+      (t.ascension ? `@asc${String(t.ascension)}` : "") +
+      (t.targetPolicy ? `@tgt${String(t.targetPolicy)}` : "") +
+      (t.relicSet ? `@relic${String(t.relicSet)}` : "") +
+      (t.potionSet ? `@pot${String(t.potionSet)}` : "");
+    const list = byEncounter.get(key) ?? [];
+    list.push(t);
+    byEncounter.set(key, list);
+  }
+
+  describe("sts-combat 逐帧重放参考项目真实战斗 trace", () => {
+    for (const [encounter, list] of byEncounter) {
+      describe(encounter, () => {
+        for (const t of list) {
+          // 牌组规格进标题：同一 (seed, floor) 现在有多条 trace（不同 deck variant），
+          // 不标出来失败时看不出是哪一副牌组翻的。
+          const variant = `${t.deck.length}张${t.deckUpgraded === undefined ? "" : "·升级"}`;
+          it(`seed "${t.seed}" @floor ${t.floor} [${variant}]（${t.steps.length} 步）`, () => {
+            const bc = start(t);
+            expect(shape(bc)).toEqual(shapeExpected(t.initial));
+
+            t.steps.forEach((step, i) => {
+              if (step.action.type === "card") {
+                const r = playCard(bc, step.action.idx!, step.action.target!);
+                expect(r, `第 ${i + 1} 步出牌被拒: ${JSON.stringify(step.action)}`).toEqual({
+                  ok: true,
+                });
+              } else if (step.action.type === "potion") {
+                const r = drinkPotion(bc, step.action.idx!, step.action.target!);
+                expect(r, `第 ${i + 1} 步喝药水被拒: ${JSON.stringify(step.action)}`).toEqual({
+                  ok: true,
+                });
+              } else if (step.action.type === "select_card") {
+                // 选牌屏单选。被拒**同样是失败**：说明我们这边压根没开屏、或开的是另一块屏、
+                // 或候选集算错了——静默跳过会让整块机制看着是绿的。
+                const r = selectCard(bc, step.action.idx!);
+                expect(r, `第 ${i + 1} 步选牌被拒: ${JSON.stringify(step.action)}`).toEqual({
+                  ok: true,
+                });
+              } else if (step.action.type === "select_cards") {
+                const r = selectCards(bc, step.action.idxs!);
+                expect(r, `第 ${i + 1} 步多选被拒: ${JSON.stringify(step.action)}`).toEqual({
+                  ok: true,
+                });
+              } else {
+                const r = endTurn(bc);
+                expect(r, `第 ${i + 1} 步结束回合被拒`).toEqual({ ok: true });
+              }
+              expect(
+                shape(bc),
+                `第 ${i + 1} 步后状态不符（动作 ${JSON.stringify(step.action)}）`,
+              ).toEqual(shapeExpected(step.after));
+            });
+          });
+        }
+      });
+    }
+  });
+}
