@@ -28,5 +28,11 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm lint
       - run: pnpm format
-      - run: pnpm test
+      # ⚠ CI 上跑 test:ci（--reporter=dot）而不是 test。
+      # 对拍现在是单文件 42586 个用例，默认 reporter 要在主线程为每个用例维护一个任务节点，
+      # CI 机器上来不及回 ack，worker 侧的 birpc 就抛
+      # `[vitest-worker]: Timeout calling "onTaskUpdate"` —— 全部用例其实都通过了，
+      # 红的是报告层。birpc 的超时 vitest 没有暴露成配置，所以只能减轻主线程负担。
+      # 本地仍用默认 reporter：变异测试要靠它逐条读失败用例名。
+      - run: pnpm test:ci
       - run: pnpm build
