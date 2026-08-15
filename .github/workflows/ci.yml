@@ -34,7 +34,14 @@ jobs:
       # `[vitest-worker]: Timeout calling "onTaskUpdate"` —— 全部用例其实都通过了，
       # 红的是报告层。birpc 的超时 vitest 没有暴露成配置，所以只能减轻主线程负担。
       # 本地仍用默认 reporter：变异测试要靠它逐条读失败用例名。
-      - run: pnpm test:ci
+      # ⚠ 过滤掉 dot reporter 的进度点。不过滤的话失败时 GitHub 日志里全是「·」，
+      # 真正的报错被冲掉——这个坑连续误导了三轮排查（每次都以为是内存）。
+      # `pipefail` 保证退出码来自 vitest 而不是 sed。
+      - name: pnpm test:ci
+        shell: bash
+        run: |
+          set -o pipefail
+          pnpm test:ci 2>&1 | sed 's/·//g' | grep -vE '^[[:space:]]*$'
         env:
           # ⚠ 对拍会把全部 trace 一次性读进内存：982MB 的 JSONL 解析出来是 **2.1GB 堆**，
           # 超过 fork 出来的 vitest worker 的 V8 老生代默认上限 ⇒ worker 被杀、
