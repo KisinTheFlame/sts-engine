@@ -41,16 +41,16 @@ jobs:
           echo "--- 磁盘 ---"; df -h /
           echo "--- CPU ---"; nproc
           echo "--- trace 数据 ---"; du -sh test/golden/traces
-      - name: 诊断：带退出码与 GC 日志跑对拍
+      - name: 诊断：带退出码跑对拍，滤掉进度点只看报错
         run: |
           set +e
-          node --max-old-space-size=3072 --trace-gc \
-            node_modules/vitest/vitest.mjs run test/sts-combat-trace.test.ts --reporter=dot \
+          # ⚠ flag 必须走 NODE_OPTIONS：直接传给 node 的话 fork 出的 worker 不继承。
+          NODE_OPTIONS=--max-old-space-size=3072 \
+            npx vitest run test/sts-combat-trace.test.ts --reporter=dot \
             > /tmp/out.log 2>&1
-          code=$?
-          echo "EXIT=$code"
-          echo "--- 末尾 40 行 ---"; tail -40 /tmp/out.log
-          echo "--- GC 峰值（最后 5 条）---"; grep -o "[0-9]* M) -> " /tmp/out.log | tail -5
+          echo "EXIT=$?"
+          echo "--- 滤掉进度点之后的全部输出 ---"
+          sed 's/·//g' /tmp/out.log | grep -vE '^\s*$' | tail -60
           echo "--- 事后内存 ---"; free -m
           exit 0
       - run: pnpm test:ci
