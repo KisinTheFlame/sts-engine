@@ -9237,6 +9237,31 @@ addToBot(DebuffPlayer<VULNERABLE>(2,true));`（`MonsterSpecific.cpp:1280-1286`�
 
 ### 待裁定
 
+- ⚠ **测试基础设施撞到规模上限：对拍把全部 trace 一次性读进内存。**
+  第四十七批合并到 master 时 CI 连红两次才查清，两次的表象完全不同：
+
+  1. 第一次：**42874 例全部通过**，然后 `[vitest-worker]: Timeout calling "onTaskUpdate"`
+     ——单文件 42586 个用例，主线程为每个用例维护任务节点、来不及回 ack。
+     换 `--reporter=dot`（新增 `pnpm test:ci`）压下去了。
+  2. 第二次：日志里 `RUN v3.2.6` 之后**一个字都没有**，进程直接没了。
+     实测根因是 **V8 老生代堆上限**：982MB 的 JSONL 解析出来是 **2.1GB 堆 / 2.3GB RSS**
+     （裸 node 量的，还没算 vitest 与断言对象），超过 fork 出的 worker 的默认上限。
+     本地 `NODE_OPTIONS=--max-old-space-size=2048` 可稳定复现（`ERR_IPC_CHANNEL_CLOSED`）。
+     CI 已加 `--max-old-space-size=8192`。
+
+  ⚠ **两处都只是把天花板抬高，没有消除它。** 数据还在长（目标是整个游戏），
+  下一次撞墙是迟早的事。
+
+  **结构性解法：把对拍拆成多个测试文件**，让 4 个 worker 各持一份切片
+  （vitest 的并行单位是**文件**，所以拆文件同时解决内存与报告两件事）。
+
+  ⚠⚠ **硬约束：必须保持「一条 trace 一个 `it()`」。** TODOS 里上千个变异例数都是
+  「失败用例数」= 失败 trace 数；粒度一变，**全部历史数字失去可比性**，
+  而那份例数表是这个项目最有价值的产出之一。所以拆的是**文件**，不是用例。
+
+  验收：拆完之后总用例数必须**仍然是 42586**（加上其余用例 = 42874），
+  且随便挑几条历史变异重量，数字应当一字不差。
+
 - ⚠⚠ **`Actions::MakeTempCardInDrawPile` 的 `shuffleInto == false` 那一支是空的（第四十七批）。**
 
   ```cpp
