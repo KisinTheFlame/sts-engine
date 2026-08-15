@@ -76,11 +76,155 @@ export function migrateLoadedState(raw: unknown): GameState {
     // 混乱排的第二张牌），而那三张牌是第九批才登记的——在此之前出牌队列在任何可取档
     // 时点都必空，当时的 exportState 甚至会为此显式抛错。
     backfill(live, "pendingCardQueue", []);
+    // 停滞槽（第二十八批，对齐 `CardManager::stasisCards`）。回填 `[null, null]` 是**无损**的：
+    // 唯一的写入点是青铜球的停滞，而那只怪本批才登记——在此之前任何老档里这两格都必然是空的，
+    // 参考的初值同样是两个 `CardId::INVALID`（CardManager.h:32）。
+    backfill(live, "stasisCards", [null, null]);
     migrateCombatCards(live);
     migrateCombatBatch11(live, state);
+    migrateMonsterMiscInfo(live);
+    migratePlayerLastAttack(live);
+    migratePlayerTurnCounters(live);
+    migratePlayerRelicCounters(live);
+    migrateCombatRelicData(live);
   }
 
   return state as unknown as GameState;
+}
+
+/**
+ * 玩家的 `lastAttackUnblockedDamage`（第二十五批，对齐 `Player::lastAttackUnblockedDamage`）。
+ *
+ * 回填 0 是**无损**的：唯一的读者是带壳寄生虫的吸血攻击（`Actions::VampireAttack`），
+ * 而那只怪本批才登记——在此之前任何老档里都没有东西读过这个字段，取什么值都不影响行为。
+ * 参考的初值同样是 0（Player.h:86）。
+ */
+function migratePlayerLastAttack(combat: Record<string, unknown>): void {
+  const player = asRecord(combat["player"]);
+  if (player) {
+    backfill(player, "lastAttackUnblockedDamage", 0);
+  }
+}
+
+/**
+ * 玩家的 `attacksPlayedThisTurn` / `skillsPlayedThisTurn`（第四十一批，对齐
+ * `Player::attacksPlayedThisTurn` / `skillsPlayedThisTurn`，Player.h:80-81）。
+ *
+ * 回填 0 是**无损**的，理由与 `lastAttackUnblockedDamage` 那条同型：这两个计数器的读者
+ * 只有苦无 / 装饰扇 / 手里剑 / 开信刀四颗遗物，而它们的战斗内行为**本批才转写**——
+ * 在此之前这四颗遗物在战斗内是纯粹的摆设（`relics.ts` 的 `hooks` 是空的，
+ * `initRelics` 三张表里也没有它们），没有任何东西读过这两个字段。
+ * ⚠ 老档确实可能停在「本回合已打过两张攻击牌」的时点上，回填 0 会让那一局的计数从头算起；
+ * 但那个「正确的续算值」从来就不存在——旧引擎压根没有这个字段。
+ * ⚠ 顺带记一笔：`isRelicSupported` 目前**没有任何调用者**（`stsCombatCoverage` 只查编队 /
+ * 牌 / 药水，不查遗物）。这是接线侧的一处缺口，不属于本批范围，已记进 TODOS。
+ */
+function migratePlayerTurnCounters(combat: Record<string, unknown>): void {
+  const player = asRecord(combat["player"]);
+  if (player) {
+    backfill(player, "attacksPlayedThisTurn", 0);
+    backfill(player, "skillsPlayedThisTurn", 0);
+  }
+}
+
+/**
+ * 墨水瓶的 `inkBottleCounter` 与橙色药丸的 `orangePelletsCardTypesPlayed`（第四十二批，
+ * 对齐 `Player::inkBottleCounter` / `Player::orangePelletsCardTypesPlayed`，Player.h:67 / :82）。
+ *
+ * 回填 0 是**无损**的，理由与上面两条同型：这两个字段的读者只有墨水瓶与橙色药丸两颗遗物，
+ * 而它们的战斗内行为**本批才转写**——在此之前两颗在战斗内是纯粹的摆设
+ * （`relics.ts` 的 `hooks` 是空的，`initRelics` 三张表里也没有它们）。
+ * ⚠ 老档确实可能停在「本回合已打过攻击牌与技能牌」的时点上，回填 0 会让位掩码从头算起；
+ * 那个「正确的续算值」从来就不存在。
+ * ⚠ 墨水瓶那个计数器在参考里是**跨战斗**的（`initRelics` 读 `r.data`、`updateRelicsOnExit`
+ * 写回），我们目前每场从 0 起算——那是 run 层的缺口，不是迁移的事，已记进 TODOS。
+ */
+function migratePlayerRelicCounters(combat: Record<string, unknown>): void {
+  const player = asRecord(combat["player"]);
+  if (player) {
+    backfill(player, "inkBottleCounter", 0);
+    backfill(player, "orangePelletsCardTypesPlayed", 0);
+  }
+}
+
+/**
+ * 战斗内的遗物容器从 `string[]` 变成 `{ id, data }[]`，玩家多出 `relicBits` 与五个计数器
+ * （第四十四批，对齐 `RelicInstance`（RelicContainer.h:10）与 `Player::relicBits0/1`）。
+ *
+ * 三条回填**都是无损**的：
+ *  * `relics` 里的每个字符串变成 `{ id, data: 0 }`——在此之前 `bc.relics` 只有 id，
+ *    没有任何东西读过 `data`，所以 0 就是当时的实际语义。
+ *  * `player.relicBits` 回填成**容器里的全部 id**：清位的四处（御守 / 蜥蜴尾的
+ *    `setHasRelic<X>(r.data)`、蜥蜴尾复活用掉、百年拼图触发过）本批才登记，
+ *    在此之前「容器里有」与「玩家身上有」严格同解。
+ *  * 五个计数器与 `haveUsedNecronomiconThisTurn` 回填 0 / false，理由与
+ *    `migratePlayerRelicCounters` 那条同型：读者是本批才登记的遗物。
+ */
+function migrateCombatRelicData(combat: Record<string, unknown>): void {
+  const relics: unknown = combat["relics"];
+  if (Array.isArray(relics)) {
+    const upgraded: unknown[] = [];
+    for (const relic of relics as unknown[]) {
+      upgraded.push(typeof relic === "string" ? { id: relic, data: 0 } : relic);
+    }
+    combat["relics"] = upgraded;
+  }
+  const player = asRecord(combat["player"]);
+  if (player) {
+    if (player["relicBits"] === undefined) {
+      const list: unknown = combat["relics"];
+      const ids: string[] = [];
+      if (Array.isArray(list)) {
+        for (const relic of list) {
+          const id = asRecord(relic)?.["id"];
+          if (typeof id === "string") {
+            ids.push(id);
+          }
+        }
+      }
+      player["relicBits"] = ids;
+    }
+    backfill(player, "happyFlowerCounter", 0);
+    backfill(player, "incenseBurnerCounter", 0);
+    backfill(player, "nunchakuCounter", 0);
+    backfill(player, "penNibCounter", 0);
+    backfill(player, "sundialCounter", 0);
+    backfill(player, "haveUsedNecronomiconThisTurn", false);
+  }
+}
+
+/**
+ * 怪物的 `rolledDamage` 改名为 `miscInfo`（第十六批）。
+ *
+ * 参考侧本来就只有**一个** `Monster::miscInfo`（Monster.h:83），含义逐怪种不同；我们早先
+ * 只用到虱子那一种（整场固定的咬击伤害），就按那个用途起名叫 `rolledDamage`。第十六批给
+ * 参考补上「红色奴隶主用它记 usedEntangle」之后，一个字段两种含义，名字必须回到参考的形状。
+ *
+ * 回填是**无损**的：老档里这个字段只可能是虱子的咬击伤害（唯一的写入点），原样搬过去即可；
+ * 没有该字段的更老档（或没用到它的怪）落到 0，与当时的行为一致。
+ */
+function migrateMonsterMiscInfo(combat: Record<string, unknown>): void {
+  const monsters: unknown = combat["monsters"];
+  if (!Array.isArray(monsters)) {
+    return;
+  }
+  for (const raw of monsters) {
+    const m = asRecord(raw);
+    if (!m) {
+      continue;
+    }
+    const old: unknown = m["rolledDamage"];
+    delete m["rolledDamage"];
+    backfill(m, "miscInfo", typeof old === "number" ? old : 0);
+    // 怪物侧的**第二个**通用整数字段（第二十批新增，对齐 `Monster::uniquePower0`）。
+    // 回填 0 是**无损**的：唯一的使用者是六火幽魂的六焰计数，而它本批才登记
+    // ——在此之前任何老档里都不可能有一只怪用到它。
+    backfill(m, "uniquePower0", 0);
+    // 半死位（第三十四批新增，对齐 `Monster::halfDead`）。
+    // 回填 false 是**无损**的：能置起它的只有 `Monster::die` 的 REGROW 分支（暗影客）
+    // 与觉醒者的假死，两者在本批之前都没登记——老档里任何一只怪都不可能是半死态。
+    backfill(m, "halfDead", false);
+  }
 }
 
 /**

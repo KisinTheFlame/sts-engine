@@ -888,7 +888,12 @@ const EVENT_LIST: EventDef[] = [
       {
         label: "拔刀相向，夺回属于自己的东西",
         resultText: "话不投机，刀光已至。",
-        outcomes: [{ kind: "start_combat", encounterId: "masked_bandits" }],
+        // ⚠ 第四十七批：编队 id 从 `masked_bandits` 改成参考枚举名 `masked_bandits_event`，
+        //   成员也从旧近似表的「劫掠者 ×2 + 抢劫者」改成参考的「尖头怪 / 罗密欧 / 熊」
+        //   （`MonsterGroup::createMonsters` 的 `MASKED_BANDITS_EVENT` 那条 case）。
+        //   改名的理由与第二十五批的 `shell_parasite` 相同：编队 id 必须与参考枚举同名，
+        //   trace 文件名就是它，`SUPPORTED_ENCOUNTERS` 与 `test/golden/traces/*.jsonl` 双向对齐。
+        outcomes: [{ kind: "start_combat", encounterId: "masked_bandits_event" }],
       },
       {
         label: "乖乖交出全部金币换命",

@@ -19,7 +19,22 @@ if (src === undefined) {
 
 const signature = (line) => {
   const t = JSON.parse(line);
-  return `${t.deck.join(",")}|${t.deckUpgraded === undefined ? "" : t.deckUpgraded.join("")}`;
+  return (
+    `${t.deck.join(",")}|${t.deckUpgraded === undefined ? "" : t.deckUpgraded.join("")}` +
+    // 爬升度也进指纹（与 split-traces.mjs 保持同一个）。当前每个文件里只有一个爬升度，
+    // 所以它不会把任何一段拆开；写上是为了「两处指纹必须一致」这条不变量不留缺口。
+    `|${t.ascension === undefined ? "" : String(t.ascension)}` +
+    // 目标策略同理（第三十一批新增的轴）。同样每个文件里只有一个取值。
+    `|${t.targetPolicy === undefined ? "" : String(t.targetPolicy)}` +
+    // 遗物组同理（第四十批新增）。⚠ 这一维是**必需的**，不是补齐：遗物战线会出现
+    // 「牌组逐字节相同、只有遗物不同」的两个 variant，缺了它两者的行会被认成同一段，
+    // 冻结前缀静默变长。
+    `|${t.relicSet === undefined ? "" : String(t.relicSet)}` +
+    // 药水组与喝药时机同理（第四十五批新增）。⚠ 同样是**必需的**：药水这条战线会出现
+    // 「牌组逐字节相同、只有药水清单不同」的两个 variant。
+    `|${t.potionSet === undefined ? "" : String(t.potionSet)}` +
+    `|${t.potionPolicy === undefined ? "" : String(t.potionPolicy)}`
+  );
 };
 
 const lines = fs.readFileSync(src, "utf8").split("\n");

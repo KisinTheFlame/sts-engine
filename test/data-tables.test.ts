@@ -21,9 +21,13 @@ import {
   potionPoolOfRarity,
   shopPotionPool,
 } from "../src/engine/potions/potions.js";
-import { REGISTERED_CARD_IDS } from "../src/engine/sts-combat.js";
+import {
+  isRelicSupported,
+  REGISTERED_CARD_IDS,
+  SUPPORTED_RELIC_IDS,
+} from "../src/engine/sts-combat.js";
 import { ALL_EVENTS, getEventDef } from "../src/engine/events/events.js";
-import { getEnemyDef, getEncounterDef } from "../src/engine/enemies/enemies.js";
+import { ALL_ENEMIES, getEnemyDef, getEncounterDef } from "../src/engine/enemies/enemies.js";
 import type { CardDef, CharacterId } from "../src/engine/types.js";
 
 // ============================================================================
@@ -125,12 +129,24 @@ describe("卡表", () => {
 //   * 挡不住：**尚未登记的 275 张牌**的 `color` 全无背书；已登记的牌在 red ↔ colorless
 //     之间记错；common / uncommon / rare 三档之间记错。
 //   随铺量推进，登记表越长这条的射程越大——全部铺完时它就覆盖了铁甲 + 无色全部 115 张。
+//
+// ⚠ 第十三批起登记表里出现了**不属于任何角色**的牌：状态牌黏液（`color: "status"`）。
+//   状态/诅咒牌不进任何角色的奖励池，`color` 对它们不是「角色归属」而是分类标签，
+//   所以这条不变量按 `type` 把它们排除在外——把 `"status"` / `"curse"` 直接并进允许集合
+//   是不对的，那会让一张真的记错颜色的**角色牌**从此蒙混过关。
 // ============================================================================
 
 describe("卡表 · 颜色归属", () => {
-  it("已登记游戏级行为的牌只能是 red 或 colorless", () => {
+  it("已登记游戏级行为的角色牌只能是 red 或 colorless", () => {
     for (const id of REGISTERED_CARD_IDS) {
       const def = getCardDef(id);
+      // 状态牌 / 诅咒牌没有角色归属（黏液是唯一一张进了登记表的）。
+      if (def.type === "status" || def.type === "curse") {
+        expect(["status", "curse"], `${id} 是 ${def.type} 牌却记成 color=${def.color}`).toContain(
+          def.color,
+        );
+        continue;
+      }
       expect(
         ["red", "colorless"],
         `${id} 已在 sts-combat.ts 登记（迁移范围=铁甲+无色）却记成 color=${def.color}`,
@@ -406,6 +422,22 @@ describe("遗物表", () => {
     }
   });
 
+  // 第四十四批新增的**永久**用例。起因见 TODOS：`bloody_idol` 在 `sts-combat.ts` 里登记了
+  // 战斗行为、对拍有 136 例背书，`relics.ts` 里却根本没有这个条目——于是「预言机侧可达、
+  // 产品侧不可达」，真实引擎里玩家永远拿不到它。这是本项目第一次出现这个形状，
+  // 而它之所以能藏这么久，是因为 `isRelicSupported` 是个**谓词**：要问它，你得先知道
+  // 要问哪个 id。这条用例把方向反过来——**枚举**战斗内登记的全部 id，逐条要求数据表里有。
+  it("战斗内已登记的遗物必须在数据表里（防止「预言机可达、产品不可达」）", () => {
+    const known = new Set(ALL_RELICS.map((relic) => relic.id));
+    for (const id of SUPPORTED_RELIC_IDS) {
+      expect(known.has(id), `${id} 在 sts-combat.ts 里登记了战斗行为，却不在 relics.ts 里`).toBe(
+        true,
+      );
+      // 谓词与枚举必须同解，否则这条用例会随着某张时点表被漏掉而静默失效。
+      expect(isRelicSupported(id), `${id} 在枚举里却不被 isRelicSupported 认可`).toBe(true);
+    }
+  });
+
   it("各池非空、无重复，且 rarity 与池归属一致", () => {
     for (const character of CHARACTERS) {
       for (const [label, pool, allowed] of [
@@ -499,6 +531,207 @@ describe("敌人与编队表", () => {
         expect(def.hpMax, `${defId} HP 区间反了`).toBeGreaterThanOrEqual(def.hpMin);
         expect(def.moves.length, `${defId} 没有招式`).toBeGreaterThan(0);
       }
+    }
+  });
+
+  // 第二十一批：爬升度分档。这两条守的是「半填」——`ascCalibrated` 与 `hpHigh` 必须同进同退，
+  // 只填一个会让 `constructMonster` 放行一只其实没校准的怪（或反过来，抛掉一只已校准的）。
+  //
+  // ⚠ 第二十二批把值从「一律 7」改成**逐怪的期望阈值**：`Monster::initHp`
+  //（MonsterSpecific.cpp:26-128）里普通怪是 `asc>=7`、精英 `asc>=8`、Boss `asc>=9`，
+  //   三档在同一个 switch 里并排写着。写死 7 的话，精英/Boss 抄错阈值不会被任何东西发现。
+  //
+  // ⚠⚠ 第三十批加了 `null` 这个值：**校准了、但按参考压根没有第二组区间**。
+  //   唯一的宿主是球状守卫者——它走 `initHp` 里那条 `hpNoRoll` 的 case
+  //（MonsterSpecific.cpp:119-124），一次 RNG 都不掷、也不看 ascension（两组都是 `{20,20}`）。
+  //   在此之前这张表隐含「校准 ⇒ 有 hpHigh」，而那条对 `hpNoRoll` 的怪是假的：
+  //   下面那个 `hpNoRoll` 用例明确要求它**不许**带 `hpHigh`，两条会互相打架。
+  const ASC_CALIBRATED: Record<string, number | null> = {
+    cultist: 7,
+    jaw_worm: 7,
+    louse: 7,
+    green_louse: 7,
+    acid_slime_s: 7,
+    acid_slime_m: 7,
+    acid_slime_l: 7,
+    spike_slime_s: 7,
+    spike_slime_m: 7,
+    spike_slime_l: 7,
+    blue_slaver: 7,
+    red_slaver: 7,
+    looter: 7,
+    fungi_beast: 7,
+    mad_gremlin: 7,
+    sneaky_gremlin: 7,
+    fat_gremlin: 7,
+    shield_gremlin: 7,
+    gremlin_wizard: 7,
+    // —— 第二十二批：三个精英（MonsterSpecific.cpp:91-102）——
+    gremlin_nob: 8,
+    lagavulin: 8,
+    sentry: 8,
+    // —— 第二十二批：三个 Boss（MonsterSpecific.cpp:76-89）——
+    the_guardian: 9,
+    slime_boss: 9,
+    hexaghost: 9,
+    // —— 第三十批：第二幕 17 只怪。三族阈值逐只对着 `Monster::initHp` 抄，**不是一律 7**——
+    //   普通怪 :37-74（asc>=7）、精英 :91-102（asc>=8）、Boss :76-89（asc>=9）。
+    //   ⚠ 火炬头是 **9**（Boss 档），尽管它是随从：`MonsterSpecific.cpp:76-89` 那组 case 里
+    //     真的有 `TORCH_HEAD`。别按「随从 = 普通怪」猜。
+    //   ⚠ 青铜球也是 **9**，而它同时带 `hpDiscardRoll`（白掷用低档、正式用高档，asc19 下
+    //     两组真的不同）——那两位必须一起看。
+    chosen: 7,
+    snake_plant: 7,
+    byrd: 7,
+    mugger: 7,
+    shelled_parasite: 7,
+    snecko: 7,
+    centurion: 7,
+    mystic: 7,
+    gremlin_leader: 8,
+    taskmaster: 8,
+    book_of_stabbing: 8,
+    bronze_automaton: 9,
+    bronze_orb: 9,
+    the_collector: 9,
+    torch_head: 9,
+    champ: 9,
+    // ⚠ 球状守卫者：校准了，但 `hpNoRoll` ⇒ **没有** `hpHigh`（见上方注释）。
+    spheric_guardian: null,
+    // —— 第四十六批：第三幕 17 只怪。三族阈值同样逐只对着 `Monster::initHp` 抄——
+    //   普通怪 :37-74（asc>=7）、精英 :91-102（asc>=8）、Boss :76-89（asc>=9）。
+    //   ⚠ **匕首是 8（精英档）**，尽管它是随从：`MonsterSpecific.cpp:91-102` 那组 case 里
+    //     真的有 `DAGGER`。与第三十批的火炬头（随从却是 Boss 档）互为镜像——判据永远是
+    //     「它落在哪一组 case 里」，不是「它是不是随从」。
+    //   ⚠ 暗球游荡者与蜥蜴法师同时带 `hpDiscardRoll`：白掷那次的区间是**字面量、恒低档**
+    //     （`hpRng.random(90,96)` / `(180,190)`），与这里的高档组是两回事。
+    //   ⚠ 觉醒者的高档组是 `{300,320}`——**下界与低档相同**，全表唯一一只。
+    exploder: 7,
+    repulsor: 7,
+    spiker: 7,
+    orb_walker: 7,
+    spire_growth: 7,
+    darkling: 7,
+    writhing_mass: 7,
+    giant_head: 8,
+    nemesis: 8,
+    reptomancer: 8,
+    dagger: 8,
+    awakened_one: 9,
+    time_eater: 9,
+    deca: 9,
+    donu: 9,
+    // ⚠ 大嘴与复形怪：校准了，但 `hpNoRoll` ⇒ **没有** `hpHigh`（`Monster::initHp` 的
+    //   `curHp = monsterHpRange[id][0][0];` 那条 case 压根不看 ascension，三只共用它）。
+    the_maw: null,
+    transient: null,
+  };
+
+  it("已校准爬升度的敌人都带第二组血量区间，且区间合法", () => {
+    for (const [id, atLeast] of Object.entries(ASC_CALIBRATED)) {
+      const def = getEnemyDef(id);
+      expect(def.ascCalibrated, `${id} 没有标 ascCalibrated`).toBe(true);
+      const high = def.hpHigh;
+      if (atLeast === null) {
+        // `hpNoRoll` 的怪：参考那条 case 不看 ascension，所以**不许**有第二组。
+        expect(def.hpNoRoll, `${id} 记成 null 却不是 hpNoRoll`).toBe(true);
+        expect(high, `${id} 是 hpNoRoll，不该有 hpHigh`).toBeUndefined();
+        continue;
+      }
+      expect(high, `${id} 标了 ascCalibrated 却没有 hpHigh`).toBeDefined();
+      if (high === undefined) continue;
+      // 阈值只可能是 7 / 8 / 9（Monster::initHp 的三档），逐怪对表。
+      expect(high.atLeast, `${id} 的 hpHigh.atLeast 抄错了档`).toBe(atLeast);
+      expect(high.hpMin, `${id} 的高档 HP 下限非正`).toBeGreaterThan(0);
+      expect(high.hpMax, `${id} 的高档 HP 区间反了`).toBeGreaterThanOrEqual(high.hpMin);
+      // 参考的第二组恒不低于第一组（爬升度只会让怪更硬）。
+      expect(high.hpMin, `${id} 的高档下限比低档还低`).toBeGreaterThanOrEqual(def.hpMin);
+      expect(high.hpMax, `${id} 的高档上限比低档还低`).toBeGreaterThanOrEqual(def.hpMax);
+    }
+  });
+
+  it("没标 ascCalibrated 的敌人不许带 hpHigh（半填会静默放行）", () => {
+    // ⚠⚠ **第四十六批之后这条用例只剩一个样本，而且它没有别的选择**：三幕 59 只怪全部
+    //   校准了（第二十二批第一幕、第三十批第二幕、本批第三幕），`enemies.ts` 里唯一一只
+    //   没校准的就是第四幕的腐化之心——而它本来就是「只有血量、没有招式」的那条 def
+    //   （当前唯一的用途是当 `sts-combat-rules.test.ts` 那条「未登记怪物 rollMove」的样本）。
+    //   历史：第一幕三精英 / 三 Boss（第二十二批顶掉）→ 第二幕六只（第三十批顶掉）
+    //   → exploder / spiker / orb_walker / reptomancer / giant_head / nemesis（本批顶掉）。
+    // ⚠ **不要为了让这条用例「多几个样本」去造一只游戏里不存在的怪**（同 WORKFLOW 里
+    //   「未迁移编队样本」那条）。它下一次有第二个样本，是第四幕装上尖塔护盾 / 长矛的时候。
+    // ⚠ 第四十七批：样本从 1 个涨到 **6 个**（第四幕三只 + 蒙面强盗三只），
+    //   六只的第二组区间都只写在注释里、没有进 `hpHigh` —— 与第三十二~三十九批对第三幕的
+    //   办法逐字相同（招式的 `ascAmount` / `ascTimes` / `minAscension` 照抄，
+    //   血量第二组与 `ascCalibrated` 留给第四幕的爬升度那一批一起补）。
+    for (const id of ["corrupt_heart", "spire_shield", "spire_spear", "bear", "pointy", "romeo"]) {
+      expect(ASC_CALIBRATED[id], `${id} 不该在已校准名单里`).toBeUndefined();
+      const def = getEnemyDef(id);
+      expect(def.ascCalibrated ?? false, `${id} 不该标 ascCalibrated`).toBe(false);
+      expect(def.hpHigh, `${id} 没标 ascCalibrated 却带了 hpHigh`).toBeUndefined();
+    }
+  });
+
+  // 第二十三批：`hpNoRoll`。它是**不掷 monsterHpRng** 的开关，写错的代价是此后每一次
+  // monsterHpRng 取值整体错位（不是「血量差一点」）。参考里只有三只怪走那条 case
+  //（`Monster::initHp`，MonsterSpecific.cpp:119-124）：球状守卫者 / 大嘴 / 复形怪。
+  // ⚠ 反方向同样要守：`{240,240}` 的守卫者**照样掷一次**，所以「上下界相同」不是判据。
+  // ⚠ 第三十三批装上了**第二个宿主**大嘴（`the_maw`），第三十四批补上**最后一个**
+  //   复形怪（`transient`，999 血）——这条 case 的三只怪现在全部登记，名单封闭。
+  const HP_NO_ROLL = new Set(["spheric_guardian", "the_maw", "transient"]);
+
+  it("只有 initHp 里那条不掷 RNG 的怪才带 hpNoRoll", () => {
+    for (const def of ALL_ENEMIES) {
+      const expected = HP_NO_ROLL.has(def.id);
+      expect(def.hpNoRoll ?? false, `${def.id} 的 hpNoRoll 与名单不符`).toBe(expected);
+      if (expected) {
+        // 那条 case 取的是 `monsterHpRange[id][0][0]`，即区间下界；上下界相同才说明
+        // 数据表里那个「区间」其实只是一个定值。
+        expect(def.hpMax, `${def.id} 不掷 RNG 却有一个真区间`).toBe(def.hpMin);
+        // 它也不看爬升度，所以第二组区间没有意义。
+        expect(def.hpHigh, `${def.id} 不掷 RNG，hpHigh 没有意义`).toBeUndefined();
+      }
+    }
+    // 守卫者是那条「上下界相同但照样掷一次」的反例，必须**不**在名单里。
+    expect(HP_NO_ROLL.has("the_guardian")).toBe(false);
+    expect(getEnemyDef("the_guardian").hpMin).toBe(getEnemyDef("the_guardian").hpMax);
+  });
+
+  // 第二十七批：`hpDiscardRoll`（掷血量之前先白掷一次、结果丢弃的那一次 monsterHpRng）。
+  // 与 `hpNoRoll` 同族的「掷几次」开关，抄错同样是**此后每一次 monsterHpRng 整体错位**。
+  // 参考里恰好四只怪走那一族 case（`Monster::initHp`，MonsterSpecific.cpp:33-36 / :105-117，
+  // 参考只在 ORB_WALKER 那条注了 `// first call is discarded by game`）。
+  // ⚠ 白掷那次的区间恒是 `monsterHpRange[id][0]`（**低档**那一组），而正式那次在
+  //   `ascension >= N` 时用的是**高档**——所以 asc>=N 时两次的上下界真的不同
+  //   （青铜球：白掷恒 `(52,58)`，正式是 `{52,58}` 或 `{54,60}`）。这里逐怪对的是
+  //   **那一对数**，不是「有没有这个字段」。
+  //   ⚠ 第二十七批这条注释把青铜球的低档写成了 `{50,56}`，与 `MonsterIds.h:160` 不符，
+  //     第二十八批登记它时校正。
+  // ⚠ 名单里只有**已登记**的那些，与 `HP_NO_ROLL` 同一条惯例。
+  //   ✅ **第三十六批装上蜥蜴法师之后这一族的四只怪全部登记，名单封闭**
+  //   （工头 / 青铜球 / 暗球游荡者 / 蜥蜴法师）。
+  const HP_DISCARD_ROLL: Record<string, { min: number; max: number }> = {
+    taskmaster: { min: 54, max: 60 },
+    // 第二十八批：青铜球（`MonsterSpecific.cpp:109-112`）。
+    bronze_orb: { min: 52, max: 58 },
+    // 第三十三批：暗球游荡者（`MonsterSpecific.cpp:32-35`）——**这一族的正主**，
+    // 参考只在它那条注了 `// first call is discarded by game`。
+    // ⚠ 低档组是 `{90,96}`、高档组是 `{92,102}`，白掷那次恒用低档。
+    orb_walker: { min: 90, max: 96 },
+    // 第三十六批：蜥蜴法师（`MonsterSpecific.cpp:104-107`）——**这一族最后一个宿主**，
+    // 装完这四只名单就封闭了。⚠ 低档组是 `{180,190}`、高档组是 `{190,200}`，白掷恒用低档。
+    reptomancer: { min: 180, max: 190 },
+  };
+
+  it("只有 initHp 里那族「先白掷一次」的怪才带 hpDiscardRoll，且区间逐怪对表", () => {
+    for (const def of ALL_ENEMIES) {
+      const expected = HP_DISCARD_ROLL[def.id];
+      if (expected === undefined) {
+        expect(def.hpDiscardRoll, `${def.id} 不该带 hpDiscardRoll`).toBeUndefined();
+        continue;
+      }
+      expect(def.hpDiscardRoll, `${def.id} 应带 hpDiscardRoll`).toEqual(expected);
+      // 两个开关互斥：一个掷两次、一个一次都不掷。
+      expect(def.hpNoRoll ?? false, `${def.id} 不该同时标 hpNoRoll`).toBe(false);
     }
   });
 

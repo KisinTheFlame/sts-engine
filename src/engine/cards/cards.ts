@@ -5959,18 +5959,26 @@ const CARD_LIST: CardDef[] = [
     upgradedDescription: "固有。每个玩家回合开始，将一张随机普通牌加入手牌。",
   },
   {
+    // ⚠ 黏液是**唯一能打出的状态牌**（不需要医疗包）：参考 `CardInstance::canUse`
+    // 的 STATUS 分支写的是 `if (!hasRelic<MEDICAL_KIT>() && id != CardId::SLIMED) return false;`
+    // （`CardInstance.cpp:329`），真实游戏也是「花 1 点能量打出，消耗」。
+    // 费用第十三批从 `null`（=打不出）订正为 **1**：参考的 `Cards.h getEnergyCost` 没有列举
+    // SLIMED，于是落进 `default: return 1`——与真实游戏的 1 费一致（同 `dual_wield` 那种
+    // 「碰巧对」的情形，不是被验证过的权威，记在 TODOS）。
+    // 写成 `null` 会让 `initialCardCost` 返回 -2 哨兵，于是它既过不了能量检查、打出也不扣能量。
     id: "slimed",
     name: "泥泞",
     type: "status",
     rarity: "special",
     color: "status",
-    cost: null,
+    cost: 1,
     targeted: false,
+    // `Cards.h:613 doesCardExhaust` 名单里有 SLIMED。
     exhausts: true,
     effects: [],
     upgradedEffects: [],
-    description: "状态牌，无法打出。留在手里占位，本场战斗结束后消失。",
-    upgradedDescription: "状态牌，无法打出。留在手里占位，本场战斗结束后消失。",
+    description: "消耗。打出后没有任何效果。",
+    upgradedDescription: "消耗。打出后没有任何效果。",
   },
 ];
 

@@ -28,5 +28,18 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm lint
       - run: pnpm format
-      - run: pnpm test
+      # ⚠ CI 上跑 test:ci（--reporter=dot）而不是 test。
+      # 对拍现在是单文件 42586 个用例，默认 reporter 要在主线程为每个用例维护一个任务节点，
+      # CI 机器上来不及回 ack，worker 侧的 birpc 就抛
+      # `[vitest-worker]: Timeout calling "onTaskUpdate"` —— 全部用例其实都通过了，
+      # 红的是报告层。birpc 的超时 vitest 没有暴露成配置，所以只能减轻主线程负担。
+      # 本地仍用默认 reporter：变异测试要靠它逐条读失败用例名。
+      - run: pnpm test:ci
+        env:
+          # ⚠ 对拍会把全部 trace 一次性读进内存：982MB 的 JSONL 解析出来是 **2.1GB 堆**，
+          # 超过 fork 出来的 vitest worker 的 V8 老生代默认上限 ⇒ worker 被杀、
+          # 主进程只看到 ERR_IPC_CHANNEL_CLOSED，日志里**一个字的测试输出都没有**。
+          # 本地用 `NODE_OPTIONS=--max-old-space-size=2048` 可稳定复现。
+          # ⚠ 这只是把天花板抬高，没有消除它——真正的解法见 TODOS「测试基础设施」。
+          NODE_OPTIONS: --max-old-space-size=8192
       - run: pnpm build

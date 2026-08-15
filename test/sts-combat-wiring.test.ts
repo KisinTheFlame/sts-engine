@@ -11,6 +11,7 @@ import {
   usePotion,
 } from "../src/engine/combat-bridge.js";
 import {
+  ASC_SUPPORTED_ENCOUNTERS,
   SUPPORTED_ENCOUNTERS,
   addToBot,
   exportState,
@@ -395,6 +396,9 @@ describe("接线：战斗内选牌屏", () => {
         exhaustOnUse: false,
         // 第九批新增：二连击复制出来的那份结算完直接丢掉，不进任何牌堆。
         purgeOnUse: false,
+        // 第三十五批新增：缓慢（巨头）那道 `if (item.triggerOnUse)` 的门。
+        // 正常出牌恒为真；老档没有这一位时按 true 回填。
+        triggerOnUse: true,
       },
     ]);
     // 出牌队列此刻是空的——只有嵌套出牌（二连击 / 混乱）才会让它非空。
@@ -631,11 +635,46 @@ describe("接线：尚未迁移的内容显式抛错", () => {
     return coverage.supported ? "" : coverage.reason;
   };
 
+  // 样本编队选 `the_heart`（第四幕最终 Boss，第三十九批从 `donu_deca` 换过来）。
+  //
+  // ⚠⚠ **这个样本与「未迁移卡牌」的 `seek` 不是一回事，别照搬那条的心态。**
+  //   `seek` 是**永久**样本：参考项目三个 switch 里都没有它的 case，等于压根没实现，
+  //   所以它永远不会有预言机。而**编队这边没有永久样本**——参考实现了全部编队，
+  //   铺量的终点就是全部登记。所以这个样本**每隔几批就得换一次**，
+  //   WORKFLOW 的「附：踩过的坑」里写着这条。
+  //
+  // 判据是「**挑最晚才会被登记的那个**」。第三幕第三十九批装满（16 / 16）之后，
+  // 剩下的只有**第四幕两个**（`shield_and_spear` / `the_heart`）与**六个事件编队**
+  // （`*_EVENT`，不在任何 `MonsterEncounterPool` 里，见 TODOS 的下一步候选）。
+  // `the_heart` 是全游戏最后一场仗，也是最晚会被登记的那个。
+  //
+  // ⚠⚠ **第三十九批重新评估并推翻了第三十五批否决第四幕的那条理由**（记在这里，
+  //   免得下一个人又照那条推）。当时写的是「换到第四幕要先往 `enemies.ts` 加没有预言机的
+  //   新数据」。对**这一条**用例来说那是不成立的：`stsCombatCoverage` 的第一句就是
+  //   `isEncounterSupported(encounterId)`（= `SUPPORTED_ENCOUNTERS.includes(...)`），
+  //   不命中就当场返回，**根本不会去查 `enemies.ts`**。所以这条用例只需要一个
+  //   「不在 `SUPPORTED_ENCOUNTERS` 里的字符串」，零新数据。
+  //   ⚠ 但同一条理由对**另一条**用例（`sts-combat-rules.test.ts` 的「未登记怪物
+  //   rollMove」）**仍然成立**：那条要真的走进 `initCombat`，所以需要一只
+  //   「在 `enemies.ts` 里、却不在 `MOVE_RULES` 里」的怪。两条用例因此代价不同，
+  //   详见那边的注释（本批给 `corrupt_heart` 只补了血量、没补招式）。
+  // ⚠⚠ **第四十七批把 `the_heart` 也登记了，样本换成 `mysterious_sphere`。**
+  //   第三十九批写在这里的「别换成事件编队」那句话到期了——第四幕两个编队本批一起装完，
+  //   剩下的就只有**六个**：`two_fungi_beasts`（第一幕 strong 池）与五个事件编队
+  //   （`LAGAVULIN_EVENT` / `COLOSSEUM_EVENT_SLAVERS` / `COLOSSEUM_EVENT_NOBS` /
+  //   `MUSHROOMS_EVENT` / `MYSTERIOUS_SPHERE_EVENT`）。判据仍是「挑最晚才会被登记的那个」：
+  //   `two_fungi_beasts` 是**真的会在 run 里出现**的编队（它在第一幕 strong 池里），
+  //   所以它排在事件编队前面；五个事件编队里选 `mysterious_sphere`，因为它的
+  //   `ENCOUNTERS` 条目已经存在且成员与参考一致（两只暗球游荡者），零新数据。
+  // ⚠ 六个都由**已登记的怪**组成，所以下一批很可能一次装完——这条样本大概率只活一批。
+  //   这是这条用例的常态（见 WORKFLOW「附：踩过的坑」），不是选错了。
+  // ⚠ 历史：`gremlin_nob`（第十八批顶掉）→ `giant_head`（第三十五批顶掉）→
+  //   `donu_deca`（第三十九批顶掉）→ `the_heart`（**第四十七批**顶掉）→ 现在这个。
   it("未迁移的编队：startCombat 抛错，且不留半个战斗状态", () => {
     const state = runAtMap();
-    expect(() => startCombat(state, "gremlin_nob")).toThrow(/gremlin_nob/);
+    expect(() => startCombat(state, "mysterious_sphere")).toThrow(/mysterious_sphere/);
     expect(state.combat).toBeNull();
-    expect(reason(state, "gremlin_nob")).toContain("尚未迁移");
+    expect(reason(state, "mysterious_sphere")).toContain("尚未迁移");
   });
 
   // 样本牌选 `seek` 搜寻：参考项目三个 switch 里都**没有 case**，等于压根没实现，
@@ -649,15 +688,66 @@ describe("接线：尚未迁移的内容显式抛错", () => {
     expect(() => startCombat(state, "cultist")).toThrow();
   });
 
+  // 样本药水选 `essence_of_darkness` 暗影精华，理由与上面那张 `seek` 同族、而且**是永久的**：
+  // 参考的 `Actions::EssenceOfDarkness` 是 `return sts::Action();`——一个 `actFunc` 为空的
+  // `std::function`，`executeActions` 那句 `a(*this)` 会抛 `std::bad_function_call`，
+  // harness 当场终止 ⇒ 它永远不可能有预言机。（第四十五批把原样本 `snecko_oil` 登记了。）
   it("未迁移的药水 → 抛错", () => {
     const state = runAtMap();
-    state.potions = ["snecko_oil", null, null];
-    expect(reason(state, "cultist")).toContain("snecko_oil");
+    state.potions = ["essence_of_darkness", null, null];
+    expect(reason(state, "cultist")).toContain("essence_of_darkness");
   });
 
   it("非铁甲角色：起始牌组就有未迁移的牌，因此照样挡住", () => {
     const state = newRun({ runId: "w", seed: 1, character: "silent" });
     expect(reason(state, "cultist")).toContain("尚未迁移");
+  });
+
+  // ⚠⚠ 这三条守的是 `RelicInstance.data`（第四十四批）——**它没有 trace 预言机**：
+  //   一条 trace 就是一场战斗，而 `data` 的语义是「跨战斗延续」，写回去的值下一场才被读到。
+  //   对拍能守的只有 `initRelics` 那一半（`@relic12` 发了非 0 的 data）；「写回」与
+  //   「run 层 ⟺ 战斗内的搬运」只能靠这里守。
+  it("遗物的 data：run 层的 counter 搬进战斗（快乐花 `= data + 1` 那个非直觉的 +1）", () => {
+    const state = runAtMap();
+    // counter = 2 ⇒ 战斗内 happyFlowerCounter = 3 ⇒ 当场命中「== 3」并给 1 点能量后归零。
+    state.relics.push({ id: "happy_flower", counter: 2 });
+    startCombat(state, "cultist");
+    expect(state.combat!.player.happyFlowerCounter).toBe(0);
+    // 第 1 回合能量 = energyPerTurn(3) + 快乐花那 1 点。
+    expect(state.combat!.player.energy).toBe(4);
+  });
+
+  it("遗物的 data：战斗结束时写回 run 层（对齐 `updateRelicsOnExit`）", () => {
+    // 全是打击，邪教徒 48 血——几回合就能打完，中途每打一张牌墨水瓶都 +1。
+    const state = runWithDeck(new Array<string>(10).fill("strike"));
+    state.relics.push({ id: "ink_bottle", counter: 7 });
+    startCombat(state, "cultist");
+    expect(state.combat!.player.inkBottleCounter).toBe(7);
+    let guard = 0;
+    while (state.combat !== null && guard < 500) {
+      applyAction(state, nextAction(state));
+      guard += 1;
+    }
+    expect(state.combat).toBeNull();
+    // 打了 n 张牌 ⇒ 计数器从 7 走了 n 步（每到 10 归零），并写回 run 层。
+    const relic = state.relics.find((r) => r.id === "ink_bottle")!;
+    expect(relic.counter).not.toBe(7);
+    expect(relic.counter).toBeGreaterThanOrEqual(0);
+    expect(relic.counter).toBeLessThan(10);
+  });
+
+  it("遗物的 data：御守 / 蜥蜴尾读的是「真假」，counter 为 0 等于战斗内没有这颗遗物", () => {
+    const withCharge = runAtMap();
+    withCharge.relics.push({ id: "lizard_tail", counter: 1 });
+    startCombat(withCharge, "cultist");
+    expect(withCharge.combat!.player.relicBits).toContain("lizard_tail");
+
+    const depleted = runAtMap();
+    depleted.relics.push({ id: "lizard_tail", counter: 0 });
+    startCombat(depleted, "cultist");
+    // ⚠ 容器里**有**这颗遗物，但玩家那份位集合里没有——`setHasRelic<X>(r.data)` 覆盖掉了。
+    expect(depleted.combat!.relics.map((r) => r.id)).toContain("lizard_tail");
+    expect(depleted.combat!.player.relicBits).not.toContain("lizard_tail");
   });
 
   it("遗物不参与前置检查——已登记的照常生效（金刚杵 +1 力量）", () => {
@@ -669,10 +759,15 @@ describe("接线：尚未迁移的内容显式抛错", () => {
   });
 
   it("遗物不参与前置检查——未登记的不挡路，只是暂时没有战斗内效果", () => {
-    // 赤备（战斗开局 +8 活力）的战斗内行为还没迁移：它不该让整场战斗打不起来，
-    // 只是这一场没有它的效果。等它登记进 sts-combat 时再补。
+    // ⚠⚠ **样本挑的是「永远不会被登记」的那一族，而不是「下一批就要装」的那种。**
+    //   原先用的是赤备（第四十四批把它装了），换样本这件事与「未迁移编队」那两条用例
+    //   同族——区别是这里**有**永久解：圣水 / 忍者卷轴 / 纯净水造的是 `MIRACLE` / `SHIV`，
+    //   而这两张牌在参考项目的三个 switch 里**都没有 case**（与 `seek` 完全同理），
+    //   所以它们永远不会有预言机、永远不会进 `sts-combat.ts` 的任何一张时点表。
+    //   别换成工具箱 / 什锦那种——它们不能登记的理由是「多选屏 / 被注释掉」，
+    //   哪天补上多选屏就不成立了。
     const state = runAtMap();
-    state.relics.push({ id: "akabeko", counter: 0 });
+    state.relics.push({ id: "holy_water", counter: 0 });
     expect(stsCombatCoverage(state, "cultist")).toEqual({ supported: true });
     startCombat(state, "cultist");
     expect(state.combat!.player.powers).toEqual([]);
@@ -682,11 +777,50 @@ describe("接线：尚未迁移的内容显式抛错", () => {
 describe("接线：覆盖面登记与 trace 数据双向对齐", () => {
   it("SUPPORTED_ENCOUNTERS 与 test/golden/traces 一一对应", () => {
     const traceDir = fileURLToPath(new URL("./golden/traces", import.meta.url));
-    const withTrace = readdirSync(traceDir)
-      .filter((f) => f.endsWith(".jsonl"))
-      .map((f) => f.replace(/\.jsonl$/, ""))
-      .sort();
+    const withTrace = [
+      ...new Set(
+        readdirSync(traceDir)
+          .filter((f) => f.endsWith(".jsonl"))
+          // `<编队>@ascN` / `<编队>@tgtN` / `<编队>@relicN` / `<编队>@potN` 是同一个编队在
+          // 另一个**爬升度**（第二十一批）、另一个**目标策略**（第三十一批）、另一套
+          // **遗物**（第四十批）或另一套**药水 / 喝药时机**（第四十五批）上的数据，
+          // 不是新编队——把后缀全部剥掉再去重，否则这条对齐会把
+          // `cultist@asc19` / `large_slime@relic1` / `champ@pot1` 当成没登记的编队。
+          // ⚠ 顺序与 `tools/split-traces.mjs` 的拼接顺序一致（asc → tgt → relic → pot），
+          //   所以从右往左剥：先 `@potN`、再 `@relicN`、再 `@tgtN`、最后 `@ascN`。
+          .map((f) =>
+            f
+              .replace(/\.jsonl$/, "")
+              .replace(/@pot\d+$/, "")
+              .replace(/@relic\d+$/, "")
+              .replace(/@tgt\d+$/, "")
+              .replace(/@asc\d+$/, ""),
+          ),
+      ),
+    ].sort();
     // 多列（登记了却没 trace 背书）与漏列（有 trace 却不启用）都会在这里失败。
     expect([...SUPPORTED_ENCOUNTERS].sort()).toEqual(withTrace);
+  });
+
+  it("ASC_SUPPORTED_ENCOUNTERS 与 test/golden/traces 的 @ascN 文件一一对应", () => {
+    const traceDir = fileURLToPath(new URL("./golden/traces", import.meta.url));
+    // 一个编队只要在**任一**爬升度上有 trace，就算它的 asc 分档有背书。
+    const withAscTrace = [
+      ...new Set(
+        readdirSync(traceDir)
+          .filter((f) => f.endsWith(".jsonl"))
+          .map((f) => /^(.+)@asc\d+\.jsonl$/.exec(f))
+          .flatMap((m) => (m === null ? [] : [m[1]!])),
+      ),
+    ].sort();
+    // 多列 = 声称校准过却没有任何 asc trace 走到它（`stsCombatCoverage` 会放行一场
+    // 没有预言机的战斗）；漏列 = 有 asc trace 却不启用。两个方向都必须失败。
+    expect([...ASC_SUPPORTED_ENCOUNTERS].sort()).toEqual(withAscTrace);
+  });
+
+  it("ASC_SUPPORTED_ENCOUNTERS 必须是 SUPPORTED_ENCOUNTERS 的子集", () => {
+    // 「asc>0 有背书、asc0 没有」是不可能的：asc19 那批 variant 用的是同一批编队。
+    const base = new Set(SUPPORTED_ENCOUNTERS);
+    expect(ASC_SUPPORTED_ENCOUNTERS.filter((e) => !base.has(e))).toEqual([]);
   });
 });

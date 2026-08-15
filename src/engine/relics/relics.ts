@@ -30,7 +30,13 @@ function transformCardInstance(state: GameState, card: CardInstance): void {
 // state.relics 只存可序列化的 { id, counter }；计数型遗物读写 self.counter。
 
 // "shop"：商店专属遗物（只在商店出现，不进宝箱/精英/事件掉落池）。
-type RelicRarity = "starter" | "common" | "uncommon" | "rare" | "boss" | "shop";
+// "special"：**不进任何随机池**的遗物——事件专属（金偶像 / 血腥雕像 / 绽放印记 / 教士之面 /
+//   尼奥的挽歌 / 诅咒之书那三本 / 尼洛斯那两件 / 蛇头 / 扭曲钳）与兜底的两枚头环。
+//   ⚠ 这一档对齐参考的 `RelicTier::SPECIAL`（`Relics.h:228` 那张 `relicTiers[]`，
+//   181 项逐位对得上），**不是**我们自己发明的分类。判据是「玩家只能从某个具体来源拿到它」，
+//   所以它必须落在 `relicIdsOfRarity` 的三个池之外——见 `REWARD_RELIC_POOL` /
+//   `SHOP_RELIC_POOL` / `bossRelicPool`，三处都只列举具体档位，加一档不会自动渗进去。
+type RelicRarity = "starter" | "common" | "uncommon" | "rare" | "boss" | "shop" | "special";
 
 /**
  * 遗物钩子——**只剩战斗外的三个**。
@@ -1531,16 +1537,124 @@ const RELIC_LIST: RelicDef[] = [
   },
   {
     id: "circlet",
+    // ⚠ 稀有度由 `common` 改成 `special`（第四十四批）：参考的 `relicTiers[]` 给
+    // `CIRCLET` / `RED_CIRCLET` 的是 `RelicTier::SPECIAL`，而真实游戏里它们**只**在
+    // 「奖励池已经掏空」时兜底发放。写成 `common` 会让两枚头环真的混进宝箱 / 精英掉落池。
     name: "头环",
-    rarity: "common",
+    rarity: "special",
     description: "当再也没有别的遗物可拿时，你得到了它。纯属收藏。",
     hooks: {},
   },
   {
     id: "red_circlet",
     name: "赤红头环",
-    rarity: "common",
+    rarity: "special",
     description: "当再也没有别的遗物可拿、连头环都齐了时，你得到了它。",
+    hooks: {},
+  },
+
+  // ===========================================================================
+  // 第四十四批：与参考 `RelicId` 做全表比对之后补齐的 12 条
+  // ===========================================================================
+  //
+  // 起因是 `bloody_idol`：它在 `sts-combat.ts` 里登记了战斗行为、对拍有 136 例背书，
+  // **却根本不在这张表里** —— 于是「预言机侧可达、产品侧不可达」，真实引擎里玩家永远拿不到。
+  // 顺着查下去，参考的 `RelicId` 有 181 项，这张表只有 168 条，差 13 条
+  // （12 条真遗物 + 一个 `INVALID` 哨兵）。这一批把 12 条补齐，并加了一条永久的数据表用例
+  // （`test/data-tables.test.ts` 的「战斗内已登记的遗物必须在数据表里」）把这个形状堵死。
+  //
+  // ⚠ 12 条**全部**是参考的 `RelicTier::SPECIAL`，所以一条都不会渗进奖励 / 商店 / 首领池
+  //   （那三个池按具体档位列举）。补条目填的名称 / 描述是**产品数据**，不是预言机数据；
+  //   战斗内行为该不该登记另说，见 `sts-combat.ts` 的三张时点表。
+  {
+    id: "bloody_idol",
+    name: "血腥雕像",
+    rarity: "special",
+    // 战斗内行为已登记（`Player::gainGold` 末尾，见 sts-combat.ts）。
+    description: "每当你获得金币时，回复 5 点生命。",
+    hooks: {},
+  },
+  {
+    id: "golden_idol",
+    name: "金偶像",
+    rarity: "special",
+    description: "战斗获得的金币增加 25%。",
+    hooks: {},
+  },
+  {
+    id: "mark_of_the_bloom",
+    name: "绽放印记",
+    rarity: "special",
+    // 战斗内行为已登记（`Player::heal` 与 `Player::wouldDie` 各一处，见 sts-combat.ts）。
+    description: "你再也无法回复生命。",
+    hooks: {},
+  },
+  {
+    id: "face_of_cleric",
+    name: "教士之面",
+    rarity: "special",
+    description: "生命上限增加 1 点（每场战斗后）。",
+    hooks: {},
+  },
+  {
+    id: "ssserpent_head",
+    name: "蛇头",
+    rarity: "special",
+    description: "每当你进入一个 ? 房间，获得 50 金币。",
+    hooks: {},
+  },
+  {
+    id: "nloths_gift",
+    name: "尼洛斯的礼物",
+    rarity: "special",
+    description: "接下来 3 次战斗的卡牌奖励中，必定出现 1 张稀有牌。",
+    hooks: {},
+  },
+  {
+    id: "nloths_hungry_face",
+    name: "尼洛斯的饥饿之颜",
+    rarity: "special",
+    description: "下一个你打开的宝箱是空的。",
+    hooks: {},
+  },
+  {
+    id: "neows_lament",
+    name: "尼奥的挽歌",
+    rarity: "special",
+    // 战斗内行为已登记（`initRelics` 里把全场怪的生命压成 1，counter 记剩余次数）。
+    description: "接下来 3 场战斗中，敌人的初始生命降为 1。",
+    hooks: {},
+  },
+  {
+    id: "necronomicon",
+    name: "死灵之书",
+    rarity: "special",
+    // 战斗内行为已登记（`onUseAttackCard`，见 sts-combat.ts）。
+    description: "每回合第一张费用 2 或更高的攻击牌会被打出两次。",
+    hooks: {},
+  },
+  {
+    id: "enchiridion",
+    name: "秘典",
+    rarity: "special",
+    // 战斗内行为**不登记**：`initRelics` 里造的是「从整个能力牌池随机取一张」，
+    // 随机牌可能是尚未登记的牌 ⇒ trace 不可重放（与手册 / 枯枝 / 尼尔的法典同族）。
+    description: "每场战斗开始时，将 1 张随机能力牌加入手牌，其本场费用为 0。",
+    hooks: {},
+  },
+  {
+    id: "nilrys_codex",
+    name: "尼尔的法典",
+    rarity: "special",
+    description: "每回合结束时，从 3 张随机牌中选 1 张洗入抽牌堆。",
+    hooks: {},
+  },
+  {
+    id: "warped_tongs",
+    name: "扭曲钳",
+    rarity: "special",
+    // 战斗内行为已登记（`initRelics` 的 atTurnStartPostDraw + `applyStartOfTurnPostDrawRelics`）。
+    description: "每回合开始时，随机升级 1 张手牌（仅限本场战斗）。",
     hooks: {},
   },
 ];
