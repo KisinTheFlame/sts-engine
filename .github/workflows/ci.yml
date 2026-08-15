@@ -34,35 +34,18 @@ jobs:
       # `[vitest-worker]: Timeout calling "onTaskUpdate"` —— 全部用例其实都通过了，
       # 红的是报告层。birpc 的超时 vitest 没有暴露成配置，所以只能减轻主线程负担。
       # 本地仍用默认 reporter：变异测试要靠它逐条读失败用例名。
-      # —— 临时诊断（查清 CI 上 test:ci 被杀的真因后删掉）——
-      - name: 诊断：runner 资源
-        run: |
-          echo "--- 内存 ---"; free -m
-          echo "--- 磁盘 ---"; df -h /
-          echo "--- CPU ---"; nproc
-          echo "--- trace 数据 ---"; du -sh test/golden/traces
-      - name: 诊断：带退出码跑对拍，滤掉进度点只看报错
-        run: |
-          set +e
-          # ⚠ flag 必须走 NODE_OPTIONS：直接传给 node 的话 fork 出的 worker 不继承。
-          NODE_OPTIONS=--max-old-space-size=3072 \
-            npx vitest run test/sts-combat-trace.test.ts --reporter=dot \
-            > /tmp/out.log 2>&1
-          echo "EXIT=$?"
-          echo "--- 滤掉进度点之后的全部输出 ---"
-          sed 's/·//g' /tmp/out.log | grep -vE '^\s*$' | tail -60
-          echo "--- 事后内存 ---"; free -m
-          exit 0
       - run: pnpm test:ci
         env:
           # ⚠ 对拍会把全部 trace 一次性读进内存：982MB 的 JSONL 解析出来是 **2.1GB 堆**，
           # 超过 fork 出来的 vitest worker 的 V8 老生代默认上限 ⇒ worker 被杀、
           # 主进程只看到 ERR_IPC_CHANNEL_CLOSED，日志里**一个字的测试输出都没有**。
           # 本地用 `NODE_OPTIONS=--max-old-space-size=2048` 可稳定复现。
-          # ⚠⚠ 值要**压低**不要抬高：先设 8192 时 CI 反而连挂两次（89 秒后进程被
-          # SIGKILL、日志截断、一个字输出都没有）。把上限设得远高于实际需要，
-          # V8 就会推迟大回收、峰值 RSS 冲上去被 OS 杀掉。实测需要 2.1GB，
-          # 3072 给了足够余量又逼 V8 老实回收；本地 2048 会挂、3072/4096 都过。
+          # ⚠⚠ 这一格与 `test:ci` 里的 `--maxWorkers=1` 是**一对**，缺一个就会抖：
+          #   * 对拍单文件要 2.1GB 堆；默认 4 个 worker 并发时峰值叠加，CI 上时灵时不灵
+          #     （同一个 commit 连挂两次又自己过一次）。`--maxWorkers=1` 让大文件独占。
+          #   * 上限要**压低**不要抬高：先设 8192 时反而挂得更干脆（进程被 SIGKILL、
+          #     日志截断、一个字输出都没有）——把上限设得远高于实际需要，V8 就推迟大回收。
+          # 实测：单独跑对拍文件在 CI 上 EXIT=0；本地 2048 挂、3072/4096 过。
           # ⚠ 这只是把天花板抬高，没有消除它——真正的解法见 TODOS「测试基础设施」。
           NODE_OPTIONS: --max-old-space-size=3072
       - run: pnpm build
