@@ -52,6 +52,13 @@ jobs:
       - name: pnpm test:ci
         shell: bash
         run: |
-          set -o pipefail
-          pnpm test:ci 2>&1 | sed 's/·//g' | grep -vE '^[[:space:]]*$'
+          # ⚠⚠ **不要用管道**。管道会缓冲，进程一旦被杀，缓冲区里的输出全丢——
+          # GitHub 日志上只剩 `RUN v3.2.6` 一行，看起来像「死得很早」，实际可能跑到了末尾。
+          # 这个坑连续吞掉了三轮排查的证据。先落盘、再打印、最后用真实退出码退出。
+          set +e
+          pnpm test:ci > /tmp/test.log 2>&1
+          code=$?
+          echo "EXIT=$code"
+          sed 's/·//g' /tmp/test.log | grep -vE '^[[:space:]]*$' | tail -80
+          exit $code
       - run: pnpm build
