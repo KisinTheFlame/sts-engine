@@ -65,22 +65,31 @@ describe("trace 数据自身的不变量", () => {
   // ⚠ 反方向（常数偏大）**测不出来**，数据里没有那份信息，见 HARNESS_GOLD_BASELINE 的注释。
   // ⚠ 这条必须扫**全库**，所以它用 `forEachTrace` 流式遍历（一次只留一个文件），
   //   而不是像切片那样把语料读成数组——它要是也持有全量，这次拆分就白拆了。
-  it(`每条快照的 goldGained 都不低于 -${HARNESS_GOLD_BASELINE}（金币不会为负）`, () => {
-    let worst = 0;
-    let where = "";
-    forEachTrace((t) => {
-      for (const s of [t.initial, ...t.steps.map((step) => step.after)]) {
-        const d = s.goldGained ?? 0;
-        if (d < worst) {
-          worst = d;
-          where = `${t.encounter} seed ${t.seed} @floor ${t.floor}`;
+  // ⚠⚠ **必须显式给超时**：它要流式扫完 208 个文件 / 982MB，本地约 3 秒、CI 上超过
+  //   vitest 默认的 5000ms。这条曾经让 CI 连红五轮而没人看见原因——当时 `test:ci` 挂着
+  //   `--reporter=dot`，它失败时**什么都不打印**，日志里只剩 `RUN v3.2.6` 一行，
+  //   于是一路往内存/IPC 上猜。教训：**先把现有诊断信息读干净，再动诊断手段本身**。
+  //   语料还会长，所以给的是 5 分钟而不是「刚好够」。
+  it(
+    `每条快照的 goldGained 都不低于 -${HARNESS_GOLD_BASELINE}（金币不会为负）`,
+    { timeout: 300_000 },
+    () => {
+      let worst = 0;
+      let where = "";
+      forEachTrace((t) => {
+        for (const s of [t.initial, ...t.steps.map((step) => step.after)]) {
+          const d = s.goldGained ?? 0;
+          if (d < worst) {
+            worst = d;
+            where = `${t.encounter} seed ${t.seed} @floor ${t.floor}`;
+          }
         }
-      }
-    });
-    expect(
-      worst,
-      `最深的一次金币变化是 ${worst}（${where}）。它比 -HARNESS_GOLD_BASELINE 还低，` +
-        `说明重放侧的入场金币常数比 harness 的小——偷金的钳制会提前生效，见 HARNESS_GOLD_BASELINE。`,
-    ).toBeGreaterThanOrEqual(-HARNESS_GOLD_BASELINE);
-  });
+      });
+      expect(
+        worst,
+        `最深的一次金币变化是 ${worst}（${where}）。它比 -HARNESS_GOLD_BASELINE 还低，` +
+          `说明重放侧的入场金币常数比 harness 的小——偷金的钳制会提前生效，见 HARNESS_GOLD_BASELINE。`,
+      ).toBeGreaterThanOrEqual(-HARNESS_GOLD_BASELINE);
+    },
+  );
 });
