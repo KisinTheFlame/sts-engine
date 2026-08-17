@@ -28,31 +28,40 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm lint
       - run: pnpm format
-      # ⚠ CI 上跑 test:ci（--reporter=dot）而不是 test。
-      # 对拍现在是单文件 42586 个用例，默认 reporter 要在主线程为每个用例维护一个任务节点，
-      # CI 机器上来不及回 ack，worker 侧的 birpc 就抛
-      # `[vitest-worker]: Timeout calling "onTaskUpdate"` —— 全部用例其实都通过了，
-      # 红的是报告层。birpc 的超时 vitest 没有暴露成配置，所以只能减轻主线程负担。
-      # 本地仍用默认 reporter：变异测试要靠它逐条读失败用例名。
+      # ⚠⚠ **这一格曾经挂着 `NODE_OPTIONS=--max-old-space-size=3072` 与 `--maxWorkers=1`，
+      #   两者的理由都已被证伪，第四十八批一并删掉。** 留个墓志铭免得有人再加回来：
+      #
+      #   * 当时的说法是「对拍单文件要 2.1GB 堆 ⇒ 抬高 V8 上限 + 让它独占 worker」。
+      #     堆的数字是真的，因果是假的。真凶是**池**：`forks` 下 worker 要为 42586 个用例
+      #     各发一次 `onTaskUpdate`，进程间 IPC 撑爆 ⇒ `Timeout calling "onTaskUpdate"`，
+      #     以及 worker 被杀后主进程只看到 `ERR_IPC_CHANNEL_CLOSED`。
+      #     修它的是 `vitest.config.ts` 的 `pool: "threads"`，不是这两个旋钮。
+      #   * `--maxWorkers=1` 那句「4 个 worker 并发时峰值叠加」当场就能证伪：拆分前实测
+      #     4 worker 峰值 RSS **2.70GB**、1 worker **2.73GB**——**并发根本不是变量**，
+      #     单个文件持有全量语料才是。
+      #   * 第四十八批把对拍拆成 16 片之后（见 `test/helpers/trace-slices.ts`），
+      #     单片语料约 65MB，实测峰值 RSS 4 worker **1.82GB** / 1 worker **0.81GB**，
+      #     两者都远低于 runner 的 16GB，**没有任何理由再压并发或钉堆上限**。
+      #     真要再遇到内存压力，旋钮是 `SLICE_COUNT`（加片），不是 `--max-old-space-size`。
+      #
+      # ⚠ `--reporter=dot` **保留但已不再是承重墙**：上面两条真因都消除了（池换了、
+      #   单文件最多 3975 个用例），它现在只是让 CI 日志短一点。要删的话连下面的 sed 一起删。
       # ⚠ 过滤掉 dot reporter 的进度点。不过滤的话失败时 GitHub 日志里全是「·」，
       # 真正的报错被冲掉——这个坑连续误导了三轮排查（每次都以为是内存）。
       # `pipefail` 保证退出码来自 vitest 而不是 sed。
       - name: pnpm test:ci
         shell: bash
         run: |
-          set -o pipefail
-          pnpm test:ci 2>&1 | sed 's/·//g' | grep -vE '^[[:space:]]*$'
-        env:
-          # ⚠ 对拍会把全部 trace 一次性读进内存：982MB 的 JSONL 解析出来是 **2.1GB 堆**，
-          # 超过 fork 出来的 vitest worker 的 V8 老生代默认上限 ⇒ worker 被杀、
-          # 主进程只看到 ERR_IPC_CHANNEL_CLOSED，日志里**一个字的测试输出都没有**。
-          # 本地用 `NODE_OPTIONS=--max-old-space-size=2048` 可稳定复现。
-          # ⚠⚠ 这一格与 `test:ci` 里的 `--maxWorkers=1` 是**一对**，缺一个就会抖：
-          #   * 对拍单文件要 2.1GB 堆；默认 4 个 worker 并发时峰值叠加，CI 上时灵时不灵
-          #     （同一个 commit 连挂两次又自己过一次）。`--maxWorkers=1` 让大文件独占。
-          #   * 上限要**压低**不要抬高：先设 8192 时反而挂得更干脆（进程被 SIGKILL、
-          #     日志截断、一个字输出都没有）——把上限设得远高于实际需要，V8 就推迟大回收。
-          # 实测：单独跑对拍文件在 CI 上 EXIT=0；本地 2048 挂、3072/4096 过。
-          # ⚠ 这只是把天花板抬高，没有消除它——真正的解法见 TODOS「测试基础设施」。
-          NODE_OPTIONS: --max-old-space-size=3072
+          # ⚠⚠ **不要用管道**：管道会缓冲，进程被杀时缓冲区全丢，日志上只剩
+          #   `RUN v3.2.6` 一行，看起来像「死得很早」。先落盘、再打印、最后用真实退出码退出。
+          # ⚠⚠ **也不要用 `--reporter=dot`**：它失败时什么都不打印。曾经为了绕 `forks` 池的
+          #   RPC 超时加过它，而那个真因已由 `pool: "threads"` 修掉；留着它的代价是
+          #   CI 连红五轮都看不见原因（真凶其实是一条用例超过了默认 5000ms 超时）。
+          #   **先把现有诊断信息读干净，再动诊断手段本身。**
+          set +e
+          pnpm test:ci > /tmp/test.log 2>&1
+          code=$?
+          echo "EXIT=$code"
+          tail -60 /tmp/test.log
+          exit $code
       - run: pnpm build

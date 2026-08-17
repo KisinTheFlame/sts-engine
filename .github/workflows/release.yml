@@ -52,28 +52,29 @@ jobs:
       - run: pnpm install --frozen-lockfile
         if: steps.check.outputs.exists == 'false'
 
-      # 同 ci.yml：单文件 4 万+ 用例时默认 reporter 会让 worker 的 birpc 超时。
+      # ⚠⚠ 同 ci.yml：这里原先挂着的 `NODE_OPTIONS=--max-old-space-size=3072` 与
+      #   `test:ci` 的 `--maxWorkers=1` 理由都已被证伪（真因是 `forks` 池的 IPC，
+      #   不是内存；并发也不是变量——拆分前 4 worker 2.70GB / 1 worker 2.73GB），
+      #   第四十八批一并删掉。完整的墓志铭与实测数字见 ci.yml 同一格。
+      # ⚠ `--reporter=dot` 保留但已不再承重，只是让日志短一点。
       # ⚠ 过滤掉 dot reporter 的进度点。不过滤的话失败时 GitHub 日志里全是「·」，
       # 真正的报错被冲掉——这个坑连续误导了三轮排查（每次都以为是内存）。
       # `pipefail` 保证退出码来自 vitest 而不是 sed。
       - name: pnpm test:ci
         shell: bash
         run: |
-          set -o pipefail
-          pnpm test:ci 2>&1 | sed 's/·//g' | grep -vE '^[[:space:]]*$'
-        env:
-          # ⚠ 对拍会把全部 trace 一次性读进内存：982MB 的 JSONL 解析出来是 **2.1GB 堆**，
-          # 超过 fork 出来的 vitest worker 的 V8 老生代默认上限 ⇒ worker 被杀、
-          # 主进程只看到 ERR_IPC_CHANNEL_CLOSED，日志里**一个字的测试输出都没有**。
-          # 本地用 `NODE_OPTIONS=--max-old-space-size=2048` 可稳定复现。
-          # ⚠⚠ 这一格与 `test:ci` 里的 `--maxWorkers=1` 是**一对**，缺一个就会抖：
-          #   * 对拍单文件要 2.1GB 堆；默认 4 个 worker 并发时峰值叠加，CI 上时灵时不灵
-          #     （同一个 commit 连挂两次又自己过一次）。`--maxWorkers=1` 让大文件独占。
-          #   * 上限要**压低**不要抬高：先设 8192 时反而挂得更干脆（进程被 SIGKILL、
-          #     日志截断、一个字输出都没有）——把上限设得远高于实际需要，V8 就推迟大回收。
-          # 实测：单独跑对拍文件在 CI 上 EXIT=0；本地 2048 挂、3072/4096 过。
-          # ⚠ 这只是把天花板抬高，没有消除它——真正的解法见 TODOS「测试基础设施」。
-          NODE_OPTIONS: --max-old-space-size=3072
+          # ⚠⚠ **不要用管道**：管道会缓冲，进程被杀时缓冲区全丢，日志上只剩
+          #   `RUN v3.2.6` 一行，看起来像「死得很早」。先落盘、再打印、最后用真实退出码退出。
+          # ⚠⚠ **也不要用 `--reporter=dot`**：它失败时什么都不打印。曾经为了绕 `forks` 池的
+          #   RPC 超时加过它，而那个真因已由 `pool: "threads"` 修掉；留着它的代价是
+          #   CI 连红五轮都看不见原因（真凶其实是一条用例超过了默认 5000ms 超时）。
+          #   **先把现有诊断信息读干净，再动诊断手段本身。**
+          set +e
+          pnpm test:ci > /tmp/test.log 2>&1
+          code=$?
+          echo "EXIT=$code"
+          tail -60 /tmp/test.log
+          exit $code
         if: steps.check.outputs.exists == 'false'
 
       # trusted publishing（OIDC）的 registry 鉴权是 npm CLI（>= 11.5.1）

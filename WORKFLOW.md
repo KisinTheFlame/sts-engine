@@ -247,7 +247,7 @@
 - ⚠ **怪物会往玩家牌堆塞状态牌，而 harness 的 `isReplayableCard` 默认放行任何牌。**
   黏液是**唯一不需要医疗包就能打出的状态牌**（`CardInstance.cpp:329` 有个 `id != SLIMED`
   的例外），所以策略真会去打它 → 必须在 `CARD_RULES` 登记，否则 trace 不可重放。
-  同理，塞进来的状态牌一律要补 `test/sts-combat-trace.test.ts` 的 `CARD` 映射
+  同理，塞进来的状态牌一律要补 `test/helpers/trace-replay.ts` 的 `CARD` 映射
   （它会出现在牌堆快照里）。
 - ⚠ **死亡触发（亡语）天生只在「同伴还活着」时才跑。** `Monster::die` 在 `--monstersAlive`
   之后若归零就写 `outcome` 并**当场 `return`**（`Monster.cpp:293-297`），后面的孢子云 /
@@ -1022,8 +1022,8 @@ trace 的 `initial` 快照取在 `BattleContext::init` **之后**，而 `init` �
    （与爬升度那条轴不同——那条要在 `initCombat` 里读 `ascension`）。
 
 ⚠⚠ **分组键的后缀顺序是固定的：`<编队>[@ascN][@tgtN]`。** 文件名就是冻结数据的身份，
-顺序一换等于给已提交的文件改名。写在 `split-traces.mjs`、`sts-combat-trace.test.ts`
-（describe 分组）与 `sts-combat-wiring.test.ts`（剥后缀时**从右往左**：先 `@tgt` 再 `@asc`）
+顺序一换等于给已提交的文件改名。写在 `split-traces.mjs`、`test/helpers/trace-replay.ts`
+（`defineTraceSuite` 里的 describe 分组）与 `sts-combat-wiring.test.ts`（剥后缀时**从右往左**：先 `@tgt` 再 `@asc`）
 三处，三处必须一致。当前还没有任何 `@asc19@tgt1` 的文件（第三十一批只做 asc0），
 但形状先定死，以后叠加不用再改。
 
@@ -1196,7 +1196,7 @@ POTION_ROTATION[(traceIdx * 3 + i) % POTION_ROTATION.size()]  // 13 项
 **静默变长**。所以 `relicSet` 同时进**指纹**与**分组键**，撞号按构造消失。
 
 **后缀顺序固定为 `<编队>[@ascN][@tgtN][@relicN][@potN]`**（`@potN` 是第四十五批加的第四维），
-三处必须一致：`split-traces.mjs`、`sts-combat-trace.test.ts` 的 describe 键、
+三处必须一致：`split-traces.mjs`、`test/helpers/trace-replay.ts` 的 describe 键、
 `sts-combat-wiring.test.ts` 剥后缀时**从右往左**（先 `@pot`、再 `@relic`、再 `@tgt`、最后 `@asc`）。
 
 **怎么验证撞号真的不会发生**（第四十批用的三条，逐条都是可跑的检查，不是推理）：
@@ -1543,7 +1543,7 @@ grep -rn "\b<RELIC_NAME>\b" src/combat include/combat | wc -l
 
 第四条与爬升度、目标策略、遗物**同构**的轴：编队那一维上的第四个后缀，`champ@pot1.jsonl`。
 **后缀顺序从此固定为 `<编队>[@ascN][@tgtN][@relicN][@potN]`**，三处必须一致
-（`split-traces.mjs` / `sts-combat-trace.test.ts` 的 describe 键 /
+（`split-traces.mjs` / `test/helpers/trace-replay.ts` 的 describe 键 /
 `sts-combat-wiring.test.ts` 剥后缀时**从右往左**：先 `@pot`、再 `@relic`、再 `@tgt`、最后 `@asc`）。
 
 #### ⚠⚠ 它是**两个**字段，而不是一个——原因值得记住
@@ -1720,7 +1720,7 @@ tools/regen-traces.sh --install UPPERCUT DEMON_FORM --moves SENTRY_BOLT SENTRY_B
 ### 别忘了
 
 - **参考仓库的改动要提交**，否则这份数据不可复现。脚本会在有未提交改动时警告。
-- 补 `test/sts-combat-trace.test.ts` 的 `CARD` 映射（参考枚举名 → 我们的 id）。
+- 补 `test/helpers/trace-replay.ts` 的 `CARD` 映射（参考枚举名 → 我们的 id）。
   漏了会在 `initCombat` 抛「暂未登记卡牌行为」。
 - 新出现的 Power 要补 `POWER` 映射。**漏了会抛错，不会静默**——这是故意的，
   `mapPowers` 早先会静默丢弃未映射的 power，于是「参考施加了某个我们没实现的 power」
@@ -1734,8 +1734,59 @@ tools/regen-traces.sh --install UPPERCUT DEMON_FORM --moves SENTRY_BOLT SENTRY_B
 pnpm typecheck && pnpm lint && pnpm test && pnpm format
 ```
 
-全绿是**下限**，不是完成。`sts-combat-trace.test.ts` 现有 41266 例逐帧对拍（第四十六批），
+全绿是**下限**，不是完成。逐帧对拍现有 **42585 例**（第四十八批），
 其中一部分用**全升级牌组**——所以每条规则 `up ? x : y` 的两个分支都会被验证。
+
+### ⚠ 对拍是**多个文件**，但仍然「一条 trace 一个 `it()`」
+
+第四十八批之前，对拍是单个 `test/sts-combat-trace.test.ts`：一个文件 42586 个用例，
+把 208 个 jsonl（约 1.0GB）一次性读进内存 ⇒ 2.1GB 堆 / **2.70GB 峰值 RSS**。
+数据的目标是整个游戏、还在长，所以它被拆成了：
+
+| 文件                                     | 是什么                                                                                                                                                                     |
+| ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `test/helpers/trace-replay.ts`           | **机器**：映射表（`CARD` / `MONSTER` / `MOVE` / `POWER` …）、`shape()`、`start()`、`defineTraceSuite()`。**不叫 `*.test.ts`，自身不产生用例。** 补映射、改折叠逻辑都在这里 |
+| `test/helpers/trace-slices.ts`           | **切片登记表**：`SLICE_COUNT` + 「哪个 jsonl 归哪一片」                                                                                                                    |
+| `test/sts-combat-trace-{00..15}.test.ts` | 16 个薄文件，各两行，每个认领一片语料                                                                                                                                      |
+| `test/sts-combat-trace-meta.test.ts`     | **完备性断言** + 语料的全局不变量（`goldGained`）                                                                                                                          |
+
+⚠⚠ **拆的是文件，不是用例。** 粒度仍然是「一条 trace 一个 `it()`」，一个字都不许改：
+TODOS 里上千个变异例数的单位都是「失败用例数」= 失败 trace 数，粒度一变那份表**整体失去
+可比性**，而它是这个项目最有价值的产出之一。第四十八批的验收就是「同一条探针在拆分前后
+逐例相同」（五条，见 TODOS）。
+
+实测（`/usr/bin/time -l`，全量 `pnpm test`）：
+
+| 布局             | maxWorkers | 峰值 RSS    | 墙钟       |
+| ---------------- | ---------- | ----------- | ---------- |
+| 拆分前（单文件） | 4          | **2.70 GB** | 31.3 s     |
+| 拆分前（单文件） | 1          | 2.73 GB     | 33.3 s     |
+| 拆成 16 片       | 1          | **0.81 GB** | 36.3 s     |
+| 拆成 16 片       | 4          | **1.82 GB** | **13.8 s** |
+
+⚠ 拆分**前**那两行是这次最重要的一条读数：`maxWorkers` 在那时**根本不是变量**
+（2.70 vs 2.73GB）——所以 CI 上那个 `--maxWorkers=1` 从来没起过作用，第四十八批删掉了它
+（连同 `--max-old-space-size=3072`，理由同样被证伪，墓志铭见 `ci.yml`）。
+
+#### ⚠⚠ 完备性断言：为什么它必须存在
+
+拆分带来一种**静默**的失败模式，而且它比「对拍太吃内存」严重得多：
+
+> 某一批新增的 trace 文件如果不落进任何切片，它**一声不响地不被测试**，CI 全绿。
+
+对拍的全部价值就是「同种子逐位复现原版」，少测一个编队 = 那个编队的背书凭空消失，
+而且没有任何人会发现。所以 `sts-combat-trace-meta.test.ts` 里那条
+「`golden/traces` 下每个 `.jsonl` 都恰好被一个切片认领」是**硬要求**，它有两条约束：
+
+- **用目录的实际内容去问**，不拿写死的名单核对——漏掉的文件同时不在名单里、也不在任何
+  切片里，正好两边都看不见。
+- **不许加「兜底切片」**（谓词恒真、收容所有没人要的文件）。那样断言永远不会红，
+  等于没有断言。宁可让某个文件暂时无人认领而当场翻红。
+
+分配函数（`sliceIndexOf`）本身是**全函数**：按体积从大到小塞进当前最小的一片，
+任何 `.jsonl` 都恰好落进一片，**新增 trace 文件不需要有人来登记**。
+语料再长时旋钮是 `SLICE_COUNT`（加片 + 照样新建一个两行的 `*.test.ts`），
+**不是** `--max-old-space-size`。
 
 改共享路径（`callEndOfTurnActions`、`drawCards`、`onTurnEnding`、`useCard` 之类）时，
 对拍是最强的自查工具：它对每场战斗每个回合都生效，时点或顺序写错会当场红一大片。
@@ -1754,9 +1805,26 @@ pnpm typecheck && pnpm lint && pnpm test && pnpm format
 ```bash
 git stash list >/dev/null   # 前提：本批的代码**已提交**，还原才有兜底
 # ...改坏一处...
-npx vitest run test/sts-combat-trace.test.ts 2>&1 | grep -E "^\s+Tests "
+npx vitest run 2>&1 | grep -E "^\s+Tests "
 git checkout -- src/engine/sts-combat.ts
 ```
+
+⚠ **对拍是 16 个文件，所以要跑全量**（`vitest run` 不带路径），别只跑其中一片——
+`Tests  N failed` 那一行给的是全部切片的合计，正是历来那个「失败用例数」。
+⚠ 想知道失败落在哪几个编队上（判「探针有没有落在被测路径上」时很有用）：
+
+```bash
+npx vitest run --reporter=dot 2>&1 \
+  | grep -oE 'FAIL  test/sts-combat-trace-[0-9]+\.test\.ts > [^>]+> [^ ]+' \
+  | sed 's/.*> //' | sort | uniq -c | sort -rn
+```
+
+⚠⚠ **例数会随语料增长而变大，别把「与 TODOS 里的旧数字不等」当成回归。**
+第四十八批实测两例：`Actions::AttackPlayer` 的 `clearOnCombatVictory`（第十九批记的 7）
+今天是 212，其中 `THE_GUARDIAN` 一组**恰好还是 7**，多出来的 205 全部来自第二十批之后
+新增的 31 个编队组；束缚回合末递减（第三十三批记的 104）今天是 224 =
+`SPIRE_GROWTH` **104** + 第四十六批才有的 `SPIRE_GROWTH@asc19` 120。
+**判据：先按编队分组拆开再比**，与旧数字对得上的应该是「当时存在的那几个组」。
 
 ⚠ **还原走 `git checkout --`，不要走 `cp x.bak x`，也不要在 `set -e` 的 shell 里批量跑。**
 第十五批踩过：批量脚本里 `vitest ... | grep ... | head -1` 的 `head` 提前关管道，
