@@ -59,7 +59,7 @@ jobs:
           pnpm test:ci > /tmp/test.log 2>&1
           code=$?
           echo "EXIT=$code"
-          echo '--- 日志全文（滤掉进度点）---'
-          sed 's/·//g' /tmp/test.log | grep -vE '^[[:space:]]*$' | cat -A | head -60
+          echo '--- 末尾 60 行 ---'
+          tail -60 /tmp/test.log
           exit $code
       - run: pnpm build

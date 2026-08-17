@@ -70,7 +70,7 @@ jobs:
           pnpm test:ci > /tmp/test.log 2>&1
           code=$?
           echo "EXIT=$code"
-          sed 's/·//g' /tmp/test.log | grep -vE '^[[:space:]]*$' | tail -80
+          tail -60 /tmp/test.log
           exit $code
         if: steps.check.outputs.exists == 'false'
 

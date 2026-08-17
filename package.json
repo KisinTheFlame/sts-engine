@@ -32,7 +32,7 @@
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:ci": "vitest run --reporter=dot",
+    "test:ci": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
