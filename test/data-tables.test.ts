@@ -625,6 +625,15 @@ describe("敌人与编队表", () => {
     //   `curHp = monsterHpRange[id][0][0];` 那条 case 压根不看 ascension，三只共用它）。
     the_maw: null,
     transient: null,
+    // —— 第五十二批：第四幕三只 + 蒙面强盗三只。⚠ **三档阈值并存**：尖塔那两只是精英族
+    //   `asc >= 8`、腐化之心是 Boss 族 `asc >= 9`、三只强盗是普通怪族 `asc >= 7`。
+    //   照抄各自的 `setRandomHp(hpRng, asc >= N)`，别按「第四幕都用 9」推。
+    spire_shield: 8,
+    spire_spear: 8,
+    corrupt_heart: 9,
+    bear: 7,
+    pointy: 7,
+    romeo: 7,
   };
 
   it("已校准爬升度的敌人都带第二组血量区间，且区间合法", () => {
@@ -644,30 +653,47 @@ describe("敌人与编队表", () => {
       expect(high.atLeast, `${id} 的 hpHigh.atLeast 抄错了档`).toBe(atLeast);
       expect(high.hpMin, `${id} 的高档 HP 下限非正`).toBeGreaterThan(0);
       expect(high.hpMax, `${id} 的高档 HP 区间反了`).toBeGreaterThanOrEqual(high.hpMin);
-      // 参考的第二组恒不低于第一组（爬升度只会让怪更硬）。
+      // 参考的第二组**下限**恒不低于第一组。
       expect(high.hpMin, `${id} 的高档下限比低档还低`).toBeGreaterThanOrEqual(def.hpMin);
-      expect(high.hpMax, `${id} 的高档上限比低档还低`).toBeGreaterThanOrEqual(def.hpMax);
+      // ⚠⚠ **上限不成立，而且这是第五十二批量出来的**：熊是 `{{38,52},{40,44}}`
+      //   （`MonsterIds.h:156`）——高档把区间**收窄**了（下限抬高 38→40，上限反而降低 52→44），
+      //   不是整体抬高。所以「爬升度只会让怪更硬」这个直觉在血量上**是错的**，
+      //   写死成 `hpMax >= def.hpMax` 会把一条如实转写的数据判成错的。
+      //   ⚠ 全 65 只里只有它一只这样，所以这里点名放行、而不是把这条断言删掉——
+      //   下一只出现同族的怪必须回来读这段注释，确认它也是参考里真的这么写。
+      if (id !== "bear") {
+        expect(high.hpMax, `${id} 的高档上限比低档还低`).toBeGreaterThanOrEqual(def.hpMax);
+      }
     }
   });
 
-  it("没标 ascCalibrated 的敌人不许带 hpHigh（半填会静默放行）", () => {
-    // ⚠⚠ **第四十六批之后这条用例只剩一个样本，而且它没有别的选择**：三幕 59 只怪全部
-    //   校准了（第二十二批第一幕、第三十批第二幕、本批第三幕），`enemies.ts` 里唯一一只
-    //   没校准的就是第四幕的腐化之心——而它本来就是「只有血量、没有招式」的那条 def
-    //   （当前唯一的用途是当 `sts-combat-rules.test.ts` 那条「未登记怪物 rollMove」的样本）。
-    //   历史：第一幕三精英 / 三 Boss（第二十二批顶掉）→ 第二幕六只（第三十批顶掉）
-    //   → exploder / spiker / orb_walker / reptomancer / giant_head / nemesis（本批顶掉）。
-    // ⚠ **不要为了让这条用例「多几个样本」去造一只游戏里不存在的怪**（同 WORKFLOW 里
-    //   「未迁移编队样本」那条）。它下一次有第二个样本，是第四幕装上尖塔护盾 / 长矛的时候。
-    // ⚠ 第四十七批：样本从 1 个涨到 **6 个**（第四幕三只 + 蒙面强盗三只），
-    //   六只的第二组区间都只写在注释里、没有进 `hpHigh` —— 与第三十二~三十九批对第三幕的
-    //   办法逐字相同（招式的 `ascAmount` / `ascTimes` / `minAscension` 照抄，
-    //   血量第二组与 `ascCalibrated` 留给第四幕的爬升度那一批一起补）。
-    for (const id of ["corrupt_heart", "spire_shield", "spire_spear", "bear", "pointy", "romeo"]) {
-      expect(ASC_CALIBRATED[id], `${id} 不该在已校准名单里`).toBeUndefined();
-      const def = getEnemyDef(id);
-      expect(def.ascCalibrated ?? false, `${id} 不该标 ascCalibrated`).toBe(false);
-      expect(def.hpHigh, `${id} 没标 ascCalibrated 却带了 hpHigh`).toBeUndefined();
+  // ⚠⚠ **第五十二批：这条用例失去了最后一个样本，改成断言不变量本身**——第三次遇到这件事
+  //   （第四十七批的「未登记怪物 rollMove」、第四十八批的「未迁移编队」，办法照抄）。
+  //   本批把第四幕三只 + 蒙面强盗三只的第二组血量区间从注释搬进 `hpHigh` 并置了
+  //   `ascCalibrated` 之后，`enemies.ts` 里**一只没校准的怪都不剩**，「半填」这个形态
+  //   因此不再有宿主。
+  // ⚠ 它守的东西没变，只是方向反了过来：原来问「没校准的怪有没有偷偷带 hpHigh」，
+  //   现在问「是不是每一只都校准了、而且 `ASC_CALIBRATED` 这张期望表与数据表双向相等」。
+  //   谁新增一只怪却忘了填第二组区间，这条当场红——比原来那条样本用例更强。
+  // ⚠ **不要为了让它「多几个样本」去造一只游戏里不存在的怪**（同 WORKFLOW 那条）。
+  it("每一只怪都已校准爬升度：ASC_CALIBRATED 与 ALL_ENEMIES 双向相等", () => {
+    const expected = new Set(Object.keys(ASC_CALIBRATED));
+    const actual = new Set(ALL_ENEMIES.map((d) => d.id));
+    expect(
+      [...actual].filter((id) => !expected.has(id)),
+      "这些怪不在期望表里",
+    ).toEqual([]);
+    expect(
+      [...expected].filter((id) => !actual.has(id)),
+      "期望表里有 enemies.ts 没有的怪",
+    ).toEqual([]);
+    expect(actual.size, "怪物线收官于 65 只").toBe(65);
+    for (const def of ALL_ENEMIES) {
+      expect(def.ascCalibrated, `${def.id} 没有标 ascCalibrated`).toBe(true);
+      // 「半填」的两种形态都要挡：标了却没有第二组（非 hpNoRoll），或没标却带了第二组。
+      if (def.hpNoRoll !== true) {
+        expect(def.hpHigh, `${def.id} 标了 ascCalibrated 却没有 hpHigh`).toBeDefined();
+      }
     }
   });
 

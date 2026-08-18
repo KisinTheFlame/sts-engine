@@ -2260,11 +2260,12 @@ const ENEMY_LIST: EnemyDef[] = [
     // MonsterIds.h:164 `{{750,750},{800,800}}`；`setRandomHp(hpRng, asc >= 9)`
     //（MonsterSpecific.cpp:76-89 的 **Boss** 档，与六火 / 史莱姆王 / 冠军 / 迪卡多努同族）。
     // ⚠ 上下界相同照样掷一次（`Random::random(int,int)` 无条件 `++counter`），不是 `hpNoRoll`。
-    // ⚠ **第二组区间（800/800，asc>=9）本批不写进 `hpHigh`**：`ascCalibrated` 没有置，
-    //   而「半填」会被 `data-tables.test.ts` 那条用例挡下（省略 = 还没校准，不是「没有第二组」）。
-    //   第四幕的爬升度那一批把两者一起补上，同第三十二~三十九批对第三幕的办法。
+    // ⚠ 第二组区间（800/800，**asc>=9**——Boss 那一族的阈值是 9，不是普通怪的 7、
+    //   也不是精英的 8）。第五十二批补上，`ascCalibrated` 同批置起。
     hpMin: 750,
     hpMax: 750,
+    hpHigh: { atLeast: 9, hpMin: 800, hpMax: 800 },
+    ascCalibrated: true,
     // ⚠ 开局 `preBattleAction` 一次上**两个** Power（MonsterSpecific.cpp:142-146）：
     //     buff<MS::BEAT_OF_DEATH>(asc19 ? 2 : 1);
     //     buff<MS::INVINCIBLE>(asc19 ? 200 : 300);
@@ -2380,9 +2381,11 @@ const ENEMY_LIST: EnemyDef[] = [
     // MonsterIds.h:206 `{{110,110},{125,125}}`；`setRandomHp(hpRng, asc >= 8)`
     //（MonsterSpecific.cpp:99-100，**精英**那一档——⚠ 它是第四幕 Boss 战的一半，
     //  但阈值跟着参考走的是 8 不是 9，与「按身份猜阈值」那条教训同源）。
-    // ⚠ 第二组（125/125，asc>=8）同上，本批不写。
+    // ⚠ 第二组（第五十二批填进 `hpHigh`，本批之前只写在这条注释里）。
     hpMin: 110,
     hpMax: 110,
+    hpHigh: { atLeast: 8, hpMin: 125, hpMax: 125 },
+    ascCalibrated: true,
     // ⚠ 开局 `preBattleAction`（MonsterSpecific.cpp:261-265）：
     //     bc.player.buff<PS::SURROUNDED>();        // ← 给**玩家**上的，纯 bool
     //     buff<MS::ARTIFACT>(asc18 ? 2 : 1);
@@ -2466,9 +2469,11 @@ const ENEMY_LIST: EnemyDef[] = [
     id: "spire_spear",
     name: "尖塔长矛",
     // MonsterIds.h:207 `{{160,160},{180,180}}`；同样是 `setRandomHp(hpRng, asc >= 8)`。
-    // ⚠ 第二组（180/180，asc>=8）同上，本批不写。
+    // ⚠ 第二组（第五十二批填进 `hpHigh`，本批之前只写在这条注释里）。
     hpMin: 160,
     hpMax: 160,
+    hpHigh: { atLeast: 8, hpMin: 180, hpMax: 180 },
+    ascCalibrated: true,
     // ⚠ 开局 `preBattleAction`（MonsterSpecific.cpp:267-270）只有一句
     //   `buff<MS::ARTIFACT>(asc18 ? 2 : 1)`——**没有**护盾那句被围攻。两只怪各写各的。
     moves: [
@@ -2496,7 +2501,14 @@ const ENEMY_LIST: EnemyDef[] = [
             times: 2,
             ascAmount: [{ atLeast: 3, amount: 6 }],
           },
-          { kind: "add_card", cardId: "burn", pile: "discard", count: 2 },
+          // ⚠⚠ **第五十二批裁定了那道 asc18 分岔**：参考 asc18 走的是
+          //   `MakeTempCardInDrawPile(BURN, 2, false)`，而 `shuffleInto = false` ⇒ **一张都不塞**。
+          //   所以 as-built 的行为是「asc<18 塞两张进弃牌堆、asc>=18 什么都不塞」。
+          //   这是 asc19 的 trace **当场量出来的**：本批第一次生成 `shield_and_spear@asc19`
+          //   时，我们这边照旧塞两张 ⇒ 120 条全红，第一回合末的牌堆快照就对不上。
+          // ⚠ 判据仍是那三条：分歧真实存在（真实游戏 asc18 会把灼伤塞进抽牌堆），
+          //   但**补上它没有预言机**——预言机就是参考本身。照抄 as-built，记进「已知偏离」。
+          { kind: "add_card", cardId: "burn", pile: "discard", count: 2, belowAscension: 18 },
         ],
         intent: "attack",
       },
@@ -2552,9 +2564,11 @@ const ENEMY_LIST: EnemyDef[] = [
     name: "熊",
     // MonsterIds.h:156 `{{38,52},{40,44}}`；`setRandomHp(hpRng, asc >= 7)`（普通怪那一档）。
     // ⚠ 高档区间**比低档窄**（40~44 vs 38~52），不是「整体上移」——照抄，别按印象改。
-    // ⚠ 第二组（40~44，asc>=7）同上，本批不写。
+    // ⚠ 第二组（第五十二批填进 `hpHigh`，本批之前只写在这条注释里）。
     hpMin: 38,
     hpMax: 52,
+    hpHigh: { atLeast: 7, hpMin: 40, hpMax: 44 },
+    ascCalibrated: true,
     // ⚠ 它在 `Monster::preBattleAction` 的 switch 里**压根没有 case** ⇒ 开局身上一个 Power
     //   都没有。别按「事件编队」给它加东西。
     moves: [
@@ -2605,9 +2619,11 @@ const ENEMY_LIST: EnemyDef[] = [
     id: "pointy",
     name: "尖头怪",
     // MonsterIds.h:187 `{{30,30},{34,34}}`；`setRandomHp(hpRng, asc >= 7)`。
-    // ⚠ 第二组（34/34，asc>=7）同上，本批不写。
+    // ⚠ 第二组（第五十二批填进 `hpHigh`，本批之前只写在这条注释里）。
     hpMin: 30,
     hpMax: 30,
+    hpHigh: { atLeast: 7, hpMin: 34, hpMax: 34 },
+    ascCalibrated: true,
     moves: [
       {
         // 攻击（MonsterSpecific.cpp:421-423）：`attackPlayerHelper(bc, asc2 ? 6 : 5, 2);`
@@ -2633,9 +2649,11 @@ const ENEMY_LIST: EnemyDef[] = [
     id: "romeo",
     name: "罗密欧",
     // MonsterIds.h:192 `{{35,39},{37,41}}`；`setRandomHp(hpRng, asc >= 7)`。
-    // ⚠ 第二组（37~41，asc>=7）同上，本批不写。
+    // ⚠ 第二组（第五十二批填进 `hpHigh`，本批之前只写在这条注释里）。
     hpMin: 35,
     hpMax: 39,
+    hpHigh: { atLeast: 7, hpMin: 37, hpMax: 41 },
+    ascCalibrated: true,
     moves: [
       {
         // 嘲讽（MonsterSpecific.cpp:436-438）：整条 case **只有收尾**

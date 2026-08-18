@@ -580,8 +580,14 @@ ENC_V0_ACT4="shield_and_spear the_heart masked_bandits_event"
 # ⚠ 那一张觅敌之弱在这里比平时更值钱：本批的第一幕怪（真菌兽 / 拉加维林 / 地精头目）
 #   是第十六~十八批登记的，它们的编队跑在第一幕乘积的 variant 0 上、那副牌组里**没有**
 #   觅敌之弱，所以它们的攻击分类此前**一次背书都没有**。实测每个编队 42~89 次打出。
+# 第五十二批：第四幕 + 蒙面强盗的 **asc19**（harness 的第十一个乘积）。六只怪的第二组血量
+# 区间从注释搬进 `hpHigh`、`ascCalibrated` 同批置起，编队级闸门 `ASC_SUPPORTED_ENCOUNTERS`
+# 也跟着开。⚠ 三档阈值并存：尖塔两只是 asc>=8、腐化之心 asc>=9、三只强盗 asc>=7。
+# ⚠⚠ 熊是 `{{38,52},{40,44}}`——高档把区间**收窄**了（上限 52 → 44），
+#   「爬升度只会让怪更硬」在血量上是错的，data-tables 那条断言按名放行了它。
+ENC_V0_ACT4_ASC19="shield_and_spear@asc19 the_heart@asc19 masked_bandits_event@asc19"
 ENC_V0_EVENT="two_fungi_beasts lagavulin_event colosseum_event_slavers colosseum_event_nobs mushrooms_event mysterious_sphere_event"
-ENC_V0="$ENC_V0_ASC0 $ENC_V0_ASC19 $ENC_V0_TGT1 $ENC_V0_ACT3 $ENC_V0_RELIC $ENC_V0_POT $ENC_V0_ACT3_ASC19 $ENC_V0_ACT3_TGT1 $ENC_V0_ACT4 $ENC_V0_EVENT"
+ENC_V0="$ENC_V0_ASC0 $ENC_V0_ASC19 $ENC_V0_TGT1 $ENC_V0_ACT3 $ENC_V0_RELIC $ENC_V0_POT $ENC_V0_ACT3_ASC19 $ENC_V0_ACT3_TGT1 $ENC_V0_ACT4 $ENC_V0_EVENT $ENC_V0_ACT4_ASC19"
 
 policy_of() {
   case " $ENC_ALL " in *" $1 "*) echo all; return;; esac

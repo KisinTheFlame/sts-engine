@@ -1006,6 +1006,18 @@ export type Effect =
       upgradedAfterTurn?: number;
       ascAmount?: AscTier[];
       minAscension?: number;
+      /**
+       * 敌人专用，与 `minAscension` 方向相反：**整条效果只在 `ascension < belowAscension`
+       * 时才结算**（第五十二批加）。
+       *
+       * ⚠ 宿主是尖塔长矛的灼烧打击：参考在 asc18 走的是
+       * `MakeTempCardInDrawPile(BURN, 2, false)`，而那个 action 的 `shuffleInto` 为 `false`
+       * 时**一张都不塞**（参考的一处「没实现完」，第四十七批就记下了）。
+       * 所以 as-built 的行为是「asc<18 塞两张进弃牌堆、asc>=18 什么都不塞」——
+       * 这不是「换个数值」（那是 `ascAmount`），也不是「多一条语句」（那是 `minAscension`），
+       * 而是**整条效果在高档消失**，需要第三个方向。
+       */
+      belowAscension?: number;
     }
   // —— X 费牌：xValue = 打出时的能量，以下效果按 X 次 / X 倍结算 ——
   | { kind: "deal_damage_all_x"; amount: number } // 对所有敌人造成 amount 伤害，X 次（旋风斩）

@@ -14319,6 +14319,17 @@ function takeTurn(bc: BattleContext, m: CombatMonster): string | null {
     ) {
       continue;
     }
+    // 第五十二批：反方向的那道门（`ascension < belowAscension` 才结算）。
+    // ⚠ 宿主是尖塔长矛的灼烧打击——参考 asc18 那一支调的是
+    //   `MakeTempCardInDrawPile(BURN, 2, false)`，`shuffleInto = false` ⇒ **一张都不塞**。
+    //   照抄 as-built：高档整条效果消失，而不是换个数值或换个牌堆。
+    if (
+      eff.kind === "add_card" &&
+      eff.belowAscension !== undefined &&
+      bc.ascension >= eff.belowAscension
+    ) {
+      continue;
+    }
     // 同理：一旦分出胜负，后续排队效果在参考里也不会再执行。
     if (bc.outcome !== "undecided") {
       return move.id;
@@ -16560,6 +16571,12 @@ export const ASC_SUPPORTED_ENCOUNTERS: readonly string[] = [
   "awakened_one",
   "time_eater",
   "donu_and_deca",
+  // —— 第五十二批：第四幕 + 蒙面强盗的 asc19（六只怪的 `hpHigh` / `ascCalibrated` 同批补齐）——
+  // ⚠ 三个编队的阈值**三档并存**：尖塔护盾 / 长矛是精英族 `asc >= 8`，腐化之心是 Boss 族
+  //   `asc >= 9`，三只强盗是普通怪族 `asc >= 7`。asc19 一次点亮三族的高侧。
+  "shield_and_spear",
+  "the_heart",
+  "masked_bandits_event",
 ];
 
 /** 这个编队在这个爬升度下有没有背书。asc0 恒等于 `isEncounterSupported`。 */
