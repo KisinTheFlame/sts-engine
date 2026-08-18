@@ -812,7 +812,15 @@ filter 到本批的新 variant（见 WORKFLOW），到第二十九批七个 vari
      ✅ `secondBoss`（A20 双 Boss）第五十三批接上了：对齐 `GameContext.cpp:1153-1165`——只有第三幕、
      asc>=20、且打赢的是本幕那个 Boss 时才接着打，**楼层自增**（两场 Boss 的战斗 RNG 因此不同源）、
      **中间不开奖励屏**。⚠ 仍缺：「第几层是哪种房间」仍走近似地图（第 5 项）。
-5. 接 `sts-map`：决定楼层与房间类型。每幕 `Random(seed + offset)`，自成一体；要写
+5. 接 `sts-map`：决定楼层与房间类型。**第五十五批交付了前一半**：翻译层
+   `mapGraphFromStsMap`（`GameMap` → `MapGraph`，6 条用例：非空格一一对应、边照抄顺序、
+   入口 / Boss 合成节点、连通性、三幕多种子、确定性）。
+   ⚠ **后一半留给下一批**：`buildMap` 改用它、删掉玩具地图（`map/map.ts` 与
+   `ENABLED_MAP_TYPES`）、重写 `map.test.ts` 那五条结构断言（它们现在断言的是玩具地图的
+   性质，例如「本里程碑无精英/事件/商店」——真实地图一上来就有）。
+   拆成两批的理由与「机制与铺量分成两个 commit」同源：翻译层能单独验证，
+   而换代那一步同时动路由、测试与 `migrate`，混在一起出问题没法定位。
+   ⚠ 原文如下：决定楼层与房间类型。每幕 `Random(seed + offset)`，自成一体；要写
    `{x, y, edges, parents}` → 我们的 `MapGraph` 的适配。
 6. 接 `sts-neow`：19 种 bonus × 6 种 drawback，其中效果要逐个实现（不是纯映射，工作量最大）。
 7. 游戏级 run 层：奖励（`cardRng`）、遗物池（`relicRng`）、药水掉落（`potionRng` 的 run 级消耗）、
