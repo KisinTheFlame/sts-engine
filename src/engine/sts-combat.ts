@@ -8866,6 +8866,30 @@ const RELIC_IMMEDIATE: Record<string, (bc: BattleContext, relic: CombatRelic) =>
   lantern: (bc) => {
     bc.player.energy += 1;
   },
+  // —— 第四十九批：三颗「`initRelics` 一句话」的遗物 ——
+  //
+  // 杜乌娃娃（DU_VU_DOLL）与巨铃（GIRYA）在参考里是**逐字相同的一句**
+  // （`BattleContext.cpp:268-270` / `:280-282`，两格只差 case 标签）：
+  //     p.buff<PS::STRENGTH>(r.data);
+  // ⚠⚠ **两颗都读 `r.data`，而 `data` 的语义完全不同**：娃娃是「牌组里诅咒的张数」、
+  //   巨铃是「已经举过几次（0~3）」。战斗内**看不出这个区别**——这一格只看数值。
+  //   两者因此必须**分到两个 variant**才分得开谁给了多少力量（本批 `@relic13` 只带娃娃、
+  //   `@relic14` 只带巨铃，各自的 `data` 也取了不同的值 3 / 2）。
+  // ⚠ 是**同步** buff（没有 addToBot），属于 `initRelics` 第一遍，所以开局第一帧就带着力量。
+  // ⚠ `data = 0` 时这一格是**空操作**（`buff(0)`）——那不是「没实现」，是参考的实际行为。
+  du_vu_doll: (bc, relic) => addPower(bc.player.powers, "strength", relic.data),
+  girya: (bc, relic) => addPower(bc.player.powers, "strength", relic.data),
+  // 达摩鲁（DAMARU）：`BattleContext.cpp:260-262` 的 `p.buff<PS::MANTRA>(1);`。
+  // ⚠⚠ **它是硫磺那一族：同一颗遗物有两个时点**，另一处在 `applyStartOfTurnRelics`
+  //   （见 `RELIC_AT_TURN_START` 的那一格）。`init` 不走 `afterMonsterTurns`，所以
+  //   这一处覆盖第 1 回合、那一处覆盖第 2 回合起。少写任一处不会报错，只会每回合少一层。
+  // ⚠ **两处的形状不同，别照抄邻居**：这一处是**同步** `buff`，那一处是
+  //   `addToBot(Actions::BuffPlayer<PS::MANTRA>(1))`。硫磺那一对是两处都同步，
+  //   快乐花 / 熏香炉那两对也是「同步 vs 入队」各一处——三对形状两两不同，逐处照抄。
+  // ⚠ 平静姿态那一半**参考没实现**（`Player.cpp:515` 自注 `// todo handle mantra change
+  //   stance`），所以专注层数会一路涨上去、永远不触发姿态切换。**照抄，不要补**——
+  //   补它没有预言机，预言机就是参考本身（同「好奇心」那条裁定）。
+  damaru: (bc) => addPower(bc.player.powers, "mantra", 1),
   // 贤者之石（第四十批）：对齐 `BattleContext::initRelics` 的那一格
   // （BattleContext.cpp:198-204）：
   //     case R::PHILOSOPHERS_STONE:
@@ -9559,6 +9583,36 @@ const RELIC_AT_TURN_START: ReadonlyArray<readonly [string, (bc: BattleContext) =
       if (bc.turn === 2) {
         addToBot(bc, (c) => gainBlock(c, 18), false);
       }
+    },
+  ],
+  // 达摩鲁（DAMARU，第四十九批）：Player.cpp:513-516，排在船长之轮**之后**、情绪芯片之前：
+  //     if (hasRelic<R::DAMARU>()) {
+  //         bc.addToBot( Actions::BuffPlayer<PS::MANTRA>(1) );
+  //         // todo handle mantra change stance
+  //     }
+  // ⚠ 与 `initRelics` 那一格是**同一颗遗物的第二个时点**（硫磺那一族），但两处形状不同：
+  //   那一处是同步 `buff`，这一处是 `addToBot`。逐处照抄，别对齐成一种。
+  // ⚠ `Actions::BuffPlayer` 的 `clearOnCombatVictory` 取默认 true。
+  [
+    "damaru",
+    (bc) => {
+      addToBot(bc, (c) => addPower(c.player.powers, "mantra", 1));
+    },
+  ],
+  // 情绪芯片（EMOTION_CHIP，第四十九批）：Player.cpp:518-520 **整格是空的**——
+  //     if (hasRelic<R::EMOTION_CHIP>()) {
+  //         // todo if lost hp last turn addToBot(new ImpulseAction())
+  //     }
+  // ⚠⚠ **照抄「什么都不做」，这不是漏抄**（同「好奇心」那条裁定：唯一读点被参考自己注释掉了）。
+  //   补上真实游戏那句「上回合掉过血就触发全部战斗开始效果」**没有预言机**——预言机就是参考本身。
+  // ⚠ 它仍然值得登记，而且它的背书是**反方向**的：给它写任何一个真实效果，
+  //   `@relic13` 那 360 条 trace 会当场红（本批实测「改成 addToBot(GainEnergy(1))」红 240 例）。
+  //   「登记成空操作」与「没登记」在 `isRelicSupported` 上是两种答案，前者说的是
+  //   「参考在战斗内确实什么都不做」。
+  [
+    "emotion_chip",
+    () => {
+      // 参考在这里什么都不做（`// todo if lost hp last turn ...`）。
     },
   ],
   // 号角（HORN_CLEAT，第四十三批）：Player.cpp:529-533，排在快乐花**之后**、熏香炉之前：
