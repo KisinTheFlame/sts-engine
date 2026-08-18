@@ -229,6 +229,24 @@ export type ActEncounters = {
  * monsterRng 是单条持久流：act1 从 Random(seed) 起，act2/3 续 counter。
  * @param seed 游戏种子字符串（base-35）或 int64 bigint。
  */
+/**
+ * `MonsterEncounter` → 引擎的编队 id（第五十一批）。
+ *
+ * ⚠⚠ **这条转换之所以是一行 `toLowerCase()`，是第四十八批挣来的**：那一批把编队线铺满
+ * 63 / 63 时，把我们这边所有编队 id 都对齐成了参考枚举名的小写形式
+ * （`colosseum` → `colosseum_event_nobs`、`mysterious_sphere` → `mysterious_sphere_event`……）。
+ * 当年 TODOS「一、接线」第 4 项写的是「要写 63 项的映射表」——那张表不用写了。
+ *
+ * ⚠ 只对**真实存在的** 63 项成立。`INVALID` 是哨兵，调用方不该拿到它。
+ */
+export function encounterIdOf(e: MonsterEncounter): string {
+  const name = MonsterEncounter[e];
+  if (name === undefined || e === MonsterEncounter.INVALID) {
+    throw new Error(`sts-encounters: 非法的 MonsterEncounter 值 ${String(e)}`);
+  }
+  return name.toLowerCase();
+}
+
 export function generateEncounters(seed: string | bigint): ActEncounters[] {
   const seedLong = typeof seed === "bigint" ? seed : seedStringToLong(seed);
   const rng = new StsRandom(seedLong);

@@ -1443,6 +1443,26 @@ export type ShopState = {
 /** RNG 内部状态：必须完整可序列化并从存档精确复原（issue #234 C11）。 */
 export type RngState = { s0: number; s1: number; s2: number; s3: number };
 
+/**
+ * 一幕的遭遇队列（`sts-encounters` 的 `ActEncounters` 投影成引擎的编队 id）。
+ * 见 `GameState.encounterPlan`。
+ */
+export type ActEncounterPlan = {
+  monsters: string[];
+  elites: string[];
+  boss: string;
+  secondBoss: string | null;
+};
+
+/** 三幕的遭遇计划，下标 0/1/2 = 第一/二/三幕。 */
+export type EncounterPlan = ActEncounterPlan[];
+
+/** 三条队列各自的游标，按幕分开。 */
+export type EncounterCursor = {
+  monsters: number[];
+  elites: number[];
+};
+
 export type GameState = {
   /** 每个动作后自增，供 HTTP 幂等（expectedVersion）与乐观并发。 */
   version: number;
@@ -1498,6 +1518,25 @@ export type GameState = {
   cardSelect: CardSelectState | null;
   /** 已进入过的普通战斗数（决定抽 weak / strong encounter 池，复刻 StS Act1 节奏）。 */
   combatsEntered: number;
+
+  /**
+   * 本局的**怪物遭遇计划**（第五十一批，TODOS「一、接线」第 4 项）。
+   *
+   * 由 `generateEncounters(seed)` 在开局算一次——它是一条**持久的 `monsterRng`**
+   * （`Random(seed)`，三幕续 counter），所以**必须一次性生成、存下来按序索引**，
+   * 不能每进一间房现掷：现掷会让 RNG 消耗顺序与原版对不上。
+   *
+   * ⚠ 每一幕三条队列：`monsters`（弱池 + 强池，按序消费）、`elites`（10 个）、`boss`。
+   * ⚠ `secondBoss` 只有第三幕有值（A20 双 Boss 用），当前 run 层还没消费它。
+   */
+  encounterPlan: EncounterPlan;
+  /**
+   * 三条队列各自的游标，**按幕分开存**（下标 0/1/2 = 第一/二/三幕）。
+   *
+   * ⚠ 按幕存而不是「换幕时清零」是有意的：清零逻辑要挂在某个「进入下一幕」的时点上，
+   * 而那个时点当前散在几处；按幕存的话游标天然不会串幕。
+   */
+  encounterCursor: EncounterCursor;
   /** 本场战斗胜利后是否发一个遗物（精英战为 true；下次 generateReward 消费后清零）。 */
   pendingRelicReward: boolean;
   rng: RngState;

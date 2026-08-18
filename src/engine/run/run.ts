@@ -1,7 +1,6 @@
 import type { GameState, MapNode, MapNodeType } from "../types.js";
 import { cardPoolOf, getCardDef, costOf } from "../cards/cards.js";
 import { getCharacterConfig } from "../characters/characters.js";
-import { pickBossEncounter, pickEliteEncounter, pickNormalEncounter } from "../enemies/enemies.js";
 import { rewardRelicPool, getRelicDef, hasRelic, grantRelic } from "../relics/relics.js";
 import {
   BASE_POTION_DROP_CHANCE,
@@ -77,6 +76,57 @@ export function advanceToNextAct(state: GameState): void {
 }
 
 /** 进入一个地图节点：按类型路由。战斗/Boss 起战斗；篝火切 rest 屏；宝箱即时给金币后回地图。 */
+
+/**
+ * 取本幕的下一场**普通战**（第五十一批）。
+ *
+ * ⚠ 队列是开局一次性生成的（见 `GameState.encounterPlan`），这里只推游标。
+ * ⚠ 用尽时**显式抛错**而不是回绕：一幕的队列是 3 弱 + 1 + 12 强（第一幕）/ 2 + 13（其余），
+ *   比任何一张地图上的战斗房都多得多，真的用尽说明地图或幕号错了——静默回绕会产出
+ *   「看着合理、其实不是原版」的对局，与整个项目的总纲相违。
+ */
+function nextMonsterEncounter(state: GameState): string {
+  const actIdx = state.act - 1;
+  const queue = state.encounterPlan[actIdx]?.monsters;
+  const cursor = state.encounterCursor.monsters[actIdx] ?? 0;
+  const id = queue?.[cursor];
+  if (id === undefined) {
+    throw new Error(
+      `run: 第 ${String(state.act)} 幕的普通战遭遇队列已用尽（第 ${String(cursor + 1)} 场）`,
+    );
+  }
+  state.encounterCursor.monsters[actIdx] = cursor + 1;
+  state.combatsEntered += 1;
+  return id;
+}
+
+/** 取本幕的下一场**精英战**，规矩同上（每幕 10 个）。 */
+function nextEliteEncounter(state: GameState): string {
+  const actIdx = state.act - 1;
+  const queue = state.encounterPlan[actIdx]?.elites;
+  const cursor = state.encounterCursor.elites[actIdx] ?? 0;
+  const id = queue?.[cursor];
+  if (id === undefined) {
+    throw new Error(
+      `run: 第 ${String(state.act)} 幕的精英遭遇队列已用尽（第 ${String(cursor + 1)} 场）`,
+    );
+  }
+  state.encounterCursor.elites[actIdx] = cursor + 1;
+  return id;
+}
+
+/**
+ * 本幕的 Boss。⚠ 它**不推游标**——一幕只有一个 Boss，重复读同一个值是对的。
+ * ⚠ `secondBoss`（第三幕、A20 双 Boss）当前还没有消费点，留给爬升度那条线。
+ */
+function actBossEncounter(state: GameState): string {
+  const boss = state.encounterPlan[state.act - 1]?.boss;
+  if (boss === undefined) {
+    throw new Error(`run: 第 ${String(state.act)} 幕没有 Boss 遭遇`);
+  }
+  return boss;
+}
+
 function resolveNode(state: GameState, node: MapNode): void {
   state.currentNodeId = node.id;
   // 对齐 GameContext::transitionToMapNode 的 ++floorNum：每进入一个节点算一层。
@@ -88,21 +138,23 @@ function resolveNode(state: GameState, node: MapNode): void {
   }
   switch (node.type) {
     case "combat": {
-      // 前若干场抽 weak 池、其余抽 strong 池（复刻 StS Act1 战斗节奏）。
-      const encounterId = pickNormalEncounter(state.rng, state.combatsEntered, state.act);
-      state.combatsEntered += 1;
-      startCombat(state, encounterId);
+      // 第五十一批起走**游戏级遭遇序列**：`sts-encounters` 在开局一次性算好三幕的队列
+      // （`monsterRng` 是一条持久流），这里只是按序取下一个。
+      // ⚠ 队列的前几项就是弱池、其后是强池——「前若干场打弱怪」这条节奏是**生成时**
+      //   定的（`populateMonsterList` 的 weak 段），不是消费时判的。旧的近似实现在这里
+      //   拿 `combatsEntered` 现判，那与原版的 RNG 消耗顺序无关，已删。
+      startCombat(state, nextMonsterEncounter(state));
       return;
     }
     case "elite": {
       // 精英战：独立精英池；胜利后必发 1 个遗物（勇气投索 / 密封昆虫那类「精英战内」
       // 判定随近似战斗一起删了，等它们迁进 sts-combat 时再补）。
-      startCombat(state, pickEliteEncounter(state.rng, state.act));
+      startCombat(state, nextEliteEncounter(state));
       state.pendingRelicReward = true;
       return;
     }
     case "boss": {
-      startCombat(state, pickBossEncounter(state.rng, state.act));
+      startCombat(state, actBossEncounter(state));
       return;
     }
     case "event": {

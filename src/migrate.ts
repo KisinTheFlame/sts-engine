@@ -1,5 +1,6 @@
 import { initialCardCost } from "./engine/sts-combat.js";
 import type { GameState } from "./engine/types.js";
+import { buildEncounterPlan } from "./engine/engine.js";
 
 // === 存档迁移 ===
 //
@@ -35,6 +36,26 @@ export function migrateLoadedState(raw: unknown): GameState {
   backfill(state, "potions", [null, null, null]);
   backfill(state, "potionDropBonus", 0);
   backfill(state, "combatsEntered", 0);
+  // 遭遇计划（第五十一批）：**从 seed 重算**，因为它对同一个 seed 是确定的
+  // ——回填出来的三幕队列与新开局逐位相同。
+  // ⚠⚠ **能重算的只有队列，重算不出「已经打过几场」**：老存档里没有游标这件事。
+  //   回填策略是「普通战游标取 `combatsEntered`、精英游标取 0」，理由：`combatsEntered`
+  //   是老实现唯一记着的「打过几场普通战」，而精英场数老实现根本没记。
+  //   代价说清楚：**一个打到一半的老存档，接着打的精英会从本幕第一个开始**，
+  //   与它「本该」遇到的那个可能不同。这不是可以修的——那份信息老存档里不存在。
+  //   新开局不受影响（游标从 0 起，全程精确）。
+  // ⚠ `combatsEntered` 是跨幕累计的，所以只把它记在**当前幕**那一格，其余幕从 0 起。
+  if (state["encounterPlan"] === undefined) {
+    const seed = typeof state["seed"] === "string" ? state["seed"] : "0";
+    state["encounterPlan"] = buildEncounterPlan(BigInt(seed));
+  }
+  if (state["encounterCursor"] === undefined) {
+    const act = typeof state["act"] === "number" ? state["act"] : 1;
+    const entered = typeof state["combatsEntered"] === "number" ? state["combatsEntered"] : 0;
+    const monsters = [0, 0, 0];
+    monsters[act - 1] = entered;
+    state["encounterCursor"] = { monsters, elites: [0, 0, 0] };
+  }
   backfill(state, "pendingRelicReward", false);
   backfill(state, "floorNum", 0); // 楼层号——老档没有。
   // 种子从 number 升为 int64 十进制字符串：老档存的是 number，原样转字符串即可

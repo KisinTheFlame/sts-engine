@@ -797,10 +797,19 @@ filter 到本批的新 variant（见 WORKFLOW），到第二十九批七个 vari
 1. ~~`run.ts` / `engine.ts` 改用 `sts-combat.ts`~~ **已完成**（`combat-bridge.ts`）
 2. ~~状态结构对接：`GameState.combat` ↔ `BattleContext`~~ **已完成**（`exportState` / `importState`）
 3. ~~删除近似战斗~~ **已完成**
-4. 接 `sts-encounters`：决定「哪场仗」。一次生成三幕全部序列（`monsterRng` 单条持久流，
-   act2/3 续 counter），run 开局算一次存下来后按序索引。要写 `MonsterEncounter` 枚举（63 项）
-   → 我们的编队 id 的映射。**这一项直接影响战斗保真度**：战斗按 `Random(seed + floorNum)`
-   播种，「哪场仗在第几层」不对，逐位精确的战斗打的也不是原版那一场。
+4. ~~接 `sts-encounters`：决定「哪场仗」~~ ✅ **第五十一批完成**。
+   `generateEncounters` 在 `newRun` 里算一次（`monsterRng` 是一条持久流，三幕续 counter，
+   所以**必须一次算完**），投影成 `GameState.encounterPlan`（三幕 × 三条队列），
+   run 层按 `encounterCursor` 按序索引；`migrate.ts` 从 seed 重算回填。
+   ⚠⚠ **那张「63 项映射表」不用写了——第四十八批已经把它挣到手**：那一批把编队线铺满时
+   顺带统一了 id 写法，于是桥就是一行 `MonsterEncounter[e].toLowerCase()`（`encounterIdOf`）。
+   一条永久用例把两批锁在一起：**计划里出现的每个 id 都必须在 `SUPPORTED_ENCOUNTERS` 里**
+   （否则开局能开、打到那一场才抛「尚未迁移」，那是最坏的失败时机）。
+   ⚠ 同批**删掉**了近似遭遇池（三幕的 weak / strong / 精英 / Boss 权重表 + `weightedPick`
+   + 三个 `pick*Encounter`）——有了游戏级对应物就不留两套，与删近似战斗同一条规矩。
+   ⚠ **回填是有损的**：老存档没记游标，普通战游标取 `combatsEntered`、精英取 0，
+   于是「打到一半的老档接着打的精英会从本幕第一个开始」。那份信息老档里不存在，不是能修的。
+   ⚠ 仍缺：`secondBoss`（A20 双 Boss）还没有消费点；「第几层是哪种房间」仍走近似地图（第 5 项）。
 5. 接 `sts-map`：决定楼层与房间类型。每幕 `Random(seed + offset)`，自成一体；要写
    `{x, y, edges, parents}` → 我们的 `MapGraph` 的适配。
 6. 接 `sts-neow`：19 种 bonus × 6 种 drawback，其中效果要逐个实现（不是纯映射，工作量最大）。
