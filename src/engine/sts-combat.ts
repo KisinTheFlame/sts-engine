@@ -7179,7 +7179,30 @@ export type CombatInitInput = {
   miscRng?: StsRandom;
   /** 可选：run 级持久 potionRng（战斗内药水生成用，目前尚无消耗点）。 */
   potionRng?: StsRandom;
+  /**
+   * 这场仗所在的房间类型（对齐 `BattleContext::init` 开头那句 `auto room = gc.curRoom;`，
+   * BattleContext.cpp:88），第五十批加。缺省 `"invalid"` = 与这个字段存在之前逐字节等价。
+   *
+   * ⚠ **它只在 `initRelics` 里被读**（五颗遗物的门），战斗开始之后没有任何读点，
+   *   所以**不进 `BattleContext`、不进快照、不进 `exportState`**——传进来、用一次、丢掉。
+   *   这是它比爬升度便宜得多的原因：那条轴要进状态、要 migrate，这条不用。
+   */
+  room?: RoomKind;
+  /**
+   * **上一个**房间的类型（对齐 `gc.lastRoom`），古董茶具唯一的门。
+   * ⚠ 参考读的是 `gc.lastRoom` 而不是那个局部变量 `room`——**两个不同的字段**，别合并。
+   */
+  lastRoom?: RoomKind;
 };
+
+/**
+ * 房间类型（对齐参考的 `Room` 枚举里战斗内**真正被读到**的那几项）。
+ *
+ * ⚠ 只列参考在 `src/combat` 里读的四种 + 哨兵：`initRelics` 的五颗遗物读 `BOSS` / `ELITE`
+ * / `REST`，其余房型在战斗内没有任何读点。哨兵 `invalid` 对齐 `Room::INVALID`，也是
+ * harness 在第五十批之前**恒**处于的那个值——所以缺省值必须是它。
+ */
+export type RoomKind = "invalid" | "monster" | "elite" | "boss" | "rest";
 
 export function initCombat(input: CombatInitInput): BattleContext {
   const rng = seedCombatRng(input.seedLong, input.floorNum, input.miscRng, input.potionRng);
@@ -7355,7 +7378,8 @@ export function initCombat(input: CombatInitInput): BattleContext {
   // —— initRelics ——（骨架层跳过：铁甲燃烧之血等开局遗物不消耗 RNG，效果留后续 PR）
 
   // —— initRelics + 抽起手 ——（顺序对齐 BattleContext::init）
-  initRelics(bc); // 第一遍：立即属性
+  // ⚠ 房间类型只在这一遍里被读（五颗遗物的门），读完就丢——不进 BattleContext、不进快照。
+  initRelics(bc, { room: input.room ?? "invalid", lastRoom: input.lastRoom ?? "invalid" }); // 第一遍：立即属性
   addToBot(bc, (c) => drawCards(c, c.player.cardDrawPerTurn));
   // 第二遍：排在抽牌之后。⚠ 传的是**入场血量**（`gc.curHp`）而不是 `bc.player.hp`：
   // 红骷髅那道门读的是 GameContext 的值，而血瓶的 `heal(2)` 已经在第一遍里改过 `player.hp`。
@@ -8855,7 +8879,19 @@ function setHasRelic(bc: BattleContext, id: string, value: boolean): void {
  * ⚠ 第二个参数是**这一件遗物的容器条目**（对齐参考 `for (const auto &r : gc.relics.relics)`
  * 里的那个 `r`），只有读 `r.data` 的那一族用得上，见 `CombatRelic` 的注释。
  */
-const RELIC_IMMEDIATE: Record<string, (bc: BattleContext, relic: CombatRelic) => void> = {
+/**
+ * `initRelics` 里那五颗读房间类型的遗物要的上下文（第五十批）。
+ *
+ * ⚠ **两个字段是参考里的两个不同来源**：`room` 是 `BattleContext::init` 开头
+ * `auto room = gc.curRoom;` 那个局部变量，`lastRoom` 直接读 `gc.lastRoom`（古董茶具那一格
+ * 写的就是 `gc.lastRoom`，不是 `room`）。合并成一个字段会让茶具与另外四颗共用一个值。
+ */
+type RoomContext = { room: RoomKind; lastRoom: RoomKind };
+
+const RELIC_IMMEDIATE: Record<
+  string,
+  (bc: BattleContext, relic: CombatRelic, rooms: RoomContext) => void
+> = {
   vajra: (bc) => addPower(bc.player.powers, "strength", 1),
   anchor: (bc) => {
     bc.player.block += 10;
@@ -8890,6 +8926,57 @@ const RELIC_IMMEDIATE: Record<string, (bc: BattleContext, relic: CombatRelic) =>
   //   stance`），所以专注层数会一路涨上去、永远不触发姿态切换。**照抄，不要补**——
   //   补它没有预言机，预言机就是参考本身（同「好奇心」那条裁定）。
   damaru: (bc) => addPower(bc.player.powers, "mantra", 1),
+  // —— 第五十批：五颗**读房间类型**的遗物 ——
+  //
+  // 它们在第四十三批的排除表里躺了七批，理由是「读 `gc.curRoom` / `gc.lastRoom`，而 harness
+  // 从没设过这两个字段（恒 `Room::INVALID`）⇒ 结构性盲区」。本批给 harness 的 `DeckVariant`
+  // 加了一个 `Room` 字段（与 `ascension` 同一个「默认值保持字节不变」的套路），前提到期，
+  // **一次开五颗**。
+  //
+  // 缩放仪（PANTOGRAPH，`:310-314`）：`if (room == Room::BOSS) p.heal(25);`
+  // ⚠ 是 `heal` 不是 `增加上限`；满血时它是空操作（本批的 `@relic21` 特意让玩家带伤进场）。
+  pantograph: (bc, _relic, rooms) => {
+    if (rooms.room === "boss") {
+      healPlayer(bc, 25);
+    }
+  },
+  // 昆虫标本（PRESERVED_INSECT，`:316-322`）：精英房里**全体怪物**掉到 75% 血。
+  // ⚠⚠ **循环没有任何过滤**——裸的 `i < monsterCount`，与贤者之石 / 尼奥之殇同族、
+  //   与硫磺的 `isTargetable()` 相反。所以**预留但从没构造过的空格也会被写**
+  //   （`maxHp = 0` ⇒ `curHp = 0`，那一格因此从「非死非活」变成 `isDying()` 为真）。
+  // ⚠ 取整是 C++ 的 `static_cast<int>(m.maxHp * .75)`——**向零截断**的 float 乘法，
+  //   不是四舍五入、也不是整数除法。`Math.trunc` 照抄。
+  preserved_insect: (bc, _relic, rooms) => {
+    if (rooms.room === "elite") {
+      for (const m of bc.monsters) {
+        m.hp = Math.trunc(m.maxHp * 0.75);
+      }
+    }
+  },
+  // 奴隶主颈圈（SLAVERS_COLLAR，`:334-338`）：精英**或** Boss 房 +1 每回合能量。
+  // ⚠ 门是**析取**（`ELITE || BOSS`），本批用两个 variant（`@relic20` 精英 / `@relic21` Boss）
+  //   把两条都点亮——只测一边的话「把 `||` 写成只判其中一个」有一半观察不到。
+  slavers_collar: (bc, _relic, rooms) => {
+    if (rooms.room === "elite" || rooms.room === "boss") {
+      bc.player.energyPerTurn += 1;
+    }
+  },
+  // 勇气投索（SLING_OF_COURAGE，`:340-344`）：**只有精英房** +2 力量。
+  // ⚠ 它与颈圈并排放着、只差 Boss 那一项——`@relic21`（Boss 房）里颈圈生效而投索不生效，
+  //   这一对是「两条门写串了」的关门条件。
+  sling_of_courage: (bc, _relic, rooms) => {
+    if (rooms.room === "elite") {
+      addPower(bc.player.powers, "strength", 2);
+    }
+  },
+  // 古董茶具（ANCIENT_TEA_SET，`:230-234`）：**上一个房间**是篝火就 +2 能量。
+  // ⚠⚠ 它读的是 `gc.lastRoom`，与上面四颗读的 `room` 是**两个不同的字段**。
+  // ⚠ 是 `p.gainEnergy(2)`（当前回合的能量），不是 `energyPerTurn++`——只给第一回合。
+  ancient_tea_set: (bc, _relic, rooms) => {
+    if (rooms.lastRoom === "rest") {
+      bc.player.energy += 2;
+    }
+  },
   // 贤者之石（第四十批）：对齐 `BattleContext::initRelics` 的那一格
   // （BattleContext.cpp:198-204）：
   //     case R::PHILOSOPHERS_STONE:
@@ -9420,13 +9507,13 @@ const RELIC_OTHER_HOOKS: ReadonlySet<string> = new Set([
   "necronomicon",
 ]);
 
-function initRelics(bc: BattleContext): void {
+function initRelics(bc: BattleContext, rooms: RoomContext): void {
   // ⚠⚠ **第一句是把容器的位拷进玩家**（对齐 `player.relicBits0 = gc.relics.relicBits0;`
   //   `BattleContext.cpp:78-79`）。它必须排在 switch **之前**：御守 / 蜥蜴尾那两格写的是
   //   `setHasRelic<X>(r.data)`，是在这份拷贝上**覆盖**——拷贝晚一步就把覆盖抹掉了。
   bc.player.relicBits = bc.relics.map((r) => r.id);
   for (const relic of bc.relics) {
-    RELIC_IMMEDIATE[relic.id]?.(bc, relic);
+    RELIC_IMMEDIATE[relic.id]?.(bc, relic, rooms);
   }
   // 开局抽牌（由调用方在此之后入队），再挂 atBattleStart。
 }
