@@ -1047,6 +1047,9 @@ const POWER: Record<string, string> = {
   // 所以 harness 输出恒是 `PEN_NIB: 1`。它只在 `@relic12` 出现（那一组给了 `data = 9`，
   // 于是开局第一帧就带着它进场）。
   PEN_NIB: "pen_nib",
+  // 专注（MANTRA，第四十九批）：达摩鲁每回合 +1，而参考把「涨到 10 就进平静姿态」那一半
+  // 注释掉了（`Player.cpp:515` 的 `// todo`），所以它只会一路涨、层数直接进快照。
+  MANTRA: "mantra",
   // —— 回合边界 Power（第三批）——
   METALLICIZE: "metallicize",
   COMBUST: "combust",
