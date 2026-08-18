@@ -635,46 +635,104 @@ describe("接线：尚未迁移的内容显式抛错", () => {
     return coverage.supported ? "" : coverage.reason;
   };
 
-  // 样本编队选 `the_heart`（第四幕最终 Boss，第三十九批从 `donu_deca` 换过来）。
+  // ⚠⚠ **第四十八批：这条用例失去了它历来的样本，改成断言不变量本身。**
   //
-  // ⚠⚠ **这个样本与「未迁移卡牌」的 `seek` 不是一回事，别照搬那条的心态。**
-  //   `seek` 是**永久**样本：参考项目三个 switch 里都没有它的 case，等于压根没实现，
-  //   所以它永远不会有预言机。而**编队这边没有永久样本**——参考实现了全部编队，
-  //   铺量的终点就是全部登记。所以这个样本**每隔几批就得换一次**，
-  //   WORKFLOW 的「附：踩过的坑」里写着这条。
+  //   历来的做法是「挑一个真实存在、但最晚才会被登记的编队」当样本：
+  //   `gremlin_nob`（十八批顶掉）→ `giant_head`（三十五）→ `donu_deca`（三十九）→
+  //   `the_heart`（四十七）→ `mysterious_sphere`（**本批顶掉**）。本批把最后六个编队
+  //   一次装完，参考的 `MonsterEncounter` 63 项**全部**进了 `SUPPORTED_ENCOUNTERS`,
+  //   于是「真实存在却未迁移的编队」一个都不剩——与第四十七批怪物那条用例遇到的是
+  //   同一件事，办法照抄那边：**断言让那道 throw 不可达的不变量本身**。
   //
-  // 判据是「**挑最晚才会被登记的那个**」。第三幕第三十九批装满（16 / 16）之后，
-  // 剩下的只有**第四幕两个**（`shield_and_spear` / `the_heart`）与**六个事件编队**
-  // （`*_EVENT`，不在任何 `MonsterEncounterPool` 里，见 TODOS 的下一步候选）。
-  // `the_heart` 是全游戏最后一场仗，也是最晚会被登记的那个。
-  //
-  // ⚠⚠ **第三十九批重新评估并推翻了第三十五批否决第四幕的那条理由**（记在这里，
-  //   免得下一个人又照那条推）。当时写的是「换到第四幕要先往 `enemies.ts` 加没有预言机的
-  //   新数据」。对**这一条**用例来说那是不成立的：`stsCombatCoverage` 的第一句就是
-  //   `isEncounterSupported(encounterId)`（= `SUPPORTED_ENCOUNTERS.includes(...)`），
-  //   不命中就当场返回，**根本不会去查 `enemies.ts`**。所以这条用例只需要一个
-  //   「不在 `SUPPORTED_ENCOUNTERS` 里的字符串」，零新数据。
-  //   ⚠ 但同一条理由对**另一条**用例（`sts-combat-rules.test.ts` 的「未登记怪物
-  //   rollMove」）**仍然成立**：那条要真的走进 `initCombat`，所以需要一只
-  //   「在 `enemies.ts` 里、却不在 `MOVE_RULES` 里」的怪。两条用例因此代价不同，
-  //   详见那边的注释（本批给 `corrupt_heart` 只补了血量、没补招式）。
-  // ⚠⚠ **第四十七批把 `the_heart` 也登记了，样本换成 `mysterious_sphere`。**
-  //   第三十九批写在这里的「别换成事件编队」那句话到期了——第四幕两个编队本批一起装完，
-  //   剩下的就只有**六个**：`two_fungi_beasts`（第一幕 strong 池）与五个事件编队
-  //   （`LAGAVULIN_EVENT` / `COLOSSEUM_EVENT_SLAVERS` / `COLOSSEUM_EVENT_NOBS` /
-  //   `MUSHROOMS_EVENT` / `MYSTERIOUS_SPHERE_EVENT`）。判据仍是「挑最晚才会被登记的那个」：
-  //   `two_fungi_beasts` 是**真的会在 run 里出现**的编队（它在第一幕 strong 池里），
-  //   所以它排在事件编队前面；五个事件编队里选 `mysterious_sphere`，因为它的
-  //   `ENCOUNTERS` 条目已经存在且成员与参考一致（两只暗球游荡者），零新数据。
-  // ⚠ 六个都由**已登记的怪**组成，所以下一批很可能一次装完——这条样本大概率只活一批。
-  //   这是这条用例的常态（见 WORKFLOW「附：踩过的坑」），不是选错了。
-  // ⚠ 历史：`gremlin_nob`（第十八批顶掉）→ `giant_head`（第三十五批顶掉）→
-  //   `donu_deca`（第三十九批顶掉）→ `the_heart`（**第四十七批**顶掉）→ 现在这个。
+  //   ⚠ 下面那张 `REFERENCE_ENCOUNTERS` 是从参考的 `MonsterEncounters.h`
+  //   （`monsterEncounterEnumNames[]`，去掉 `INVALID` 哨兵）逐条抄下来的**独立来源**，
+  //   不是从 `SUPPORTED_ENCOUNTERS` 派生的——派生出来的名单只能证明「它等于它自己」。
+  //   它守的是两个方向：谁删掉一条登记会红，参考将来加了第 64 个编队也会红。
+  const REFERENCE_ENCOUNTERS = [
+    "cultist",
+    "jaw_worm",
+    "two_louse",
+    "small_slimes",
+    "blue_slaver",
+    "gremlin_gang",
+    "looter",
+    "large_slime",
+    "lots_of_slimes",
+    "exordium_thugs",
+    "exordium_wildlife",
+    "red_slaver",
+    "three_louse",
+    "two_fungi_beasts",
+    "gremlin_nob",
+    "lagavulin",
+    "three_sentries",
+    "slime_boss",
+    "the_guardian",
+    "hexaghost",
+    "spheric_guardian",
+    "chosen",
+    "shell_parasite",
+    "three_byrds",
+    "two_thieves",
+    "chosen_and_byrds",
+    "sentry_and_sphere",
+    "snake_plant",
+    "snecko",
+    "centurion_and_healer",
+    "cultist_and_chosen",
+    "three_cultist",
+    "shelled_parasite_and_fungi",
+    "gremlin_leader",
+    "slavers",
+    "book_of_stabbing",
+    "automaton",
+    "collector",
+    "champ",
+    "three_darklings",
+    "orb_walker",
+    "three_shapes",
+    "spire_growth",
+    "transient",
+    "four_shapes",
+    "maw",
+    "sphere_and_two_shapes",
+    "jaw_worm_horde",
+    "writhing_mass",
+    "giant_head",
+    "nemesis",
+    "reptomancer",
+    "awakened_one",
+    "time_eater",
+    "donu_and_deca",
+    "shield_and_spear",
+    "the_heart",
+    "lagavulin_event",
+    "colosseum_event_slavers",
+    "colosseum_event_nobs",
+    "masked_bandits_event",
+    "mushrooms_event",
+    "mysterious_sphere_event",
+  ];
+
+  it("编队收官：参考的 63 个编队与 SUPPORTED_ENCOUNTERS 双向相等", () => {
+    expect(REFERENCE_ENCOUNTERS.length).toBe(63);
+    expect([...REFERENCE_ENCOUNTERS].sort()).toEqual([...SUPPORTED_ENCOUNTERS].sort());
+  });
+
+  // ⚠ **那道 throw 本身留着**，而且它现在守的不是「还没铺到的编队」，是**旧近似表的残留**：
+  //   `enemies.ts` 的 `ENCOUNTERS` 里还有 13 条参考**没有对应枚举**的条目
+  //   （`two_orb_walkers` / `exploder` / `spiker` / `repulsor` / `two_exploders` /
+  //   `small_slimes_a|b` / `large_slime_acid|spike` / `centurion` / `two_centurions` …），
+  //   它们是旧近似战斗编的，而且**当前的 run 层真的会掏到它们**（第一 / 三幕的权重表里有）。
+  //   所以样本选 `two_orb_walkers`：它是真实可达的 id、却永远不会有预言机
+  //   （参考的 `MonsterEncounter` 里压根没有这一项），接 `sts-encounters`（TODOS 一.4）
+  //   那一批应当把这一族整体删掉——**那时**这条用例才会再次需要换写法。
   it("未迁移的编队：startCombat 抛错，且不留半个战斗状态", () => {
     const state = runAtMap();
-    expect(() => startCombat(state, "mysterious_sphere")).toThrow(/mysterious_sphere/);
+    expect(SUPPORTED_ENCOUNTERS).not.toContain("two_orb_walkers");
+    expect(() => startCombat(state, "two_orb_walkers")).toThrow(/two_orb_walkers/);
     expect(state.combat).toBeNull();
-    expect(reason(state, "mysterious_sphere")).toContain("尚未迁移");
+    expect(reason(state, "two_orb_walkers")).toContain("尚未迁移");
   });
 
   // 样本牌选 `seek` 搜寻：参考项目三个 switch 里都**没有 case**，等于压根没实现，
