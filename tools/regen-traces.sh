@@ -461,7 +461,7 @@ ENC_V0_ASC19="cultist@asc19 jaw_worm@asc19 jaw_worm_horde@asc19 two_louse@asc19 
 # ⚠ 达摩鲁是**硫磺那一族**（两个时点：initRelics 同步 buff + 回合开始 addToBot），
 #   CHAMP 的仗长（平均 ~9 个玩家回合）正是为了让「少抄一处」当场看得出来。
 # ⚠ 情绪芯片在参考里是**一个空的 if**（`// todo`），登记成空操作、背书是反方向的。
-ENC_V0_RELIC="large_slime@relic1 slime_boss@relic1 spheric_guardian@relic1 gremlin_leader@relic1 automaton@relic1 collector@relic1 three_darklings@relic1 reptomancer@relic1 writhing_mass@relic2 writhing_mass@relic3 gremlin_leader@relic4 automaton@relic4 collector@relic4 reptomancer@relic4 spheric_guardian@relic5 sentry_and_sphere@relic5 gremlin_leader@relic5 slime_boss@relic6 champ@relic6 lagavulin@relic6 the_guardian@relic7 champ@relic7 three_sentries@relic8 time_eater@relic8 three_darklings@relic8 champ@relic9 three_byrds@relic9 collector@relic9 slime_boss@relic10 three_sentries@relic10 champ@relic10 champ@relic11 maw@relic11 slime_boss@relic11 champ@relic12 three_darklings@relic12 champ@relic13 hexaghost@relic13 three_sentries@relic14 champ@relic14 champ@relic15 three_sentries@relic15 three_sentries@relic16 champ@relic16 three_darklings@relic16 automaton@relic17 collector@relic17 champ@relic18 champ@relic19 three_sentries@relic20 gremlin_nob@relic20 champ@relic21 champ@relic22"
+ENC_V0_RELIC="large_slime@relic1 slime_boss@relic1 spheric_guardian@relic1 gremlin_leader@relic1 automaton@relic1 collector@relic1 three_darklings@relic1 reptomancer@relic1 writhing_mass@relic2 writhing_mass@relic3 gremlin_leader@relic4 automaton@relic4 collector@relic4 reptomancer@relic4 spheric_guardian@relic5 sentry_and_sphere@relic5 gremlin_leader@relic5 slime_boss@relic6 champ@relic6 lagavulin@relic6 the_guardian@relic7 champ@relic7 three_sentries@relic8 time_eater@relic8 three_darklings@relic8 champ@relic9 three_byrds@relic9 collector@relic9 slime_boss@relic10 three_sentries@relic10 champ@relic10 champ@relic11 maw@relic11 slime_boss@relic11 champ@relic12 three_darklings@relic12 champ@relic13 hexaghost@relic13 three_sentries@relic14 champ@relic14 champ@relic15 three_sentries@relic15 three_sentries@relic16 champ@relic16 three_darklings@relic16 automaton@relic17 collector@relic17 champ@relic18 champ@relic19 three_sentries@relic20 gremlin_nob@relic20 champ@relic21 champ@relic22 champ@relic23"
 # 第四十五批：**药水**这条战线的第一批（第六个乘积）。文件名后缀是 `@potN`——harness 只在
 # `DeckVariant.potionSet` / `.potionPolicy` 非 0 时输出那两个字段，所以既有 163 个文件的
 # 名字与内容一个字节都不动（管线改造那一步单独跑过一次 `--check` 证明了这一点）。
@@ -580,8 +580,14 @@ ENC_V0_ACT4="shield_and_spear the_heart masked_bandits_event"
 # ⚠ 那一张觅敌之弱在这里比平时更值钱：本批的第一幕怪（真菌兽 / 拉加维林 / 地精头目）
 #   是第十六~十八批登记的，它们的编队跑在第一幕乘积的 variant 0 上、那副牌组里**没有**
 #   觅敌之弱，所以它们的攻击分类此前**一次背书都没有**。实测每个编队 42~89 次打出。
+# 第五十二批：第四幕 + 蒙面强盗的 **asc19**（harness 的第十一个乘积）。六只怪的第二组血量
+# 区间从注释搬进 `hpHigh`、`ascCalibrated` 同批置起，编队级闸门 `ASC_SUPPORTED_ENCOUNTERS`
+# 也跟着开。⚠ 三档阈值并存：尖塔两只是 asc>=8、腐化之心 asc>=9、三只强盗 asc>=7。
+# ⚠⚠ 熊是 `{{38,52},{40,44}}`——高档把区间**收窄**了（上限 52 → 44），
+#   「爬升度只会让怪更硬」在血量上是错的，data-tables 那条断言按名放行了它。
+ENC_V0_ACT4_ASC19="shield_and_spear@asc19 the_heart@asc19 masked_bandits_event@asc19"
 ENC_V0_EVENT="two_fungi_beasts lagavulin_event colosseum_event_slavers colosseum_event_nobs mushrooms_event mysterious_sphere_event"
-ENC_V0="$ENC_V0_ASC0 $ENC_V0_ASC19 $ENC_V0_TGT1 $ENC_V0_ACT3 $ENC_V0_RELIC $ENC_V0_POT $ENC_V0_ACT3_ASC19 $ENC_V0_ACT3_TGT1 $ENC_V0_ACT4 $ENC_V0_EVENT"
+ENC_V0="$ENC_V0_ASC0 $ENC_V0_ASC19 $ENC_V0_TGT1 $ENC_V0_ACT3 $ENC_V0_RELIC $ENC_V0_POT $ENC_V0_ACT3_ASC19 $ENC_V0_ACT3_TGT1 $ENC_V0_ACT4 $ENC_V0_EVENT $ENC_V0_ACT4_ASC19"
 
 policy_of() {
   case " $ENC_ALL " in *" $1 "*) echo all; return;; esac

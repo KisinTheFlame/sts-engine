@@ -1,3 +1,4 @@
+import type { MapGraph, MapNode as EngineMapNode, MapNodeType } from "./types.js";
 // === 游戏级地图生成：逐行复刻《杀戮尖塔》本体的地图生成（issue #1）===
 //
 // 逐行移植 sts_lightspeed/src/game/Map.cpp。给定游戏种子字符串即可产出与游戏
@@ -551,4 +552,76 @@ export function generateMap(
     map.burningEliteBuff = rng.random(0, 3);
   }
   return map;
+}
+
+// ============================================================================
+// 第五十五批：`GameMap` → 引擎的 `MapGraph`
+//
+// 这是「一、接线」第 5 项的**前一半**：把游戏级地图翻译成 run 层能消费的形状。
+// 后一半（`buildMap` 改用它、删掉玩具地图、重写 `map.test.ts` 的结构断言）**留给下一批**,
+// 理由与 WORKFLOW「机制与铺量尽量分成两个 commit」同源——翻译层可以单独验证，
+// 而换代那一步会同时改动路由、测试与 `migrate`，混在一起出问题时没法定位。
+// ============================================================================
+
+/**
+ * `Room` → `MapNodeType`。
+ *
+ * ⚠ 只翻译**地图上真的会出现**的六种。`BOSS_TREASURE` / `NONE` / `INVALID` 不在其中：
+ * 前者是 Boss 后的宝箱房（不在这 15 层的网格里），后两个是空格与哨兵——遇到它们要抛错
+ * 而不是猜一个类型，猜错会让「第几层是哪种房间」静默偏掉，而那正是这条接线要保证的东西。
+ */
+function roomToNodeType(room: Room): MapNodeType {
+  switch (room) {
+    case Room.MONSTER:
+      return "combat";
+    case Room.ELITE:
+      return "elite";
+    case Room.EVENT:
+      return "event";
+    case Room.REST:
+      return "rest";
+    case Room.SHOP:
+      return "shop";
+    case Room.TREASURE:
+      return "treasure";
+    default:
+      throw new Error(`sts-map: 这一格的房型不该出现在地图网格里: ${Room[room] ?? String(room)}`);
+  }
+}
+
+/**
+ * 把 `generateMap` 的结果翻译成 `MapGraph`（第五十五批）。
+ *
+ * ⚠ 节点 id 是 `"<y>-<x>"`（层号-列号），直接来自游戏级坐标——**不要换成自增序号**：
+ * 坐标是这张图的身份，调试时要能与参考的 dump 对得上。
+ * ⚠ `next` 由 `edges`（下一层的**列号**）翻译成下一层的节点 id。参考的 `edges` 已经是
+ * 有序去重的（`addEdge` / `insertEdge`），这里照抄顺序，不排序、不去重。
+ * ⚠ **Boss 是一个合成节点**：参考的 15 层网格里没有它（`Room::BOSS` 不落在 `nodes` 上），
+ * run 层却需要一个可达的终点。它的 id 固定是 `"boss"`，最后一层（y = 14）的每个节点都指向它。
+ */
+export function mapGraphFromStsMap(map: GameMap): MapGraph {
+  const nodes: Record<string, EngineMapNode> = {};
+  const startNodeIds: string[] = [];
+  const rows = map.nodes.length;
+  const BOSS_ID = "boss";
+
+  for (let y = 0; y < rows; y += 1) {
+    const row = map.nodes[y];
+    for (let x = 0; x < row.length; x += 1) {
+      const node = row[x];
+      if (node.room === Room.NONE) {
+        continue;
+      }
+      const id = `${String(y)}-${String(x)}`;
+      const next =
+        y === rows - 1 ? [BOSS_ID] : node.edges.map((destX) => `${String(y + 1)}-${String(destX)}`);
+      nodes[id] = { id, row: y, col: x, type: roomToNodeType(node.room), next };
+      if (y === 0) {
+        startNodeIds.push(id);
+      }
+    }
+  }
+  nodes[BOSS_ID] = { id: BOSS_ID, row: rows, col: 0, type: "boss", next: [] };
+
+  return { nodes, rows: rows + 1, startNodeIds, bossNodeId: BOSS_ID };
 }

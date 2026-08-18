@@ -9414,6 +9414,19 @@ const RELIC_AT_BATTLE_START: Record<string, (bc: BattleContext) => void> = {
  * 两处都登记不会重复触发，`isRelicSupported` 取的是并集。
  */
 const RELIC_OTHER_HOOKS: ReadonlySet<string> = new Set([
+  // 梅兰奇（MELANGE，第五十八批）：登记成**什么都不做**。
+  // ⚠⚠ 参考里它唯一的读点整句被注释掉了（`BattleContext::onShuffle` :2831-2833）：
+  //     if (player.hasRelic<R::MELANGE>()) {
+  //   //     addToBot(Actions::SetState(InputState::SCRY, 3) ); // TODO SCRY Action
+  //     }
+  //   ——`if` 还在、函数体空了。**照抄「什么都不做」**，与情绪芯片（第四十九批）、
+  //   好奇心（第三十七批）同一族：参考给出了答案，答案是「不做」。
+  // ⚠ 它**不是**「活体样本」那一族（参考排了一个没人应答的 InputState、第一只怪一死就永久卡住），
+  //   也不是「中毒」那一族（空 `Action` ⇒ `executeActions` 当场抛 `bad_function_call`）。
+  //   三族的判据是**参考跑得动跑不动**：这一颗跑得动，所以它有预言机。
+  // ⚠ 背书方向是**反的**：给它写任何一个真实效果（例如洗牌时抽/弃），`@relic23` 那 120 条
+  //   会当场红——实测「洗牌时多抽一张」红 120 例。
+  "melange",
   "gremlin_horn",
   "hand_drill",
   "omamori",
@@ -14319,6 +14332,17 @@ function takeTurn(bc: BattleContext, m: CombatMonster): string | null {
     ) {
       continue;
     }
+    // 第五十二批：反方向的那道门（`ascension < belowAscension` 才结算）。
+    // ⚠ 宿主是尖塔长矛的灼烧打击——参考 asc18 那一支调的是
+    //   `MakeTempCardInDrawPile(BURN, 2, false)`，`shuffleInto = false` ⇒ **一张都不塞**。
+    //   照抄 as-built：高档整条效果消失，而不是换个数值或换个牌堆。
+    if (
+      eff.kind === "add_card" &&
+      eff.belowAscension !== undefined &&
+      bc.ascension >= eff.belowAscension
+    ) {
+      continue;
+    }
     // 同理：一旦分出胜负，后续排队效果在参考里也不会再执行。
     if (bc.outcome !== "undecided") {
       return move.id;
@@ -16560,6 +16584,12 @@ export const ASC_SUPPORTED_ENCOUNTERS: readonly string[] = [
   "awakened_one",
   "time_eater",
   "donu_and_deca",
+  // —— 第五十二批：第四幕 + 蒙面强盗的 asc19（六只怪的 `hpHigh` / `ascCalibrated` 同批补齐）——
+  // ⚠ 三个编队的阈值**三档并存**：尖塔护盾 / 长矛是精英族 `asc >= 8`，腐化之心是 Boss 族
+  //   `asc >= 9`，三只强盗是普通怪族 `asc >= 7`。asc19 一次点亮三族的高侧。
+  "shield_and_spear",
+  "the_heart",
+  "masked_bandits_event",
 ];
 
 /** 这个编队在这个爬升度下有没有背书。asc0 恒等于 `isEncounterSupported`。 */

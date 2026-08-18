@@ -746,6 +746,35 @@ describe("接线：尚未迁移的内容显式抛错", () => {
     expect(() => startCombat(state, "cultist")).toThrow();
   });
 
+  // ⚠⚠ **遗物那道门是可选的，两个方向都要钉**（第五十四批，TODOS「一、接线」第 9 项）。
+  //   缺口本身是第四十一批发现的：这个函数逐条查编队 / 牌 / 药水，却没查遗物，
+  //   而 `isRelicSupported` 零调用者 ⇒ 带着未转写的遗物照样开战、那颗遗物静默无效。
+  //   ⚠ 默认**关着**是有理由的（见 `stsCombatCoverage` 里那段注释）：96 / 180 之外的 65 颗
+  //   在参考的 `src/combat` 里根本没有读点、永远不会「被转写」，一律拦下等于把引擎关掉
+  //   ——铁甲的初始遗物燃烧之血就是其中之一。所以这两条用例钉的是「开关两侧各自的行为」。
+  it("严格模式关着时：未转写的遗物不拦（现状，且燃烧之血照样能开战）", () => {
+    const state = runAtMap();
+    expect(state.relics.some((r) => r.id === "burning_blood")).toBe(true);
+    expect(stsCombatCoverage(state, "cultist").supported).toBe(true);
+  });
+
+  it("严格模式打开时：未转写的遗物当场拦下，理由点名它", () => {
+    const state = runAtMap();
+    state.strictRelicCoverage = true;
+    const coverage = stsCombatCoverage(state, "cultist");
+    expect(coverage.supported).toBe(false);
+    expect(coverage.supported ? "" : coverage.reason).toContain("burning_blood");
+    expect(() => startCombat(state, "cultist")).toThrow();
+    expect(state.combat).toBeNull();
+  });
+
+  it("严格模式打开、但遗物全部已转写时：照常开战", () => {
+    const state = runAtMap();
+    state.strictRelicCoverage = true;
+    state.relics = [{ id: "vajra", counter: 0 }];
+    expect(stsCombatCoverage(state, "cultist").supported).toBe(true);
+  });
+
   // 样本药水选 `essence_of_darkness` 暗影精华，理由与上面那张 `seek` 同族、而且**是永久的**：
   // 参考的 `Actions::EssenceOfDarkness` 是 `return sts::Action();`——一个 `actFunc` 为空的
   // `std::function`，`executeActions` 那句 `a(*this)` 会抛 `std::bad_function_call`，

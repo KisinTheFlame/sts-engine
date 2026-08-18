@@ -1,3 +1,4 @@
+import type { NeowOption } from "./sts-neow.js";
 // === 尖塔引擎的领域类型 ===
 //
 // 全部为纯数据（JSON 可往返），是存档、模拟器、HTTP 契约共享的形状。
@@ -1006,6 +1007,18 @@ export type Effect =
       upgradedAfterTurn?: number;
       ascAmount?: AscTier[];
       minAscension?: number;
+      /**
+       * 敌人专用，与 `minAscension` 方向相反：**整条效果只在 `ascension < belowAscension`
+       * 时才结算**（第五十二批加）。
+       *
+       * ⚠ 宿主是尖塔长矛的灼烧打击：参考在 asc18 走的是
+       * `MakeTempCardInDrawPile(BURN, 2, false)`，而那个 action 的 `shuffleInto` 为 `false`
+       * 时**一张都不塞**（参考的一处「没实现完」，第四十七批就记下了）。
+       * 所以 as-built 的行为是「asc<18 塞两张进弃牌堆、asc>=18 什么都不塞」——
+       * 这不是「换个数值」（那是 `ascAmount`），也不是「多一条语句」（那是 `minAscension`），
+       * 而是**整条效果在高档消失**，需要第三个方向。
+       */
+      belowAscension?: number;
     }
   // —— X 费牌：xValue = 打出时的能量，以下效果按 X 次 / X 倍结算 ——
   | { kind: "deal_damage_all_x"; amount: number } // 对所有敌人造成 amount 伤害，X 次（旋风斩）
@@ -1520,6 +1533,19 @@ export type GameState = {
   combatsEntered: number;
 
   /**
+   * **严格遗物覆盖模式**（第五十四批）：开启后，带着一颗尚未转写的遗物**开不了战**。
+   *
+   * 默认 `undefined`（= 关）。理由见 `combat-bridge.stsCombatCoverage` 里那一段：
+   * 战斗内遗物只转写了 96 / 180，而其中 65 颗（回血 / 金币 / 商店 / 篝火）在参考的
+   * `src/combat` 里**一个读点都没有**、永远不会进 `SUPPORTED_RELIC_IDS`——包括铁甲的
+   * 初始遗物燃烧之血。一律拦下不是「更严格」，是把引擎关掉。
+   *
+   * ⚠ 它存在的意义是把**沉默的缺口变成可开关的缺口**：想要「宁可失败也不要静默错」的
+   * 宿主可以打开它，而这个字段本身就是那条账的书面记录。
+   */
+  strictRelicCoverage?: boolean;
+
+  /**
    * 本局的**怪物遭遇计划**（第五十一批，TODOS「一、接线」第 4 项）。
    *
    * 由 `generateEncounters(seed)` 在开局算一次——它是一条**持久的 `monsterRng`**
@@ -1529,6 +1555,18 @@ export type GameState = {
    * ⚠ 每一幕三条队列：`monsters`（弱池 + 强池，按序消费）、`elites`（10 个）、`boss`。
    * ⚠ `secondBoss` 只有第三幕有值（A20 双 Boss 用），当前 run 层还没消费它。
    */
+  /**
+   * 涅奥的四个开局选项（第五十七批，「一、接线」第 6 项的**第一片**）。
+   *
+   * 由 `generateNeowOptions(seed)` 在开局算一次——它与 `sts-map` / `sts-encounters` 一样
+   * 早就与原版逐位对齐，缺的一直是「接进 run 层」。
+   *
+   * ⚠⚠ **本批只把它算出来存下来，事件屏还在用近似的四个选项**。理由是代价诚实地摆着：
+   * 19 种祝福 × 6 种代价里的**效果**要逐个转写（选牌屏、随机稀有牌、遗物池、诅咒……），
+   * 那是整个待办里最大的一块，塞进这一批只会得到「看着接上了、其实一半效果是编的」。
+   * 换过去那一步与地图那条（第五十五 / 五十六批）同一个套路：先做能单独验证的一半。
+   */
+  neowOptions: NeowOption[];
   encounterPlan: EncounterPlan;
   /**
    * 三条队列各自的游标，**按幕分开存**（下标 0/1/2 = 第一/二/三幕）。

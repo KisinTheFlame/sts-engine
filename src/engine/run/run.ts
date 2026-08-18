@@ -13,7 +13,8 @@ import type { EventOutcome } from "../events/events.js";
 import { generateShop } from "../shop/shop.js";
 import { nextInt, nextRange } from "../rng.js";
 import { startCombat } from "../combat-bridge.js";
-import { generateMap, availableNext } from "../map/map.js";
+import { availableNext } from "../map/map.js";
+import { generateMap as generateStsMap, mapGraphFromStsMap } from "../sts-map.js";
 
 // === 爬塔 / 分支地图 / 奖励 / 休息 / 宝箱 ===
 //
@@ -31,14 +32,6 @@ const ELITE_GOLD_MIN = 25;
 const ELITE_GOLD_MAX = 35;
 
 /** 启用的地图节点类型（全类型齐备）。 */
-const ENABLED_MAP_TYPES: readonly MapNodeType[] = [
-  "combat",
-  "elite",
-  "event",
-  "shop",
-  "rest",
-  "treasure",
-];
 
 const RARITY_LABELS: Record<string, string> = {
   common: "普通",
@@ -62,7 +55,14 @@ const NODE_TYPE_LABELS: Record<MapNodeType, string> = {
 export const TOTAL_ACTS = 3;
 
 export function buildMap(state: GameState): void {
-  state.map = generateMap(state.rng, ENABLED_MAP_TYPES);
+  // 第五十六批：**游戏级地图**（`sts-map` 的 `generateMap` + 第五十五批的翻译层）。
+  // ⚠ 三个入参都是承重的：`seed` 决定这一幕的图，`ascension` 只影响燃烧精英那一维，
+  //   `act` 决定用哪一幕的规则——每幕 `Random(seed + offset)` 自成一体，
+  //   所以换幕时重算是对的（与遭遇序列那条持久流**正相反**，别照抄那边的写法）。
+  // ⚠ 玩具地图（`map/map.ts` 的 `generateMap` + `ENABLED_MAP_TYPES`）本批删掉——
+  //   有了游戏级对应物就不留两套，与删近似战斗 / 近似遗物钩子 / 近似遭遇池同一条规矩。
+  //   `availableNext` 留着：它只读 `MapGraph`，与谁生成的无关。
+  state.map = mapGraphFromStsMap(generateStsMap(BigInt(state.seed), state.ascension, state.act));
   state.currentNodeId = null;
   state.screen = "map";
 }

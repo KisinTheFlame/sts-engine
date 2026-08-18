@@ -4,6 +4,7 @@ import { getEncounterDef } from "./enemies/enemies.js";
 import { getRelicDef } from "./relics/relics.js";
 import { getPotionDef } from "./potions/potions.js";
 import {
+  isRelicSupported,
   cardSelectOptions,
   drinkPotion,
   endTurn as stsEndTurn,
@@ -75,6 +76,28 @@ export function stsCombatCoverage(state: GameState, encounterId: string): Combat
   for (const potion of state.potions) {
     if (potion !== null && !isPotionSupported(potion)) {
       return no(`药水「${potion}」尚未迁移`);
+    }
+  }
+  // ⚠⚠ **遗物这一段是可选的（第五十四批），而它默认关着——这个默认值本身要解释。**
+  //
+  // 缺口（TODOS「一、接线」第 9 项，第四十一批发现）：这个函数逐条查编队 / 牌 / 药水，
+  // 却**没有**查 `state.relics`，而 `isRelicSupported` 是导出的、零调用者。后果是
+  // **带着一颗尚未转写的遗物照样开得了战，那颗遗物在战斗内静默什么都不做**——
+  // 这正是本项目最不接受的形态（「登记了却错的内容会静默产出错误数值」）。
+  //
+  // ⚠ 为什么不直接一律拦下：遗物现在只转写了 96 / 180，一律拦的话**绝大多数真实牌组
+  //   都开不了战**——包括铁甲的初始遗物燃烧之血（它在战斗内没有钩子，属于「run 层遗物」
+  //   那 65 颗，永远不会进 `SUPPORTED_RELIC_IDS`）。那不是「更严格」，那是把引擎关掉。
+  // ⚠ 所以这里给的是**显式的严格模式**：调用方（测试、对拍工具、想要「宁可失败也不要
+  //   静默错」的宿主）打开它，产品侧默认保持现状。**沉默的缺口至少变成了可开关的缺口**，
+  //   而开关的存在本身就是那条账的书面记录。
+  // ⚠ 真正的修法仍然是把 run 层遗物那 65 颗与战斗内那 24 颗分开建模（那时「未登记」
+  //   才等价于「有钩子却没转写」），账记在 TODOS 一.9。
+  if (state.strictRelicCoverage === true) {
+    for (const relic of state.relics) {
+      if (!isRelicSupported(relic.id)) {
+        return no(`遗物「${relic.id}」尚未迁移（严格模式）`);
+      }
     }
   }
   return { supported: true };
@@ -158,6 +181,37 @@ function settleCombat(state: GameState, bc: BattleContext): void {
     state.log.push("战斗胜利！");
     writeBackRelicData(state, bc);
     fireCombatEndRelics(state);
+    // ⚠⚠ **A20 的双 Boss**（第五十三批，对齐 `GameContext.cpp:1153-1165`）：
+    //     if (ascension >= 20 && info.encounter == boss) {
+    //         ++floorNum;
+    //         const auto r = Random(seed + floorNum);
+    //         miscRng = shuffleRng = cardRandomRng = r;
+    //         relicsOnEnterRoom(curRoom);
+    //         enterBattle(secondBoss);
+    //     }
+    // 四处照抄：
+    //  ① **只有第三幕**（参考那条 `else if (act == 3)` 之内）——第一 / 二幕的 Boss 房
+    //     在 asc20 下仍然只有一场，`secondBoss` 也只在第三幕非空（`GameContext.cpp:595`）。
+    //  ② 门是 `info.encounter == boss`（打赢的是**本幕那个** Boss），不是「打赢了任何 Boss」
+    //     ——第二个 Boss 自己打完时这条不成立，于是走正常的收尾。
+    //  ③⚠ **楼层要自增**：`++floorNum` 之后三条流按 `Random(seed + floorNum)` 重播种，
+    //     而我们的 `startCombat` 正是拿 `state.floorNum` 播种战斗（见上面那处注释）。
+    //     漏掉它两场 Boss 会共用同一份洗牌 / 建怪 RNG，与原版整体错位。
+    //  ④ **中间不开奖励屏**：参考直接 `enterBattle`，两场之间没有 `openCombatRewardScreen`。
+    //     赢下第二个 Boss 时才走 `grantBossVictory`。
+    const actPlan = state.encounterPlan[state.act - 1];
+    if (
+      state.ascension >= 20 &&
+      state.act === 3 &&
+      actPlan !== undefined &&
+      actPlan.secondBoss !== null &&
+      bc.encounterId === actPlan.boss
+    ) {
+      state.floorNum += 1;
+      state.log.push("塔顶还有一个守卫者……");
+      startCombat(state, actPlan.secondBoss);
+      return;
+    }
     if (getEncounterDef(bc.encounterId).isBoss) {
       grantBossVictory(state);
     }

@@ -1,6 +1,7 @@
 import { initialCardCost } from "./engine/sts-combat.js";
 import type { GameState } from "./engine/types.js";
 import { buildEncounterPlan } from "./engine/engine.js";
+import { generateNeowOptions } from "./engine/sts-neow.js";
 
 // === 存档迁移 ===
 //
@@ -45,6 +46,14 @@ export function migrateLoadedState(raw: unknown): GameState {
   //   与它「本该」遇到的那个可能不同。这不是可以修的——那份信息老存档里不存在。
   //   新开局不受影响（游标从 0 起，全程精确）。
   // ⚠ `combatsEntered` 是跨幕累计的，所以只把它记在**当前幕**那一格，其余幕从 0 起。
+  // 涅奥选项（第五十七批）：同样从 seed 重算，确定的。
+  // ⚠ 这一条**没有**「已经选过哪个」的损失问题——老档早就选完并结算了近似效果，
+  //   而这里存的是「本局本该是哪四个」，与已发生的事无关。换过去那一批要处理的是
+  //   「老档选过的近似效果」与「真实效果」不一致，那是那一批的账。
+  if (state["neowOptions"] === undefined) {
+    const seed = typeof state["seed"] === "string" ? state["seed"] : "0";
+    state["neowOptions"] = generateNeowOptions(BigInt(seed));
+  }
   if (state["encounterPlan"] === undefined) {
     const seed = typeof state["seed"] === "string" ? state["seed"] : "0";
     state["encounterPlan"] = buildEncounterPlan(BigInt(seed));
