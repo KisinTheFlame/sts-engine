@@ -9414,6 +9414,19 @@ const RELIC_AT_BATTLE_START: Record<string, (bc: BattleContext) => void> = {
  * 两处都登记不会重复触发，`isRelicSupported` 取的是并集。
  */
 const RELIC_OTHER_HOOKS: ReadonlySet<string> = new Set([
+  // 梅兰奇（MELANGE，第五十八批）：登记成**什么都不做**。
+  // ⚠⚠ 参考里它唯一的读点整句被注释掉了（`BattleContext::onShuffle` :2831-2833）：
+  //     if (player.hasRelic<R::MELANGE>()) {
+  //   //     addToBot(Actions::SetState(InputState::SCRY, 3) ); // TODO SCRY Action
+  //     }
+  //   ——`if` 还在、函数体空了。**照抄「什么都不做」**，与情绪芯片（第四十九批）、
+  //   好奇心（第三十七批）同一族：参考给出了答案，答案是「不做」。
+  // ⚠ 它**不是**「活体样本」那一族（参考排了一个没人应答的 InputState、第一只怪一死就永久卡住），
+  //   也不是「中毒」那一族（空 `Action` ⇒ `executeActions` 当场抛 `bad_function_call`）。
+  //   三族的判据是**参考跑得动跑不动**：这一颗跑得动，所以它有预言机。
+  // ⚠ 背书方向是**反的**：给它写任何一个真实效果（例如洗牌时抽/弃），`@relic23` 那 120 条
+  //   会当场红——实测「洗牌时多抽一张」红 120 例。
+  "melange",
   "gremlin_horn",
   "hand_drill",
   "omamori",

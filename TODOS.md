@@ -39,7 +39,7 @@
 | ---- | ------- | ----------------- | -------------------------------------------------------------------------------------------------------------------------------- |
 | 卡牌 | 108 + 1 | 116（可背书上限） | `CARD_RULES`                                                                                                                     |
 | 怪物 | **65**  | 65                | `MOVE_RULES` ✅ **收官**                                                                                                         |
-| 遗物 | **96**  | 180               | `RELIC_IMMEDIATE` / `RELIC_AT_BATTLE_START` / `RELIC_AT_TURN_START` / `RELIC_AT_TURN_START_POST_DRAW_INIT` / `RELIC_OTHER_HOOKS` |
+| 遗物 | **97**  | 180               | `RELIC_IMMEDIATE` / `RELIC_AT_BATTLE_START` / `RELIC_AT_TURN_START` / `RELIC_AT_TURN_START_POST_DRAW_INIT` / `RELIC_OTHER_HOOKS` |
 | 药水 | **28**  | 42                | `POTION_RULES`                                                                                                                   |
 | 编队 | **63**  | 63                | `ENCOUNTER_BUILDERS` / `ENCOUNTER_SETUP` ✅ **收官**                                                                             |
 
@@ -2129,6 +2129,10 @@ harness 已支持选牌屏动作（`select_card` / `select_cards`），姿态 / 
   会与 harness 的 `isReplayableCard` 那道门迎面相撞，要一起设计
 - **参考自己注释掉了唯一读点**（1）：梅兰奇（`// TODO SCRY Action`）——「好奇心」那一族，
   可以像情绪芯片一样登记成空操作
+- ~~**参考自己注释掉了唯一读点**（1）：梅兰奇~~ ✅ **第五十八批登记**（`RELIC_OTHER_HOOKS` 里的
+  「什么都不做」一格，`@relic23` 给它负方向背书：给它写「洗牌时多抽一张」红 **120** 例）。
+  ⚠ 判据是**参考跑得动跑不动**：梅兰奇的 `if` 还在、函数体空了 ⇒ 有预言机（同情绪芯片 /
+  好奇心）；活体样本卡死、中毒抛 `bad_function_call` ⇒ 永远没有。三族别混。
 - ~~**可以直接做**（1）：扭曲漏斗~~ ❌ **第五十八批改判为永久排除**：中毒的逐回合结算
   `PoisonLoseHpAction()` 是**空 action**，带中毒的怪一到自己回合就让 `executeActions` 抛
   `std::bad_function_call`、harness 整个终止 ⇒ 永远没有预言机。**这 24 颗里一颗都不是「可以直接做」**
