@@ -6,6 +6,8 @@ import { endTurn, playCard, selectCard, selectCards, usePotion } from "./combat-
 import { TOTAL_ACTS, advanceToNextAct, applyChoose, buildMap, generateReward } from "./run/run.js";
 import { POTION_SLOTS } from "./potions/potions.js";
 import { NEOW_EVENT_ID } from "./events/events.js";
+import { encounterIdOf, generateEncounters } from "./sts-encounters.js";
+import type { EncounterPlan } from "./types.js";
 
 // === 引擎顶层：新建对局 + 动作分发 ===
 //
@@ -71,6 +73,10 @@ export function newRun(input: {
     shop: null,
     cardSelect: null,
     combatsEntered: 0,
+    // 遭遇计划：`monsterRng` 是一条**持久流**（`Random(seed)`，三幕续 counter），
+    // 所以开局算一次、存下来按序索引（第五十一批）。
+    encounterPlan: buildEncounterPlan(seedLong),
+    encounterCursor: { monsters: [0, 0, 0], elites: [0, 0, 0] },
     pendingRelicReward: false,
     rng,
     nextUid,
@@ -81,6 +87,23 @@ export function newRun(input: {
   state.event = { id: NEOW_EVENT_ID };
   state.screen = "event";
   return state;
+}
+
+/**
+ * 把 `generateEncounters` 的三幕结果投影成引擎的编队 id（第五十一批）。
+ *
+ * ⚠ 这里**一次算完三幕**，而不是每幕现算：`monsterRng` 是一条持久流，三幕续同一个 counter，
+ * 分幕现算会让第二 / 三幕的取值整体错位。
+ * ⚠ `migrate.ts` 给老存档回填时走的也是这个函数——它对同一个 seed 是确定的，所以回填出来的
+ * 计划与新开局逐位相同（缺的只是「已经打过几场」，见那边的注释）。
+ */
+export function buildEncounterPlan(seedLong: bigint): EncounterPlan {
+  return generateEncounters(seedLong).map((act) => ({
+    monsters: act.monsters.map(encounterIdOf),
+    elites: act.elites.map(encounterIdOf),
+    boss: encounterIdOf(act.boss),
+    secondBoss: act.secondBoss === null ? null : encounterIdOf(act.secondBoss),
+  }));
 }
 
 export function applyAction(state: GameState, action: GameAction): ActionResult {
