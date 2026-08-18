@@ -7,6 +7,7 @@ import { TOTAL_ACTS, advanceToNextAct, applyChoose, buildMap, generateReward } f
 import { POTION_SLOTS } from "./potions/potions.js";
 import { NEOW_EVENT_ID } from "./events/events.js";
 import { encounterIdOf, generateEncounters } from "./sts-encounters.js";
+import { generateNeowOptions } from "./sts-neow.js";
 import type { EncounterPlan } from "./types.js";
 
 // === 引擎顶层：新建对局 + 动作分发 ===
@@ -75,6 +76,10 @@ export function newRun(input: {
     combatsEntered: 0,
     // 遭遇计划：`monsterRng` 是一条**持久流**（`Random(seed)`，三幕续 counter），
     // 所以开局算一次、存下来按序索引（第五十一批）。
+    // 涅奥的四个选项：与地图 / 遭遇序列同源，开局算一次（第五十七批）。
+    // ⚠ 事件屏当前**仍在用近似的四个选项**——这一片只负责把真实选项算出来存下，
+    //   换过去那一步要先把 19 × 6 的效果转写完，见 `GameState.neowOptions` 的注释。
+    neowOptions: generateNeowOptions(seedLong),
     encounterPlan: buildEncounterPlan(seedLong),
     encounterCursor: { monsters: [0, 0, 0], elites: [0, 0, 0] },
     pendingRelicReward: false,
