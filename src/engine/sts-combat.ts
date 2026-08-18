@@ -16293,6 +16293,37 @@ export const SUPPORTED_ENCOUNTERS: readonly string[] = [
   "shield_and_spear",
   "the_heart",
   "masked_bandits_event",
+
+  // —— 第四十八批：最后六个编队，「编队」这一栏收官 63 / 63 ——
+  //
+  // ⚠⚠ **本批一只新怪都没有**：六个编队全部由已登记的 65 只怪拼成，所以 `MOVE_RULES` /
+  //   `MONSTER_ATTACK_MOVES` / `enemies.ts` 的招式数值一个字都不用改。这也正是它便宜的原因
+  //   ——第四十七批收官怪物线之后，剩下的只是「参考建了哪几只、什么顺序」。
+  // ⚠ 六个都走 `initCombat` 的**默认建怪路径**（照 `ENCOUNTERS[id].enemies` 逐只
+  //   `createMonster`），一条 `ENCOUNTER_BUILDERS` 都不用加：参考那六条 case 本身就只是
+  //   两三句 `createMonster`，没有候选池、没有预留空位、没有 `miscRng`。
+  //   ⚠ **唯一一处「像是要写 builder、其实不要」的是事件版拉加维林**：它与 `lagavulin`
+  //     的差别是那条 `setHasStatus<ASLEEP>(true)`，而那一句住在 `ENCOUNTER_SETUP.lagavulin`
+  //     ——按**编队 id** 索引，所以 `lagavulin_event` 天然取不到它。第十八批那条注释
+  //     （「将来装它时不必再改」）本批兑现，实现侧真的一行没改。
+  //
+  // 本批关掉的三条老盲区（都是「结构性无宿主」，不是薄）：
+  //   ① **金属化以睡着为前提**（第十八批留的账）——`lagavulin_event` 是唯一不置沉睡位的
+  //      编队，于是 `preBattleAction` 那道 `if (hasStatus<ASLEEP>())` 第一次有了假分支。
+  //   ② **激怒的宿主不在 0 号位**（第十八批留的账）——`colosseum_event_nobs` 里工头 0、
+  //      头目 1，而 `gremlin_nob` 是单怪编队、`slavers` 里没有头目。
+  //   ③ **孢子云在同伴还活着时触发**（第十六 / 二十五批留的账）——`two_fungi_beasts`（2 只）
+  //      与 `mushrooms_event`（3 只）是全参考仅有的两个「多只真菌兽」编队。
+  //
+  // ⚠ 六个都只有 **asc0** 的背书（本批不叠第二条轴，第三十一批的教训）。它们的怪虽然
+  //   `ascCalibrated` 早就置起来了（第一 / 二幕那两批），但**编队级**的 `ASC_SUPPORTED_ENCOUNTERS`
+  //   这道闸门仍然拦着它们——要开得再来一批 `@asc19`。
+  "two_fungi_beasts",
+  "lagavulin_event",
+  "colosseum_event_slavers",
+  "colosseum_event_nobs",
+  "mushrooms_event",
+  "mysterious_sphere_event",
 ];
 
 export function isEncounterSupported(encounterId: string): boolean {

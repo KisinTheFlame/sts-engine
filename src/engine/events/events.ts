@@ -872,7 +872,11 @@ const EVENT_LIST: EventDef[] = [
       {
         label: "推开铁门，直面场中之敌",
         resultText: "铁门轰然合上，砂石之上只剩你与嗜血的对手。",
-        outcomes: [{ kind: "start_combat", encounterId: "colosseum", elite: true }],
+        // ⚠ 第四十八批：编队 id 从 `colosseum` 改成参考枚举名 `colosseum_event_nobs`
+        //   （成员一个字没动，仍是工头 + 地精头目）。参考的斗兽场其实是**两场**
+        //   （先 `COLOSSEUM_EVENT_SLAVERS`、赢了才选打不打 `COLOSSEUM_EVENT_NOBS`），
+        //   run 层的事件还是近似的，两场制留给接线那一批。
+        outcomes: [{ kind: "start_combat", encounterId: "colosseum_event_nobs", elite: true }],
       },
       {
         label: "趁看守不备悄悄溜走",
@@ -947,7 +951,9 @@ const EVENT_LIST: EventDef[] = [
       {
         label: "撬开金属球",
         resultText: "球体应声裂开，两只游荡者带着电弧扑向你——里头必有值得一战的东西。",
-        outcomes: [{ kind: "start_combat", encounterId: "mysterious_sphere", elite: true }],
+        // ⚠ 第四十八批：编队 id 从 `mysterious_sphere` 改成参考枚举名
+        //   `mysterious_sphere_event`（成员一个字没动，仍是两只暗球游荡者）。
+        outcomes: [{ kind: "start_combat", encounterId: "mysterious_sphere_event", elite: true }],
       },
       {
         label: "不去招惹，绕行离开",
