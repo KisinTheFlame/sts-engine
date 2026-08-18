@@ -4,6 +4,7 @@ import { getEncounterDef } from "./enemies/enemies.js";
 import { getRelicDef } from "./relics/relics.js";
 import { getPotionDef } from "./potions/potions.js";
 import {
+  isRelicSupported,
   cardSelectOptions,
   drinkPotion,
   endTurn as stsEndTurn,
@@ -75,6 +76,28 @@ export function stsCombatCoverage(state: GameState, encounterId: string): Combat
   for (const potion of state.potions) {
     if (potion !== null && !isPotionSupported(potion)) {
       return no(`药水「${potion}」尚未迁移`);
+    }
+  }
+  // ⚠⚠ **遗物这一段是可选的（第五十四批），而它默认关着——这个默认值本身要解释。**
+  //
+  // 缺口（TODOS「一、接线」第 9 项，第四十一批发现）：这个函数逐条查编队 / 牌 / 药水，
+  // 却**没有**查 `state.relics`，而 `isRelicSupported` 是导出的、零调用者。后果是
+  // **带着一颗尚未转写的遗物照样开得了战，那颗遗物在战斗内静默什么都不做**——
+  // 这正是本项目最不接受的形态（「登记了却错的内容会静默产出错误数值」）。
+  //
+  // ⚠ 为什么不直接一律拦下：遗物现在只转写了 96 / 180，一律拦的话**绝大多数真实牌组
+  //   都开不了战**——包括铁甲的初始遗物燃烧之血（它在战斗内没有钩子，属于「run 层遗物」
+  //   那 65 颗，永远不会进 `SUPPORTED_RELIC_IDS`）。那不是「更严格」，那是把引擎关掉。
+  // ⚠ 所以这里给的是**显式的严格模式**：调用方（测试、对拍工具、想要「宁可失败也不要
+  //   静默错」的宿主）打开它，产品侧默认保持现状。**沉默的缺口至少变成了可开关的缺口**，
+  //   而开关的存在本身就是那条账的书面记录。
+  // ⚠ 真正的修法仍然是把 run 层遗物那 65 颗与战斗内那 24 颗分开建模（那时「未登记」
+  //   才等价于「有钩子却没转写」），账记在 TODOS 一.9。
+  if (state.strictRelicCoverage === true) {
+    for (const relic of state.relics) {
+      if (!isRelicSupported(relic.id)) {
+        return no(`遗物「${relic.id}」尚未迁移（严格模式）`);
+      }
     }
   }
   return { supported: true };

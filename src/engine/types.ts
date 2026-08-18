@@ -1532,6 +1532,19 @@ export type GameState = {
   combatsEntered: number;
 
   /**
+   * **严格遗物覆盖模式**（第五十四批）：开启后，带着一颗尚未转写的遗物**开不了战**。
+   *
+   * 默认 `undefined`（= 关）。理由见 `combat-bridge.stsCombatCoverage` 里那一段：
+   * 战斗内遗物只转写了 96 / 180，而其中 65 颗（回血 / 金币 / 商店 / 篝火）在参考的
+   * `src/combat` 里**一个读点都没有**、永远不会进 `SUPPORTED_RELIC_IDS`——包括铁甲的
+   * 初始遗物燃烧之血。一律拦下不是「更严格」，是把引擎关掉。
+   *
+   * ⚠ 它存在的意义是把**沉默的缺口变成可开关的缺口**：想要「宁可失败也不要静默错」的
+   * 宿主可以打开它，而这个字段本身就是那条账的书面记录。
+   */
+  strictRelicCoverage?: boolean;
+
+  /**
    * 本局的**怪物遭遇计划**（第五十一批，TODOS「一、接线」第 4 项）。
    *
    * 由 `generateEncounters(seed)` 在开局算一次——它是一条**持久的 `monsterRng`**
