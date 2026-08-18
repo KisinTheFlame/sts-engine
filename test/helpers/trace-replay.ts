@@ -9,6 +9,7 @@ import {
   selectCard,
   selectCards,
   type BattleContext,
+  type RoomKind,
 } from "../../src/engine/sts-combat.js";
 import { StsRandom } from "../../src/engine/sts-rng.js";
 import { TRACE_DIR, listTraceFiles, type TraceSlice } from "./trace-slices.js";
@@ -193,6 +194,15 @@ export type Trace = {
    * 而万一以后有别的东西改 maxHp，用 initial 那份更贴近旧行为。
    */
   playerHp?: number;
+  /**
+   * 这场仗所在的房间（第五十批）。与 `ascension` 同一招：harness **只在非 `INVALID` 时输出**,
+   * 所以既有 216 份文件里一个字都没有这两个键。
+   *
+   * ⚠ `room` 与 `lastRoom` 是参考里的**两个不同来源**（`gc.curRoom` 的那个局部变量 vs
+   * `gc.lastRoom`），古董茶具读的是后者。别合并。
+   */
+  room?: string;
+  lastRoom?: string;
   initial: Snapshot;
   steps: Step[];
 };
@@ -1413,6 +1423,9 @@ const start = (t: Trace): BattleContext =>
     floorNum: t.floor,
     // 从 trace 读，不再写死 0：爬升度那条轴（第二十一批）就是靠这里点亮的。
     ascension: t.ascension ?? 0,
+    // 房间类型（第五十批）：五颗遗物的门。缺席即 `"invalid"`，与这两个键出现之前等价。
+    room: (t.room ?? "invalid") as RoomKind,
+    lastRoom: (t.lastRoom ?? "invalid") as RoomKind,
     encounterId: ENCOUNTER[t.encounter]!,
     deck: t.deck.map((c, i) => ({
       defId: CARD[c] ?? c,

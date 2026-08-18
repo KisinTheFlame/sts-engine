@@ -440,6 +440,17 @@ ENC_V0_ASC19="cultist@asc19 jaw_worm@asc19 jaw_worm_horde@asc19 two_louse@asc19 
 #   * @relic16 的三颗 `energyPerTurn++` 让 three_sentries 掉到 **1.16 回合**，
 #     所以那一组必须再挂一个长仗编队（three_darklings）。
 #   * 姜与地精面罩**不能同组**：面罩的全部可观察面就是玩家身上那 1 层虚弱，而姜是虚弱免疫。
+# 第五十批：**房间类型**这条轴（`DeckVariant.room` / `.lastRoom`，默认 `Room::INVALID`
+#   = 与这两个字段出现之前逐字节等价），它一次开五颗遗物：缩放仪 / 昆虫标本 / 奴隶主颈圈 /
+#   勇气投索 / 古董茶具（91 → 96 / 180）。第四十三批把它们排除时写下的关门条件就是这个字段。
+# ⚠⚠ **三个 variant，拆法是承重的**：颈圈的门是**析取**（ELITE || BOSS）、投索只认 ELITE、
+#   缩放仪只认 BOSS。一个 variant 只能点亮析取的一边。`@relic20` 精英 / `@relic21` Boss，
+#   颈圈**两个都带**，于是它的两条臂各有背书，两个邻居又证明了自己在另一个房间**没有**触发。
+# ⚠ `@relic21` 特意带伤进场（60/80）：`heal` 会被上限夹掉，满血的缩放仪抄得再对也是空操作。
+# ⚠ `@relic22` **只设 lastRoom**、room 留 INVALID——茶具读的是 `gc.lastRoom`，
+#   写成读 `room` 的话这份文件里一点能量都不会加。
+# 两步验证做了：先只加字段与头部输出、不加任何 variant，`--check` 216 个文件逐字节复现。
+#
 # 第四十九批：遗物战线第六批——杜乌娃娃 / 巨铃 / 达摩鲁 / 情绪芯片（87 → 91 / 180）。
 # 两个新 variant（`@relic18` / `@relic19`），**同一副牌组、同一个编队（CHAMP）、同一份药水**，
 # 只差遗物清单——因为娃娃与巨铃在参考里是**逐字相同的一句** `buff<STRENGTH>(r.data)`，
@@ -450,7 +461,7 @@ ENC_V0_ASC19="cultist@asc19 jaw_worm@asc19 jaw_worm_horde@asc19 two_louse@asc19 
 # ⚠ 达摩鲁是**硫磺那一族**（两个时点：initRelics 同步 buff + 回合开始 addToBot），
 #   CHAMP 的仗长（平均 ~9 个玩家回合）正是为了让「少抄一处」当场看得出来。
 # ⚠ 情绪芯片在参考里是**一个空的 if**（`// todo`），登记成空操作、背书是反方向的。
-ENC_V0_RELIC="large_slime@relic1 slime_boss@relic1 spheric_guardian@relic1 gremlin_leader@relic1 automaton@relic1 collector@relic1 three_darklings@relic1 reptomancer@relic1 writhing_mass@relic2 writhing_mass@relic3 gremlin_leader@relic4 automaton@relic4 collector@relic4 reptomancer@relic4 spheric_guardian@relic5 sentry_and_sphere@relic5 gremlin_leader@relic5 slime_boss@relic6 champ@relic6 lagavulin@relic6 the_guardian@relic7 champ@relic7 three_sentries@relic8 time_eater@relic8 three_darklings@relic8 champ@relic9 three_byrds@relic9 collector@relic9 slime_boss@relic10 three_sentries@relic10 champ@relic10 champ@relic11 maw@relic11 slime_boss@relic11 champ@relic12 three_darklings@relic12 champ@relic13 hexaghost@relic13 three_sentries@relic14 champ@relic14 champ@relic15 three_sentries@relic15 three_sentries@relic16 champ@relic16 three_darklings@relic16 automaton@relic17 collector@relic17 champ@relic18 champ@relic19"
+ENC_V0_RELIC="large_slime@relic1 slime_boss@relic1 spheric_guardian@relic1 gremlin_leader@relic1 automaton@relic1 collector@relic1 three_darklings@relic1 reptomancer@relic1 writhing_mass@relic2 writhing_mass@relic3 gremlin_leader@relic4 automaton@relic4 collector@relic4 reptomancer@relic4 spheric_guardian@relic5 sentry_and_sphere@relic5 gremlin_leader@relic5 slime_boss@relic6 champ@relic6 lagavulin@relic6 the_guardian@relic7 champ@relic7 three_sentries@relic8 time_eater@relic8 three_darklings@relic8 champ@relic9 three_byrds@relic9 collector@relic9 slime_boss@relic10 three_sentries@relic10 champ@relic10 champ@relic11 maw@relic11 slime_boss@relic11 champ@relic12 three_darklings@relic12 champ@relic13 hexaghost@relic13 three_sentries@relic14 champ@relic14 champ@relic15 three_sentries@relic15 three_sentries@relic16 champ@relic16 three_darklings@relic16 automaton@relic17 collector@relic17 champ@relic18 champ@relic19 three_sentries@relic20 gremlin_nob@relic20 champ@relic21 champ@relic22"
 # 第四十五批：**药水**这条战线的第一批（第六个乘积）。文件名后缀是 `@potN`——harness 只在
 # `DeckVariant.potionSet` / `.potionPolicy` 非 0 时输出那两个字段，所以既有 163 个文件的
 # 名字与内容一个字节都不动（管线改造那一步单独跑过一次 `--check` 证明了这一点）。
