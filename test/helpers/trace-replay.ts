@@ -514,6 +514,27 @@ const ENCOUNTER: Record<string, string> = {
   //   ⚠⚠ `MASKED_BANDITS_EVENT` 建的是 `POINTY` / `ROMEO` / `BEAR`——**熊在最后一格**。
   //     我们这边原先那条 `masked_bandits`（劫掠者 ×2 + 抢劫者）是旧近似表编的，本批改掉。
   MASKED_BANDITS_EVENT: "masked_bandits_event",
+  // —— 第四十八批：最后六个编队，走 harness 新开的**第十个乘积**。「编队」63 / 63 收官。
+  //   ⚠ 六个全部由已登记的怪拼成，所以下面那张 `MONSTER` 表一个字都没加。
+  //   ⚠ `TWO_FUNGI_BEASTS` 是**第一幕 strong 池**里的编队（不是事件编队），只是
+  //     harness 的第一幕 `encounters` 列表从第一个 commit 起就没有它，而那个列表不许动。
+  TWO_FUNGI_BEASTS: "two_fungi_beasts",
+  //   ⚠⚠ `LAGAVULIN_EVENT` 与 `LAGAVULIN` 是同一只怪、同一份数值，差别**只有一句**：
+  //     事件版不置沉睡位（`MonsterGroup.cpp:298-300` 没有那句 `setHasStatus<ASLEEP>`）。
+  //     于是它开局既没有金属化、也没有那 8 点格挡，首招直接是吸魂。
+  LAGAVULIN_EVENT: "lagavulin_event",
+  //   ⚠ `COLOSSEUM_EVENT_SLAVERS` 是**蓝奴隶主 0 号位 / 红奴隶主 1 号位**，没有工头
+  //     ——工头在**另一半** `COLOSSEUM_EVENT_NOBS` 里。斗兽场在参考里是两场仗。
+  COLOSSEUM_EVENT_SLAVERS: "colosseum_event_slavers",
+  //   ⚠⚠ `COLOSSEUM_EVENT_NOBS` 是**工头 0 号位 / 地精头目 1 号位**，顺序是承重的：
+  //     激怒那条钩子读的是 `monsters.arr[0]`（BattleContext.cpp:1846-1849），
+  //     所以头目在 1 号位时它**根本不触发**。这是那条老盲区的关门条件。
+  COLOSSEUM_EVENT_NOBS: "colosseum_event_nobs",
+  //   ⚠ `MUSHROOMS_EVENT` 是**三只**真菌兽，`TWO_FUNGI_BEASTS` 是两只——全参考仅有的
+  //     两个「多只真菌兽」编队，孢子云的「同伴还活着」那一支只在这里可观察。
+  MUSHROOMS_EVENT: "mushrooms_event",
+  //   ⚠ `MYSTERIOUS_SPHERE_EVENT` 是两只暗球游荡者。
+  MYSTERIOUS_SPHERE_EVENT: "mysterious_sphere_event",
 };
 const MONSTER: Record<string, string> = {
   CULTIST: "cultist",

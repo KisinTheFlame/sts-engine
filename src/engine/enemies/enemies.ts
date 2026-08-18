@@ -4401,14 +4401,58 @@ const ENCOUNTERS: Record<string, EncounterDef> = {
   //   下标错了不只是快照顺序错：`getRandomMonsterIdx`、群伤的遍历顺序、
   //   harness 策略打的「最左侧活怪」全都跟着变。
   slavers: { id: "slavers", enemies: ["blue_slaver", "taskmaster", "red_slaver"], isBoss: false },
-  // —— 事件触发的战斗遭遇 ——
-  // 斗兽场：工头 + 地精头目，事件触发的硬仗（胜利发遗物）。
-  colosseum: { id: "colosseum", enemies: ["taskmaster", "gremlin_nob"], isBoss: false },
+  // —— 事件触发的战斗遭遇（第四十八批：五个 `*_EVENT` 全部按参考枚举名对齐）——
+  //
+  // ⚠ 这五条的 id 都带 `_event` 后缀，因为**编队 id 必须与参考的 `MonsterEncounter` 同名**
+  //   ——trace 文件名就是它，而 `SUPPORTED_ENCOUNTERS` 与 `test/golden/traces/*.jsonl`
+  //   是双向对齐的。同族的先例：`shell_parasite`（25）/ `automaton`（28）/ `collector`（29）/
+  //   `donu_and_deca`（39）/ `masked_bandits_event`（47）。
+  //
+  // 斗兽场（事件触发的硬仗，胜利发遗物）在参考里是**两个编队**，不是一个：
+  //   `COLOSSEUM_EVENT_SLAVERS` = 蓝奴隶主 + 红奴隶主（MonsterGroup.cpp:208-211），
+  //   `COLOSSEUM_EVENT_NOBS`    = 工头 + 地精头目（MonsterGroup.cpp:203-206）。
+  // ⚠ 第四十八批把旧的 `colosseum`（成员恰好就是后者）改名成 `colosseum_event_nobs`，
+  //   并补上前者。`events.ts` 那条事件仍然只打一场（run 层的事件还是近似的，两场制留给
+  //   接线那一批），它的引用跟着改名，成员一个字没动 ⇒ 事件层行为不变。
+  colosseum_event_slavers: {
+    id: "colosseum_event_slavers",
+    enemies: ["blue_slaver", "red_slaver"],
+    isBoss: false,
+  },
+  // ⚠⚠ **地精头目在 1 号位**，工头在 0 号位（参考的两句 createMonster 就是这个顺序）。
+  //   这不是摆设：`GREMLIN_NOB_ENRAGE` 是全参考唯一「怪物侧读自己下标之外还要遍历」的
+  //   争议点，而在**单怪**编队 `gremlin_nob` 里 0 号位与「自己」永远同解。这个编队是
+  //   「带激怒的怪不在 0 号位」的**唯一**关门条件（第十八批留的账，见 TODOS 盲区表）。
+  colosseum_event_nobs: {
+    id: "colosseum_event_nobs",
+    enemies: ["taskmaster", "gremlin_nob"],
+    isBoss: false,
+  },
   // ⚠ 蒙面强盗那条**第四十七批搬到下面去了**（改名成 `masked_bandits_event` 并按参考
   //   改了成员：旧的「劫掠者 ×2 + 抢劫者」是旧近似表编的，参考建的是尖头怪 / 罗密欧 / 熊）。
-  // 神秘球：2 只暗球游荡者（事件触发，胜利发遗物）。
-  mysterious_sphere: {
-    id: "mysterious_sphere",
+  // 拉加维林的**事件版**（`MonsterGroup.cpp:298-300`）：与 `lagavulin` 是同一只怪、
+  // 同一份数值，差别**只有一句**——事件版**不置沉睡位**。
+  // ⚠⚠ 那一句的位置在 `ENCOUNTER_SETUP`（编队级），不在怪物身上，所以这里两条 def
+  //   逐字相同是对的、不是漏抄。它带来两处可观察的差别：开局既没有金属化也没有那 8 点
+  //   格挡（`preBattleAction` 的门是 `hasStatus<ASLEEP>()`），首招直接是吸魂。
+  //   这个编队是「金属化以睡着为前提」那道门的**唯一**关门条件（第十八批留的账）。
+  lagavulin_event: { id: "lagavulin_event", enemies: ["lagavulin"], isBoss: false },
+  // 蘑菇事件（`MonsterGroup.cpp:316-320`）：**三只**真菌兽。
+  // ⚠ 与 `two_fungi_beasts` 一起，它们是「孢子云在同伴还活着时触发」的关门条件
+  //   ——`exordium_wildlife` / `shelled_parasite_and_fungi` 里真菌兽都只有一只，
+  //   亡语跑了但队列里没有别的动作能插在中间（第二十五批量到 0 例）。
+  mushrooms_event: {
+    id: "mushrooms_event",
+    enemies: ["fungi_beast", "fungi_beast", "fungi_beast"],
+    isBoss: false,
+  },
+  // 神秘球事件（`MonsterGroup.cpp:322-325`）：2 只暗球游荡者。
+  // ⚠ 第四十八批从 `mysterious_sphere` 改名成参考枚举名。成员一个字没动。
+  // ⚠ 它与下面那条 `two_orb_walkers` 成员相同——后者是**旧近似表**编的第三幕条目，
+  //   参考的 `MonsterEncounter` 里没有对应项（`ORB_WALKER` 只有单怪那一条）。
+  //   它没有 trace、不在 `SUPPORTED_ENCOUNTERS` 里，接 `sts-encounters` 时应当删掉。
+  mysterious_sphere_event: {
+    id: "mysterious_sphere_event",
     enemies: ["orb_walker", "orb_walker"],
     isBoss: false,
   },
