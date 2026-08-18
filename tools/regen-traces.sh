@@ -540,7 +540,27 @@ ENC_V0_ACT3_TGT1="three_shapes@tgt1 four_shapes@tgt1 sphere_and_two_shapes@tgt1 
 #   一副只防不攻的 40 张全升级牌组（平均 5.73 个怪物回合 / 最长 10），
 #   而尖塔与强盗那两个编队用第三十七批那副 45 张。逐副候选的实测表见 harness 注释。
 ENC_V0_ACT4="shield_and_spear the_heart masked_bandits_event"
-ENC_V0="$ENC_V0_ASC0 $ENC_V0_ASC19 $ENC_V0_TGT1 $ENC_V0_ACT3 $ENC_V0_RELIC $ENC_V0_POT $ENC_V0_ACT3_ASC19 $ENC_V0_ACT3_TGT1 $ENC_V0_ACT4"
+# 第四十八批：**最后六个编队**（harness 的第十个乘积 `eventVariants`）——`TWO_FUNGI_BEASTS`
+# （第一幕 strong 池）与五个 `*_EVENT`。装完「编队」那一栏 **63 / 63 收官**。
+# 同样是钉死遗物药水的 variant，所以它既不冻结前面的乘积、也不被它们冻结。
+#
+# ⚠⚠ **本批一只新怪都没有**：六个编队全部由已登记的 65 只怪拼成，实现侧连
+#   `ENCOUNTER_BUILDERS` 都不用加（参考那六条 case 只是两三句 `createMonster`，
+#   走 `initCombat` 的默认建怪路径）。真正的收益在**三条老盲区**上：
+#     ① 金属化以睡着为前提 —— `lagavulin_event` 是唯一不置沉睡位的编队（第十八批的账）；
+#     ② 激怒的宿主不在 0 号位 —— `colosseum_event_nobs` 是工头 0 / 头目 1（第十八批的账）；
+#     ③ 孢子云在同伴还活着时触发 —— `two_fungi_beasts` / `mushrooms_event` 是仅有的
+#        「多只真菌兽」编队（第十六 / 二十五批的账）。
+#
+# ⚠ 牌组是**标准那副 22 张**（`BATCH_1 + SPOT_WEAKNESS`、未升级、40 种子、asc 0、tgt 0），
+#   而且是**量出来的**：与第三十七批那副 45 张全升级对比，A 在六个编队里的五个更长
+#   （弱牌组买怪物回合），每只怪的每条招式在 A 下都执行 62~498 次，B 一栏都没赢。
+#   逐栏对比表见 harness 注释。
+# ⚠ 那一张觅敌之弱在这里比平时更值钱：本批的第一幕怪（真菌兽 / 拉加维林 / 地精头目）
+#   是第十六~十八批登记的，它们的编队跑在第一幕乘积的 variant 0 上、那副牌组里**没有**
+#   觅敌之弱，所以它们的攻击分类此前**一次背书都没有**。实测每个编队 42~89 次打出。
+ENC_V0_EVENT="two_fungi_beasts lagavulin_event colosseum_event_slavers colosseum_event_nobs mushrooms_event mysterious_sphere_event"
+ENC_V0="$ENC_V0_ASC0 $ENC_V0_ASC19 $ENC_V0_TGT1 $ENC_V0_ACT3 $ENC_V0_RELIC $ENC_V0_POT $ENC_V0_ACT3_ASC19 $ENC_V0_ACT3_TGT1 $ENC_V0_ACT4 $ENC_V0_EVENT"
 
 policy_of() {
   case " $ENC_ALL " in *" $1 "*) echo all; return;; esac
