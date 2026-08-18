@@ -111,3 +111,26 @@ describe("遭遇计划：run 层按序消费", () => {
     expect(state.combatsEntered).toBe(1);
   });
 });
+
+describe("A20 双 Boss（第五十三批）", () => {
+  // 对齐 GameContext.cpp:1153-1165：**只有第三幕**、只有 asc>=20、且打赢的是本幕那个 Boss 时，
+  // 才接着打 `secondBoss`——中间不开奖励屏，楼层要自增（两场 Boss 的战斗 RNG 因此不同源）。
+  it("只有第三幕 asc>=20 才有第二个 Boss，且 plan 里非空", () => {
+    for (const asc of [0, 19, 20]) {
+      const plan = buildEncounterPlan(seedStringToLong(SEED));
+      // ⚠ `secondBoss` 是**生成时**就定的（monsterRng 洗牌的次位），与 ascension 无关——
+      //   参考在 `GameContext.cpp:595` 那里才按 asc 决定要不要用它。我们把它一律生成、
+      //   在消费点按 asc 判，两者同解且更简单。
+      expect(plan[2]!.secondBoss, `asc=${String(asc)}`).not.toBeNull();
+      expect(plan[0]!.secondBoss).toBeNull();
+      expect(plan[1]!.secondBoss).toBeNull();
+    }
+  });
+
+  it("第三幕的两个 Boss 互不相同", () => {
+    for (const seed of ["1RGBGHNF7L", "SLAYTHESPIRE", "GEN7"]) {
+      const act3 = buildEncounterPlan(seedStringToLong(seed))[2]!;
+      expect(act3.secondBoss).not.toBe(act3.boss);
+    }
+  });
+});

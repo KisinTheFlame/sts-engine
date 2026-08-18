@@ -158,6 +158,37 @@ function settleCombat(state: GameState, bc: BattleContext): void {
     state.log.push("战斗胜利！");
     writeBackRelicData(state, bc);
     fireCombatEndRelics(state);
+    // ⚠⚠ **A20 的双 Boss**（第五十三批，对齐 `GameContext.cpp:1153-1165`）：
+    //     if (ascension >= 20 && info.encounter == boss) {
+    //         ++floorNum;
+    //         const auto r = Random(seed + floorNum);
+    //         miscRng = shuffleRng = cardRandomRng = r;
+    //         relicsOnEnterRoom(curRoom);
+    //         enterBattle(secondBoss);
+    //     }
+    // 四处照抄：
+    //  ① **只有第三幕**（参考那条 `else if (act == 3)` 之内）——第一 / 二幕的 Boss 房
+    //     在 asc20 下仍然只有一场，`secondBoss` 也只在第三幕非空（`GameContext.cpp:595`）。
+    //  ② 门是 `info.encounter == boss`（打赢的是**本幕那个** Boss），不是「打赢了任何 Boss」
+    //     ——第二个 Boss 自己打完时这条不成立，于是走正常的收尾。
+    //  ③⚠ **楼层要自增**：`++floorNum` 之后三条流按 `Random(seed + floorNum)` 重播种，
+    //     而我们的 `startCombat` 正是拿 `state.floorNum` 播种战斗（见上面那处注释）。
+    //     漏掉它两场 Boss 会共用同一份洗牌 / 建怪 RNG，与原版整体错位。
+    //  ④ **中间不开奖励屏**：参考直接 `enterBattle`，两场之间没有 `openCombatRewardScreen`。
+    //     赢下第二个 Boss 时才走 `grantBossVictory`。
+    const actPlan = state.encounterPlan[state.act - 1];
+    if (
+      state.ascension >= 20 &&
+      state.act === 3 &&
+      actPlan !== undefined &&
+      actPlan.secondBoss !== null &&
+      bc.encounterId === actPlan.boss
+    ) {
+      state.floorNum += 1;
+      state.log.push("塔顶还有一个守卫者……");
+      startCombat(state, actPlan.secondBoss);
+      return;
+    }
     if (getEncounterDef(bc.encounterId).isBoss) {
       grantBossVictory(state);
     }

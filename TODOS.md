@@ -809,7 +809,9 @@ filter 到本批的新 variant（见 WORKFLOW），到第二十九批七个 vari
    - 三个 `pick*Encounter`）——有了游戏级对应物就不留两套，与删近似战斗同一条规矩。
      ⚠ **回填是有损的**：老存档没记游标，普通战游标取 `combatsEntered`、精英取 0，
      于是「打到一半的老档接着打的精英会从本幕第一个开始」。那份信息老档里不存在，不是能修的。
-     ⚠ 仍缺：`secondBoss`（A20 双 Boss）还没有消费点；「第几层是哪种房间」仍走近似地图（第 5 项）。
+     ✅ `secondBoss`（A20 双 Boss）第五十三批接上了：对齐 `GameContext.cpp:1153-1165`——只有第三幕、
+     asc>=20、且打赢的是本幕那个 Boss 时才接着打，**楼层自增**（两场 Boss 的战斗 RNG 因此不同源）、
+     **中间不开奖励屏**。⚠ 仍缺：「第几层是哪种房间」仍走近似地图（第 5 项）。
 5. 接 `sts-map`：决定楼层与房间类型。每幕 `Random(seed + offset)`，自成一体；要写
    `{x, y, edges, parents}` → 我们的 `MapGraph` 的适配。
 6. 接 `sts-neow`：19 种 bonus × 6 种 drawback，其中效果要逐个实现（不是纯映射，工作量最大）。
